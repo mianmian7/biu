@@ -229,11 +229,20 @@ describe("useLyricsStore", () => {
     expect(useLyricsStore.getState().lyrics).toEqual([{ time: 2000, text: "refreshed" }]);
   });
 
+  test("revalidates cached auto lyrics saved with a zero offset (an adjusted offset is marked manual)", async () => {
+    autoStart.mockReturnValue(new Promise(() => {}));
+    getElectronStoreMock().mockResolvedValue({ "BV1xx-100": { source: "auto", lyrics: "[00:01.00]zero", offset: 0 } });
+    setPlayItem(createPlayItem());
+    await useLyricsStore.getState().load();
+
+    expect(useLyricsStore.getState().lyrics).toEqual([{ time: 1000, text: "zero" }]);
+    expect(autoStart).toHaveBeenCalledTimes(1);
+  });
+
   test.each<MusicLyrics>([
     { source: "manual", lyrics: "[00:01.00]manual" },
     { lyrics: "[00:01.00]legacy manual" },
     { source: "auto", lyrics: "[00:01.00]adjusted", offset: 500 },
-    { source: "auto", lyrics: "[00:01.00]zero offset", offset: 0 },
   ])("preserves manual or offset-adjusted cached lyrics: %j", async cached => {
     getElectronStoreMock().mockResolvedValue({ "BV1xx-100": cached });
     setPlayItem(createPlayItem());

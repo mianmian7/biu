@@ -248,7 +248,7 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
           isLoaded: true,
         });
         const cid = Number(playItem?.cid);
-        if (cached.source === "auto" && cached.offset === undefined && playItem?.bvid && Number.isFinite(cid)) {
+        if (cached.source === "auto" && !cached.offset && playItem?.bvid && Number.isFinite(cid)) {
           startAuto(playItem.bvid, cid);
         }
         return;
