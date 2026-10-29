@@ -6,6 +6,7 @@ import clsx from "classnames";
 import { debounce } from "es-toolkit";
 
 import type { WebPlayerParams } from "@/service/web-player";
+import type { AutoLyricsResult } from "@shared/auto-lyrics/service-types";
 
 import { usePlayList } from "@/store/play-list";
 import { usePlayProgress } from "@/store/play-progress";
@@ -31,6 +32,13 @@ const timeTagPattern = /\[(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?\]/g;
 const DEFAULT_FONT_SIZE = 20;
 const DEFAULT_OFFSET = 0;
 
+const AUTO_FAILURE: Partial<Record<AutoLyricsResult["status"], string>> = {
+  unidentified: "自动歌词：未识别到歌曲",
+  "no-reference": "自动歌词：没有找到可对齐的原曲",
+  "decode-unavailable": "自动歌词：本机无法解码音频",
+  error: "自动歌词：出错了",
+};
+
 const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: boolean; showControls?: boolean }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rafIdRef = useRef<number | null>(null);
@@ -42,6 +50,9 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
   const [offset, setOffset] = useState<number>(DEFAULT_OFFSET);
   const [fontSize, setFontSize] = useState<number>(DEFAULT_FONT_SIZE);
   const [isLoading, setIsLoading] = useState(false);
+  const [autoStatus, setAutoStatus] = useState<string>();
+  /** A lyric picked in the search modal must not be replaced by a late auto result. */
+  const manualAdoptedRef = useRef(false);
   const { currentTime } = usePlayProgress();
   const currentMs = currentTime * 1000 + offset;
 
@@ -93,10 +104,40 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
 
   useEffect(() => {
     let canceled = false;
+    let autoApplied = false;
+    let stopAutoProgress: VoidFunction | undefined;
     setOffset(DEFAULT_OFFSET);
     setFontSize(DEFAULT_FONT_SIZE);
+    setAutoStatus(undefined);
+    manualAdoptedRef.current = false;
 
     const playItem = usePlayList.getState().getPlayItem();
+    const applyAuto = (auto?: MusicLyrics) => {
+      if (canceled || manualAdoptedRef.current || !auto?.lyrics) return;
+      autoApplied = true;
+      setLyrics(parseLrc(auto.lyrics));
+      setTranslatedLyrics(parseLrc(auto.tLyrics));
+      setIsLoading(false);
+    };
+    // Auto lyrics (user edits > auto > Bilibili subtitles): coarse result first, then per-line.
+    const startAutoLyrics = (bvid: string, cid: number) => {
+      const key = `${bvid}-${cid}`;
+      setAutoStatus("自动歌词识别中...");
+      stopAutoProgress = window.electron.autoLyrics.onProgress(progress => {
+        if (progress.key !== key) return;
+        if (progress.phase === "coarse") applyAuto(progress.lyrics);
+      });
+      window.electron.autoLyrics
+        .start({ bvid, cid })
+        .then(result => {
+          if (canceled) return;
+          applyAuto(result.lyrics);
+          setAutoStatus(result.lyrics ? undefined : AUTO_FAILURE[result.status]);
+        })
+        .catch(() => {
+          if (!canceled) setAutoStatus(undefined);
+        });
+    };
     const fetchLyrics = async () => {
       if (!playItem?.cid) {
         setLyrics([]);
@@ -130,6 +171,8 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
           }
         }
 
+        if (playItem.bvid) startAutoLyrics(playItem.bvid, cidAsNumber);
+
         const params: WebPlayerParams = { cid: cidAsNumber };
 
         if (playItem.bvid) params.bvid = playItem.bvid;
@@ -141,7 +184,7 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
 
         const body = await getLyricsByBili(params);
 
-        if (canceled) return;
+        if (canceled || autoApplied) return;
 
         if (!body?.length) {
           setLyrics([]);
@@ -152,7 +195,7 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
         setLyrics(body);
         setTranslatedLyrics([]);
       } catch {
-        if (canceled) return;
+        if (canceled || autoApplied) return;
         setLyrics([]);
         setTranslatedLyrics([]);
       } finally {
@@ -166,6 +209,7 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
 
     return () => {
       canceled = true;
+      stopAutoProgress?.();
     };
   }, [parseLrc, playId, tryLoadCachedLyrics]);
 
@@ -270,6 +314,7 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
     (nextLyrics?: string, nextTLyrics?: string) => {
       onCloseSearch();
       if (nextLyrics) {
+        manualAdoptedRef.current = true;
         setLyrics(parseLrc(nextLyrics));
         setTranslatedLyrics(nextTLyrics ? parseLrc(nextTLyrics) : []);
       }
@@ -372,7 +417,7 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
             </div>
           ) : (
             <div className="text-foreground/70 flex h-full items-center justify-center">
-              {isLoading ? "歌词加载中..." : "暂无歌词"}
+              {isLoading ? "歌词加载中..." : (autoStatus ?? "暂无歌词")}
             </div>
           )}
         </div>

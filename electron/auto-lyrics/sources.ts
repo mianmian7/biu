@@ -70,6 +70,21 @@ export const sources = {
     };
   },
 
+  /** Identification input for one page; the page title is only trusted on multi-part videos. */
+  async params(bvid: string, cid: number, signal: AbortSignal) {
+    const video = await sources.view(bvid, signal);
+    const page = video.pages.find(item => item.cid === cid);
+    return {
+      bvid,
+      cid,
+      title: video.title,
+      pageTitle: video.pages.length > 1 ? page?.part : undefined,
+      duration: page?.duration ?? video.duration,
+      tid: video.tid,
+      ownerName: video.ownerName,
+    };
+  },
+
   async references(song: SongCandidate, signal: AbortSignal): Promise<ReferenceCandidate[]> {
     const cookie = await getCookieString();
     signal.throwIfAborted();

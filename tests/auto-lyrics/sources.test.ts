@@ -45,6 +45,35 @@ describe("auto lyrics sources", () => {
     expect(mocks.get).toHaveBeenCalledTimes(1);
   });
 
+  it("builds identify params from the view API, trusting page titles only on multi-part videos", async () => {
+    const signal = new AbortController().signal;
+    const data = { bvid: "BVtest", cid: 2, title: "合集", duration: 600, tid: 3, owner: { name: "UP" } };
+    mocks.view.mockResolvedValueOnce({
+      code: 0,
+      data: { ...data, pages: [{ cid: 2, page: 1, part: "raw_mix_v3", duration: 600 }] },
+    });
+    expect(await sources.params("BVtest", 2, signal)).toEqual({
+      bvid: "BVtest",
+      cid: 2,
+      title: "合集",
+      pageTitle: undefined,
+      duration: 600,
+      tid: 3,
+      ownerName: "UP",
+    });
+    mocks.view.mockResolvedValueOnce({
+      code: 0,
+      data: {
+        ...data,
+        pages: [
+          { cid: 2, page: 1, part: "A", duration: 200 },
+          { cid: 5, page: 2, part: "空の箱", duration: 184 },
+        ],
+      },
+    });
+    expect(await sources.params("BVtest", 5, signal)).toMatchObject({ pageTitle: "空の箱", duration: 184 });
+  });
+
   it("resolves a reference cid and downloads only its lowest bandwidth audio", async () => {
     const signal = new AbortController().signal;
     mocks.view.mockResolvedValue({

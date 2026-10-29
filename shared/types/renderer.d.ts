@@ -15,11 +15,16 @@ declare global {
 
   interface ElectronAPI {
     autoLyrics: {
+      /** Only bvid/cid are required; the main process fills title/tid/duration from the view API. */
       start: (
-        params: import("../auto-lyrics/service-types").AutoLyricsParams,
+        params:
+          | import("../auto-lyrics/service-types").AutoLyricsParams
+          | { bvid: string; cid: number; bypassCache?: boolean },
       ) => Promise<import("../auto-lyrics/service-types").AutoLyricsResult>;
       prefetch: (
-        params: import("../auto-lyrics/service-types").AutoLyricsParams,
+        params:
+          | import("../auto-lyrics/service-types").AutoLyricsParams
+          | { bvid: string; cid: number; bypassCache?: boolean },
       ) => Promise<import("../auto-lyrics/service-types").AutoLyricsResult>;
       cancel: (key?: string) => Promise<void>;
       onProgress: (
