@@ -214,7 +214,6 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
           applyAuto(result.lyrics);
           if (!result.lyrics && autoApplied) {
             set({ lyrics: [], translatedLyrics: [] });
-            autoApplied = false;
           }
           set({ autoStatus: result.lyrics ? undefined : AUTO_FAILURE[result.status] });
         })

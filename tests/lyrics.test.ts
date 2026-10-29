@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { PlayData } from "@/store/play-list";
+import type { AutoLyricsProgress, AutoLyricsResult } from "@shared/auto-lyrics/service-types";
 
+import { startDesktopLyricsSync } from "@/common/utils/desktop-lyrics";
 import { getLyricsByBili } from "@/components/lyrics/get-lyrics";
 import { getActiveLyricIndex, parseLrc, useLyricsStore } from "@/store/lyrics";
 import { usePlayList } from "@/store/play-list";
+import { useSettings } from "@/store/settings";
 
 vi.mock("@/components/lyrics/get-lyrics", () => ({
   getLyricsByBili: vi.fn(),
@@ -27,13 +30,30 @@ const setPlayItem = (item: PlayData | undefined) => {
 
 const getElectronStoreMock = () => (window as any).electron.getStore as ReturnType<typeof vi.fn>;
 
+const autoStart = vi.fn<typeof window.electron.autoLyrics.start>();
+const autoProgress = vi.fn<typeof window.electron.autoLyrics.onProgress>();
+const unsubscribe = vi.fn();
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   useLyricsStore.getState().reset();
   setPlayItem(undefined);
+  autoStart.mockResolvedValue({ key: "BV1xx-100", status: "unidentified", timings: {} });
+  autoProgress.mockReturnValue(unsubscribe);
   (window as any).electron = {
     getStore: vi.fn().mockResolvedValue(undefined),
     setStore: vi.fn().mockResolvedValue(undefined),
+    autoLyrics: { start: autoStart, onProgress: autoProgress },
+    syncDesktopLyrics: vi.fn(),
+    onDesktopLyricsToggleRequested: vi.fn().mockReturnValue(() => {}),
+    onDesktopLyricsLockToggleRequested: vi.fn().mockReturnValue(() => {}),
   };
 });
 
@@ -88,6 +108,185 @@ describe("getActiveLyricIndex", () => {
 });
 
 describe("useLyricsStore", () => {
+  test("loads lyrics on playback changes with both lyrics bars disabled", async () => {
+    useSettings.setState({ showTopLyrics: false, showDesktopLyrics: false });
+    usePlayList.setState({ playId: undefined });
+    const stopSync = startDesktopLyricsSync();
+    try {
+      const item = createPlayItem();
+      setPlayItem(item);
+      usePlayList.setState({ playId: item.id, list: [item] });
+      await flushPromises();
+      expect(autoStart).toHaveBeenCalledWith({ bvid: item.bvid, cid: 100 });
+    } finally {
+      stopSync();
+    }
+  });
+
+  const coarse = (key = "BV1xx-100"): AutoLyricsProgress => ({
+    key,
+    phase: "coarse",
+    coarse: { offsetSec: 0, confidence: 1 },
+    lyrics: { lyrics: "[00:01.00]coarse", tLyrics: "[00:01.00]粗对齐" },
+    timings: {},
+  });
+
+  test("applies coarse auto lyrics before replacing them with the final result", async () => {
+    const result = deferred<AutoLyricsResult>();
+    const subtitles = deferred<LyricLine[]>();
+    autoStart.mockReturnValue(result.promise);
+    vi.mocked(getLyricsByBili).mockReturnValue(subtitles.promise);
+    setPlayItem(createPlayItem());
+    const loading = useLyricsStore.getState().load();
+    await flushPromises();
+    expect(autoStart).toHaveBeenCalledWith({ bvid: "BV1xx", cid: 100 });
+    expect(useLyricsStore.getState().autoStatus).toBe("自动歌词识别中...");
+
+    const progress = autoProgress.mock.calls[0][0];
+    progress(coarse("another-key"));
+    expect(useLyricsStore.getState().lyrics).toEqual([]);
+    progress(coarse());
+    expect(useLyricsStore.getState()).toMatchObject({
+      lyrics: [{ time: 1000, text: "coarse" }],
+      translatedLyrics: [{ time: 1000, text: "粗对齐" }],
+      isLoading: false,
+      isLoaded: true,
+    });
+    subtitles.resolve([{ time: 0, text: "late subtitles" }]);
+    await loading;
+    expect(useLyricsStore.getState().lyrics[0].text).toBe("coarse");
+
+    result.resolve({
+      key: "BV1xx-100",
+      status: "matched",
+      timings: {},
+      lyrics: { lyrics: "[00:02.00]final", tLyrics: "[00:02.00]最终" },
+    });
+    await flushPromises();
+    expect(useLyricsStore.getState().lyrics).toEqual([{ time: 2000, text: "final" }]);
+    expect(useLyricsStore.getState().translatedLyrics).toEqual([{ time: 2000, text: "最终" }]);
+    expect(useLyricsStore.getState().autoStatus).toBeUndefined();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  test("manual adoption invalidates both coarse and final auto lyrics", async () => {
+    const result = deferred<AutoLyricsResult>();
+    autoStart.mockReturnValue(result.promise);
+    setPlayItem(createPlayItem());
+    await useLyricsStore.getState().load();
+    const progress = autoProgress.mock.calls[0][0];
+
+    useLyricsStore.getState().applyLyrics("[00:03.00]manual", "[00:03.00]手动");
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    progress(coarse());
+    result.resolve({ key: "BV1xx-100", status: "matched", timings: {}, lyrics: { lyrics: "[00:02.00]auto" } });
+    await flushPromises();
+
+    expect(useLyricsStore.getState().lyrics).toEqual([{ time: 3000, text: "manual" }]);
+    expect(useLyricsStore.getState().translatedLyrics).toEqual([{ time: 3000, text: "手动" }]);
+    expect(useLyricsStore.getState().autoStatus).toBeUndefined();
+  });
+
+  test("clears coarse lyrics when the final result has no reference", async () => {
+    const result = deferred<AutoLyricsResult>();
+    const subtitles = deferred<LyricLine[]>();
+    autoStart.mockReturnValue(result.promise);
+    vi.mocked(getLyricsByBili).mockReturnValue(subtitles.promise);
+    setPlayItem(createPlayItem());
+    const loading = useLyricsStore.getState().load();
+    await flushPromises();
+    autoProgress.mock.calls[0][0](coarse());
+
+    result.resolve({ key: "BV1xx-100", status: "no-reference", timings: {} });
+    await flushPromises();
+    subtitles.resolve([{ time: 0, text: "late subtitles" }]);
+    await loading;
+
+    expect(useLyricsStore.getState()).toMatchObject({
+      lyrics: [],
+      translatedLyrics: [],
+      autoStatus: "自动歌词：没有找到可对齐的原曲",
+      isLoading: false,
+      isLoaded: true,
+    });
+  });
+
+  test("shows cached auto lyrics immediately and requests algorithm revalidation", async () => {
+    const result = deferred<AutoLyricsResult>();
+    autoStart.mockReturnValue(result.promise);
+    getElectronStoreMock().mockResolvedValue({
+      "BV1xx-100": { source: "auto", lyrics: "[00:01.00]cached", algoVersion: "old" },
+    });
+    setPlayItem(createPlayItem());
+    await useLyricsStore.getState().load();
+
+    expect(useLyricsStore.getState().lyrics).toEqual([{ time: 1000, text: "cached" }]);
+    expect(autoStart).toHaveBeenCalledTimes(1);
+    expect(getLyricsByBili).not.toHaveBeenCalled();
+
+    result.resolve({ key: "BV1xx-100", status: "matched", timings: {}, lyrics: { lyrics: "[00:02.00]refreshed" } });
+    await flushPromises();
+    expect(useLyricsStore.getState().lyrics).toEqual([{ time: 2000, text: "refreshed" }]);
+  });
+
+  test.each<MusicLyrics>([
+    { source: "manual", lyrics: "[00:01.00]manual" },
+    { lyrics: "[00:01.00]legacy manual" },
+    { source: "auto", lyrics: "[00:01.00]adjusted", offset: 500 },
+    { source: "auto", lyrics: "[00:01.00]zero offset", offset: 0 },
+  ])("preserves manual or offset-adjusted cached lyrics: %j", async cached => {
+    getElectronStoreMock().mockResolvedValue({ "BV1xx-100": cached });
+    setPlayItem(createPlayItem());
+    await useLyricsStore.getState().load();
+
+    expect(useLyricsStore.getState().lyrics).toEqual(parseLrc(cached.lyrics));
+    expect(useLyricsStore.getState().offset).toBe(cached.offset ?? 0);
+    expect(autoStart).not.toHaveBeenCalled();
+  });
+
+  test("switching songs invalidates the previous auto request without unsubscribing the new one", async () => {
+    const first = deferred<AutoLyricsResult>();
+    const second = deferred<AutoLyricsResult>();
+    const stopFirst = vi.fn();
+    const stopSecond = vi.fn();
+    autoStart.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    autoProgress.mockReturnValueOnce(stopFirst).mockReturnValueOnce(stopSecond);
+    setPlayItem(createPlayItem());
+    await useLyricsStore.getState().load();
+    const firstProgress = autoProgress.mock.calls[0][0];
+
+    setPlayItem(createPlayItem({ bvid: "BVsecond", cid: "200" }));
+    await useLyricsStore.getState().load();
+    expect(stopFirst).toHaveBeenCalledTimes(1);
+    autoProgress.mock.calls[1][0](coarse("BVsecond-200"));
+    firstProgress(coarse());
+    first.resolve({ key: "BV1xx-100", status: "matched", timings: {}, lyrics: { lyrics: "[00:02.00]stale" } });
+    await flushPromises();
+
+    expect(useLyricsStore.getState().cacheKey).toBe("BVsecond-200");
+    expect(useLyricsStore.getState().lyrics).toEqual([{ time: 1000, text: "coarse" }]);
+    expect(stopSecond).not.toHaveBeenCalled();
+    second.resolve({ key: "BVsecond-200", status: "matched", timings: {}, lyrics: { lyrics: "[00:04.00]second" } });
+    await flushPromises();
+    expect(useLyricsStore.getState().lyrics).toEqual([{ time: 4000, text: "second" }]);
+    expect(stopSecond).toHaveBeenCalledTimes(1);
+  });
+
+  test("reset unsubscribes and invalidates pending auto lyrics", async () => {
+    const result = deferred<AutoLyricsResult>();
+    autoStart.mockReturnValue(result.promise);
+    setPlayItem(createPlayItem());
+    await useLyricsStore.getState().load();
+    const progress = autoProgress.mock.calls[0][0];
+    useLyricsStore.getState().reset();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    progress(coarse());
+    result.resolve({ key: "BV1xx-100", status: "matched", timings: {}, lyrics: { lyrics: "[00:02.00]stale" } });
+    await flushPromises();
+    expect(useLyricsStore.getState()).toMatchObject({ cacheKey: null, lyrics: [], isLoaded: false });
+    expect(useLyricsStore.getState().autoStatus).toBeUndefined();
+  });
+
   test("uses cached lyrics without requesting the network", async () => {
     getElectronStoreMock().mockResolvedValue({
       "BV1xx-100": { lyrics: "[00:01.00]cached line" },

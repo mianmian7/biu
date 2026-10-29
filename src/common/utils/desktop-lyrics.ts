@@ -86,15 +86,12 @@ export function startDesktopLyricsSync() {
   isSyncStarted = true;
   syncPayload();
 
-  // 主窗口可能没有开启顶部歌词栏/全屏播放器，桌面歌词开启时需要主动触发歌词加载
-  if (useSettings.getState().showDesktopLyrics) {
-    void useLyricsStore.getState().load();
-  }
+  // 播放时就加载共享歌词，不依赖歌词视图是否开启
+  void useLyricsStore.getState().load();
 
   const unsubscribers = [
     usePlayList.subscribe((state, prevState) => {
-      if (state.playId !== prevState.playId && useSettings.getState().showDesktopLyrics) {
-        // 桌面歌词单独开启时（顶部歌词栏关闭）也能在切歌后加载新歌词
+      if (state.playId !== prevState.playId) {
         void useLyricsStore.getState().load();
       }
       if (state.playId !== prevState.playId || state.isPlaying !== prevState.isPlaying) {
