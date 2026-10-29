@@ -340,3 +340,16 @@ function refineWithOnset(feat: AudioFeatureSet, timestampSec: number, radiusSec 
   }
   return timestampSec;
 }
+
+/**
+ * How well a reference explains the Live, for choosing between candidate songs. Coarse confidence cannot do this:
+ * a 12 s chroma window of a different song by the same band often scores higher than the right song. The per-line
+ * path can: mean line confidence times the share of confident lines (lyrics-proto cross bench: same song ≥ 0.79,
+ * different song ≤ 0.67). A TV-size Live scores low for every candidate because GapDTW cannot skip the cut
+ * sections, so arbitration leaves it unidentified rather than guessing.
+ */
+export function verifyScore(lines: readonly AlignResult[]): number {
+  if (!lines.length) return 0;
+  const mean = lines.reduce((sum, line) => sum + line.confidence, 0) / lines.length;
+  return mean * (lines.filter(line => !line.uncertain).length / lines.length);
+}
