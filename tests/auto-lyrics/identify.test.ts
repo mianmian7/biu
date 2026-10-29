@@ -7,12 +7,14 @@ import {
   identifyPrimaryQueries,
   identifyQueries,
   identifyRules,
+  artistInText,
   nameForms,
   normalize,
   sameName,
   strongMatch,
   titleVariants,
 } from "../../shared/auto-lyrics/identify";
+import { romanizeKana } from "../../shared/auto-lyrics/kana";
 import { buildSearchQueries } from "../../shared/auto-lyrics/title-candidates";
 
 const song: SongCandidate = { id: 1, name: "名もなき何もかも", artists: ["トゲナシトゲアリ"], duration: 189 };
@@ -48,6 +50,73 @@ describe("rule identification", () => {
     expect(identifyRules({ ...input, tid: 17 }, [song]).status).toBe("matched");
     expect(identifyRules({ ...input, tid: 1003, title: song.name }, [song]).status).toBe("matched");
     expect(identifyRules({ ...input, tid: 17, title: "游戏实况" }, [song]).status).toBe("not-music");
+  });
+
+  it("represents an artist by the studio release, not a festival recording (BV1hKEUzEEto p14)", () => {
+    const heavenly = (id: number, name: string, artists: string[], duration: number) => ({
+      id,
+      name,
+      artists,
+      duration,
+    });
+    const result = identifyRules(
+      {
+        title: "无刺有刺/TOGENASHI TOGEARI-utopia上海",
+        pageTitle: "Heavenly Me",
+        duration: 217,
+        tid: 29,
+        ownerName: "Daisy_XL",
+      },
+      [
+        heavenly(2699629221, "Heavenly Me", ["AIYUE", "理名", "塞壬唱片-MSR"], 191.327),
+        heavenly(2706342068, "Heavenly Me（Utopia音乐节.ver）", ["理名"], 220.8),
+        heavenly(3362129888, "Heavenly Me", ["8-102_6"], 194.133),
+      ],
+    );
+    expect(result.status).toBe("ambiguous");
+    expect(result.status === "ambiguous" && result.contenders.map(c => c.id)).toContain(2699629221);
+    expect(result.status === "ambiguous" && result.contenders.map(c => c.id)).not.toContain(2706342068);
+  });
+
+  it("recognizes a kana artist written in romaji and its credited releases (BV1hKEUzEEto p3/p5/p12)", () => {
+    expect(romanizeKana("トゲナシトゲアリ")).toBe("togenashitogeari");
+    expect(romanizeKana("きゃりーぱみゅぱみゅ")).toBe("kyariipamyupamyu");
+    expect(romanizeKana("ハッチ")).toBe("hatchi");
+    expect(romanizeKana("米津玄師")).toBeUndefined();
+    expect(artistInText("トゲナシトゲアリ", "无刺有刺/TOGENASHI TOGEARI-utopia上海")).toBe(true);
+    expect(artistInText("トゲナシトゲアリ", "Girls Band Cry")).toBe(false);
+    const video = { title: "无刺有刺/TOGENASHI TOGEARI-utopia上海", tid: 29, ownerName: "Daisy_XL" };
+    const toge = ["トゲナシトゲアリ"];
+    expect(
+      identifyRules({ ...video, pageTitle: "視界の隅 朽ちる音", duration: 195 }, [
+        { id: 1, name: "視界の隅 朽ちる音 (新川崎（仮）)", artists: toge, duration: 189 },
+        { id: 2, name: "視界の隅 朽ちる音", artists: ["昼歌里Hiru_u"], duration: 191 },
+      ]),
+    ).toMatchObject({ status: "matched", song: { id: 1 } });
+    expect(
+      identifyRules({ ...video, pageTitle: "雑踏、僕らの街", duration: 197 }, [
+        { id: 3, name: "雑踏、僕らの街", artists: toge, duration: 184 },
+        { id: 4, name: "雑踏、僕らの街(中文版)", artists: ["HANA", "洛天依"], duration: 185 },
+        { id: 5, name: "雑踏、僕らの街", artists: ["Hanser"], duration: 184 },
+      ]),
+    ).toMatchObject({ status: "matched", song: { id: 3 } });
+    // Without the artist in the title, the credited releases outnumber the cover.
+    expect(
+      identifyRules({ ...input, title: "視界の隅 朽ちる音 MV", duration: 189 }, [
+        { id: 1, name: "視界の隅 朽ちる音 (新川崎（仮）)", artists: toge, duration: 189 },
+        { id: 6, name: "視界の隅 朽ちる音 (新川崎（仮）)", artists: toge, duration: 189 },
+        { id: 2, name: "視界の隅 朽ちる音", artists: ["昼歌里Hiru_u"], duration: 191 },
+      ]),
+    ).toMatchObject({ status: "matched", song: { id: 1 } });
+  });
+
+  it("treats concert parts between songs as not music, but keeps songs named Intro", () => {
+    const live = { title: "无刺有刺/TOGENASHI TOGEARI-utopia上海", duration: 112, tid: 29, ownerName: "Daisy_XL" };
+    for (const pageTitle of ["intro", "MC2", "Encore", "SE"])
+      expect(identifyRules({ ...live, pageTitle }, []).status).toBe("not-music");
+    expect(identifyPrimaryQueries({ ...live, pageTitle: "intro" })).toEqual([]);
+    const intro = { id: 7, name: "Intro", artists: ["The xx"], duration: 128 };
+    expect(identifyRules({ ...input, title: "The xx - Intro", duration: 128 }, [intro]).status).toBe("matched");
   });
 
   it("rejects collections, tutorials and karaoke before requesting searches", () => {

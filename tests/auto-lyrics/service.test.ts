@@ -124,7 +124,7 @@ function arbitration(scores: Record<number, number>) {
 describe("AutoLyricsService", () => {
   it.each([
     [0.44, "no-reference"],
-    [0.6, "matched"],
+    [0.5, "matched"],
   ] as const)("gates single-song alignment score %s as %s", async (score, status) => {
     const { service, dependencies } = setup();
     const align = dependencies.align.getMockImplementation()!;
@@ -439,6 +439,34 @@ describe("AutoLyricsService", () => {
       expect(result.contenders).toHaveLength(2);
       expect(entries.size).toBe(0);
     }
+  });
+
+  it("accepts the top search hit when it is the only contender with a reference", async () => {
+    for (const [scores, status] of [
+      [{ 42: 0.52 }, "matched"],
+      [{ 43: 0.52 }, "unidentified"],
+      [{ 42: 0.45 }, "unidentified"],
+    ] as const) {
+      const { service, dependencies } = arbitration(scores);
+      dependencies.sources.references.mockImplementation((async (candidate: typeof song) =>
+        candidate.id in scores ? [{ ...reference, bvid: `BVref${candidate.id}` }] : []) as never);
+      const align = dependencies.align.getMockImplementation()!;
+      dependencies.align.mockImplementation(async (...args) => {
+        const aligned = await align(...args);
+        return { ...aligned, lines: aligned.lines.map(line => ({ ...line, uncertain: false })) };
+      });
+      const result = await service.start(params);
+      expect(result.status).toBe(status);
+      if (status === "matched") expect(result.song?.id).toBe(42);
+    }
+  });
+
+  it("orders ambiguous contenders by NetEase search rank", async () => {
+    const { service, dependencies } = setup();
+    const near = { ...song, id: 44, artists: ["Near"], duration: params.duration };
+    dependencies.sources.search.mockResolvedValue([{ ...song, duration: params.duration + 30 }, near]);
+    const result = await service.identify(params);
+    expect(result).toMatchObject({ status: "ambiguous", contenders: [{ id: song.id }, { id: 44 }] });
   });
 
   it("collects every primary query before handing ambiguous artists to alignment", async () => {

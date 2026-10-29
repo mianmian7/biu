@@ -32,6 +32,23 @@ describe("LRC", () => {
     ).toEqual([{ idx: 0, studio_start: 2, text: "いつだって" }]);
   });
 
+  it("drops English staff credits but keeps English lyrics", () => {
+    expect(
+      parseLrc(
+        [
+          "[00:00.000] Produced by : 玉井健二(agehasprings)",
+          "[00:00.250] Programming & All Instruments：大濱健悟 (agehasprings)",
+          "[00:00.300] Recorded by 森真樹 (agehasprings)",
+          "[00:00.400] Recorded at Studio Device, prime sound studio form",
+          "[00:00.500] Directed & Organized by 曲谷鴻輝 (agehasprings)",
+          "[00:00.550] Mastered by 茅根裕司 (Sony Music Studios Tokyo)",
+          "[00:01.00]Stand by me",
+          "[00:02.00]Mixed feelings tonight",
+        ].join("\n"),
+      ).map(line => line.text),
+    ).toEqual(["Stand by me", "Mixed feelings tonight"]);
+  });
+
   it("round-trips aligned text and timestamps to centisecond precision", () => {
     const lines = parseLrc("[00:01.23]first [chorus]\n[00:59.999]second\n[02:00.10]third");
     const aligned = lines.map(line => ({

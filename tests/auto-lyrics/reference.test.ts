@@ -87,6 +87,14 @@ describe("studio reference selection", () => {
     expect(checkVocalOnset(pcm, rate, 20)).toBe(false);
   });
 
+  it("only requires an audible reference for a cold open", () => {
+    const rate = 1000;
+    // Quiet upload of 声なき魚: energy ≈ 0.002, below the onset deltas.
+    const cold = Float32Array.from({ length: rate * 6 }, (_, i) => Math.sin(i * 0.3) * 0.06);
+    expect(checkVocalOnset(cold, rate, 0.42)).toBe(true);
+    expect(checkVocalOnset(new Float32Array(rate * 6), rate, 0.42)).toBe(false);
+  });
+
   it("does not mistake constant energy or a gradual fade for an onset", () => {
     expect(checkVocalOnset(new Float32Array(5000).fill(0.5), 1000, 2)).toBe(false);
     const fade = Float32Array.from({ length: 5000 }, (_, i) => 0.1 + i / 100000);

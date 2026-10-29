@@ -15,10 +15,10 @@ import { generateLrc, mapCompanionLrc, parseLrc } from "../../shared/auto-lyrics
 import { checkVocalOnset, rankReferences } from "../../shared/auto-lyrics/reference";
 import { isDecodeUnavailable } from "./ffmpeg-resolve";
 
-// Correct device matches scored 0.71–0.88; the wrong 空の箱 reference scored 0.44.
-const VERIFY_MIN_SINGLE = 0.6;
+// Correct device matches scored 0.71–0.88 (a rearranged festival Heavenly Me 0.52); the wrong 空の箱 reference 0.44.
+const VERIFY_MIN_SINGLE = 0.5;
 
-export const AUTO_LYRICS_ALGO_VERSION = "p1-gap-dtw-4";
+export const AUTO_LYRICS_ALGO_VERSION = "p1-gap-dtw-5";
 
 export interface AutoLyricsDependencies {
   sources: {
@@ -174,7 +174,12 @@ export class AutoLyricsService {
         if (candidates.size) break;
       }
     }
-    return identifyRules(params, [...candidates.values()]);
+    const identified = identifyRules(params, [...candidates.values()]);
+    if (identified.status !== "ambiguous") return identified;
+    // Search order: NetEase ranks the canonical release of a shared title first.
+    const rank = [...candidates.keys()];
+    identified.contenders.sort((a, b) => rank.indexOf(a.id) - rank.indexOf(b.id));
+    return identified;
   }
 
   /** Lyrics, a version-checked reference and alignment for one candidate song against the shared Live audio. */
@@ -361,11 +366,14 @@ export class AutoLyricsService {
         .filter(a => a.status === "matched")
         .sort((a, b) => (b.verifyScore ?? 0) - (a.verifyScore ?? 0));
       const [first, second] = best;
+      // The top search hit as the only contender with a reference needs no lead, just the single-song fit.
+      const loneTopHit = !second && first?.song.id === songs[0].id && (first.verifyScore ?? 0) >= VERIFY_MIN_SINGLE;
       const chosen =
         arbitrate &&
         first &&
-        (first.verifyScore ?? 0) >= VERIFY_MIN_SCORE &&
-        (!second || (first.verifyScore ?? 0) - (second.verifyScore ?? 0) >= VERIFY_MIN_MARGIN)
+        (loneTopHit ||
+          ((first.verifyScore ?? 0) >= VERIFY_MIN_SCORE &&
+            (!second || (first.verifyScore ?? 0) - (second.verifyScore ?? 0) >= VERIFY_MIN_MARGIN)))
           ? first
           : arbitrate
             ? undefined

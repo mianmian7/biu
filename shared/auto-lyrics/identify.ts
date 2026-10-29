@@ -1,4 +1,5 @@
 /** Rule-only port of the archive's song identification. All durations are seconds. */
+import { romanizeKana } from "./kana";
 import { buildSearchQueries } from "./title-candidates";
 
 export interface IdentifyInput {
@@ -23,7 +24,7 @@ export type Identification =
   | { status: "ambiguous"; contenders: SongCandidate[]; confidence: number }
   | { status: "unidentified" | "not-music" | "collection"; confidence: number };
 
-export const LIVE = /(?<![a-z])(?:live|cover)(?![a-z])|现场|現場|翻唱|カバー|ライブ|演唱[会會]/i;
+export const LIVE = /(?<![a-z])(?:live|cover)(?![a-z])|现场|現場|音乐节|音樂節|翻唱|カバー|ライブ|演唱[会會]/i;
 export const WRONG_VERSION =
   /(?<![a-z])(?:instrumental|remix|off[\s_-]*vocal|karaoke)(?![a-z])|伴奏|纯音乐|純音楽|カラオケ|ニコカラ/i;
 export const COLLECTION = /合集|全集|串烧|串燒|メドレー|全曲|(?<![a-z])(?:medley|playlist)(?![a-z])/i;
@@ -170,6 +171,41 @@ export function strongMatch(title: string, text: string): boolean {
   return normalize(text).includes(key);
 }
 
+/** A trailing credit such as 視界の隅 朽ちる音 (新川崎(仮)), including nested brackets. */
+function withoutTrailingNote(title: string): string {
+  title = title.normalize("NFKC").trim();
+  if (!title.endsWith(")")) return title;
+  let depth = 0;
+  for (let i = title.length - 1; i > 0; i--) {
+    if (title[i] === ")") depth++;
+    else if (title[i] === "(" && --depth === 0) return title.slice(0, i).trim() || title;
+  }
+  return title;
+}
+
+/** Shi/si, chi/ti, tsu/tu, fu/hu and ji/zi are the same name; long vowels may be written once or twice. */
+const latinKey = (text: string) =>
+  normalize(text)
+    .replace(/sh(?=i)/g, "s")
+    .replace(/ch(?=i)/g, "t")
+    .replace(/ts(?=u)/g, "t")
+    .replace(/f(?=u)/g, "h")
+    .replace(/j(?=i)/g, "z")
+    .replace(/([aeiou])\1/g, "$1")
+    .replace(/ou/g, "o");
+
+/** The artist appears in the title, also as romaji of a kana name: トゲナシトゲアリ = TOGENASHI TOGEARI. */
+export function artistInText(artist: string, text: string): boolean {
+  if (strongMatch(artist, text)) return true;
+  const romaji = romanizeKana(artist);
+  if (!romaji || romaji.length < 6) return false;
+  const key = latinKey(romaji);
+  return text
+    .normalize("NFKC")
+    .split(/[^a-zA-Z\s]+/)
+    .some(span => latinKey(span).includes(key));
+}
+
 interface RuleMatch {
   song: SongCandidate;
   title: string;
@@ -196,7 +232,9 @@ export function ruleMatches(
       song.duration > 1200
     )
       continue;
-    const titles = songTitles(song)
+    const artistMatch = song.artists.some(a => artistInText(a, context));
+    const names = songTitles(song);
+    const titles = [...new Set([...names, ...names.map(withoutTrailingNote)])]
       .reverse()
       .filter(t => strongMatch(t, text));
     const title = titles[0];
@@ -207,7 +245,7 @@ export function ruleMatches(
       song,
       title,
       titles: titles.map(normalize),
-      artistMatch: song.artists.some(a => strongMatch(a, context)),
+      artistMatch,
     });
   }
   return matches;
@@ -259,9 +297,14 @@ export function chooseRule(
   };
 }
 
+/** Concert parts between songs: "intro", "MC", "encore", "SE". */
+const STAGE_PART =
+  /^(?:intro|outro|opening|ending|overture|mc\d*|se\d*|bgm|encore|talk|アンコール|開演|开场|序曲|谢幕)$/;
+
 /** "weak": no music category or wording, but a quoted name such as 港刺《爆ぜて咲く》 may still be a song. */
 function classify(input: IdentifyInput): "not-music" | "collection" | "weak" | undefined {
   const context = `${input.title}\n${input.pageTitle ?? ""}`;
+  if (STAGE_PART.test(normalize(clean(input.pageTitle ?? "")))) return "not-music";
   if (NON_SONG.test(context) || WRONG_VERSION.test(context)) return "not-music";
   if (COLLECTION.test(songText(input.title, input.pageTitle))) return "collection";
   if (!MUSIC_TIDS.has(input.tid) && !MUSIC_TITLE.test(context) && !LIVE.test(context))

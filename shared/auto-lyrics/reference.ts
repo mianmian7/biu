@@ -46,11 +46,13 @@ export function rankReferences(
  * Energy-onset sanity check, not vocal separation. Within ±1.5 s of the first lyric,
  * accept either a sharp 100 ms jump or a sustained 500 ms entrance from a quieter bed.
  * A small flicker on an already-flat bed is not an onset. Accompaniment can still pass.
+ * A cold open (声なき魚 sings at 0.42 s) has no bed to rise from; there the reference only has to be audible.
  */
 export function checkVocalOnset(pcm: Float32Array, sampleRate: number, firstLineSec: number): boolean {
   if (!Number.isFinite(sampleRate) || sampleRate <= 0 || !Number.isFinite(firstLineSec) || firstLineSec < 0) {
     return false;
   }
+  if (firstLineSec < 1.5) return audible(pcm, sampleRate, firstLineSec + 1.5);
   return (
     hasEnergyRise(pcm, sampleRate, firstLineSec, 0.1, 1.6, 0.01) ||
     hasEnergyRise(pcm, sampleRate, firstLineSec, 0.5, 1.6, 0.002)
@@ -79,4 +81,11 @@ function hasEnergyRise(
     if (after >= before * minRatio && after - before >= minDelta) return true;
   }
   return false;
+}
+
+function audible(pcm: Float32Array, sampleRate: number, untilSec: number): boolean {
+  const end = Math.min(pcm.length, Math.ceil(untilSec * sampleRate));
+  let sum = 0;
+  for (let i = 0; i < end; i++) sum += pcm[i] * pcm[i];
+  return end > 0 && sum / end >= 1e-4;
 }

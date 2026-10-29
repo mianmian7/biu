@@ -3,6 +3,9 @@ import type { AlignLine, AlignResult } from "./types";
 /** NetEase credit rows such as "作词 : xxx" are metadata, not sung lines. */
 const CREDIT =
   /^(?:作词|作詞|作曲|编曲|編曲|制作人|製作人|监制|混音|母带|和声|吉他|贝斯|鼓|键盘|弦乐|词|曲|lyrics|lyricist|composer|arranger|producer)\s*[:：]/i;
+/** English staff rows: "Mixed by 熊坂敏", "Recorded at Studio Device", "Programming & All Instruments：大濱健悟". */
+const STAFF_CREDIT =
+  /^(?:produced|programm(?:ed|ing)|recorded|recording|mixed|mixing|mastered|mastering|directed|organized|arranged|composed|written|engineered|edited|vocals?|chorus|guitars?|bass|drums|keyboards?|piano|strings|all\s+instruments)\b[^:：]*?(?:\s(?:by|at)\s|[:：])/i;
 
 /** Expand every time tag, discard empty lyrics and credits, and assign indices in time order. */
 export function parseLrc(source: string): AlignLine[] {
@@ -10,7 +13,7 @@ export function parseLrc(source: string): AlignLine[] {
   for (const row of source.split(/\r?\n/)) {
     const tags = [...row.matchAll(/\[(\d+):(\d{2})(?:[.:](\d{1,3}))?\]/g)];
     const text = row.replace(/\[\d+:\d{2}(?:[.:]\d{1,3})?\]/g, "").trim();
-    if (!text || CREDIT.test(text)) continue;
+    if (!text || CREDIT.test(text) || STAFF_CREDIT.test(text)) continue;
     for (const tag of tags) {
       const seconds = Number(tag[2]);
       if (seconds >= 60) continue;
