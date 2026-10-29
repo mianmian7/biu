@@ -23,6 +23,7 @@ const BRACKET_PATTERN = /[【[（(〔［｛]([^】\]）)〕］｝]*)[】\]）)�
 const SEPARATOR_PATTERN = /\s*[-–—－_|｜│┃/／·・~～&＆、]\s*/;
 const SEPARATOR_PATTERN_ALL = new RegExp(SEPARATOR_PATTERN.source, "g");
 const TOPIC_TAG_PATTERN = /[#＃][^\s#＃]+/g;
+const LATIN_WORD = /^[a-z0-9'.]*[a-z][a-z0-9'.]*$/i;
 
 function normalizeForCompare(text?: string): string {
   if (!text) return "";
@@ -83,11 +84,16 @@ export function buildTitleCandidates(raw?: string): string[] {
   };
   const pushSegments = (source: string) => {
     const cleaned = cleanTrackTitle(source);
-    cleaned
-      .replace(SEPARATOR_PATTERN_ALL, " ")
-      .split(/\s+/)
-      .filter(part => part.trim().length >= 2)
-      .forEach(push);
+    // Consecutive Latin words stay together: "Girls Band Cry" is one name, not Girls / Band / Cry.
+    const parts: string[] = [];
+    let latinRun = false;
+    for (const part of cleaned.replace(SEPARATOR_PATTERN_ALL, " ").split(/\s+/)) {
+      const latin = LATIN_WORD.test(part);
+      if (latin && latinRun) parts[parts.length - 1] += ` ${part}`;
+      else parts.push(part);
+      latinRun = latin;
+    }
+    parts.filter(part => part.trim().length >= 2).forEach(push);
     cleaned.split(SEPARATOR_PATTERN).forEach(push);
     push(cleaned);
   };

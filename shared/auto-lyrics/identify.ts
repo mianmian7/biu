@@ -144,10 +144,11 @@ export function strongMatch(title: string, text: string): boolean {
         .normalize("NFKC")
         .toLowerCase()
         .match(/[a-z0-9]+/g) ?? [];
-    return (
-      words.length > 0 &&
-      new RegExp(`(?<![a-z0-9])${words.join("[\\W_]*")}(?![a-z0-9])`, "i").test(text.normalize("NFKC"))
-    );
+    if (!words.length) return false;
+    const pattern = `(?<![a-z0-9])${words.join("[\\W_]*")}(?![a-z0-9])`;
+    if (!new RegExp(pattern, "i").test(text.normalize("NFKC"))) return false;
+    // A one-word title must not be the first word of a longer English name: GIRLS vs "Girls Band Cry".
+    return words.length > 1 || new RegExp(`${pattern}(?![\\t ]+[a-z])`, "i").test(clean(text));
   }
   if (key.length < 3) {
     return [...text.matchAll(BRACKETS)]

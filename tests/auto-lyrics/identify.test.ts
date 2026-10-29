@@ -12,6 +12,7 @@ import {
   strongMatch,
   titleVariants,
 } from "../../shared/auto-lyrics/identify";
+import { buildSearchQueries } from "../../shared/auto-lyrics/title-candidates";
 
 const song: SongCandidate = { id: 1, name: "名もなき何もかも", artists: ["トゲナシトゲアリ"], duration: 189 };
 const input: IdentifyInput = {
@@ -94,5 +95,43 @@ describe("rule identification", () => {
     expect(strongMatch("花", "花火 MV")).toBe(false);
     expect(strongMatch("art", "cartwheel")).toBe(false);
     expect(strongMatch("Don't stop", "DON'T_STOP MV")).toBe(true);
+  });
+
+  // Real Mac E2E titles that NetEase search matched to The Kid LAROI "GIRLS".
+  const gbcTitles = {
+    BV19T421S7nv:
+      '【Girls Band Cry现场高音质】 トゲナシトゲアリ 皆无其名「名もなき何もかも」 1st LIVE "薄明の序奏”  ガールズバンドクライ',
+    BV15t421K7Le:
+      '【2024年3月16日】トゲナシトゲアリ 1st ONE-MAN LIVE "薄明の序奏” 名もなき何もかも【ガールズバンドクライ】',
+    BV1QhieYjEY2: "【GBC】空の箱 - Girls Band Cry トゲナシトゲアリ(无刺有刺) 3rd ONE-MAN LIVE “咆哮の奏” 2024",
+    BV1dy75z8Enu: "【GIRLS BAND CRY/LIVE】爆ぜて咲く。现场互动拉满，还有最爱的桃仁饭看！",
+  };
+
+  it("does not let a one-word English title match the first word of a longer English name", () => {
+    for (const title of Object.values(gbcTitles)) {
+      expect(strongMatch("GIRLS", title)).toBe(false);
+      expect(strongMatch("girls", title)).toBe(false);
+      const laroi = { id: 9, name: "GIRLS", artists: ["The Kid LAROI"], duration: 200 };
+      expect(identifyRules({ ...input, title, duration: 200 }, [laroi]).status).toBe("unidentified");
+    }
+    expect(strongMatch("GIRLS", "The Kid LAROI - GIRLS (Official Video)")).toBe(true);
+    expect(strongMatch("GIRLS", "【MV】GIRLS / The Kid LAROI")).toBe(true);
+    expect(strongMatch("Lemon", "米津玄師 Lemon MV")).toBe(true);
+    expect(strongMatch("Girls Band Cry", gbcTitles.BV1QhieYjEY2)).toBe(true);
+  });
+
+  it("keeps series names whole in search queries instead of single English words", () => {
+    const sora = buildSearchQueries(gbcTitles.BV1QhieYjEY2);
+    expect(sora).toContain("空の箱");
+    expect(sora).toContain("トゲナシトゲアリ");
+    expect(sora).not.toContain("Girls");
+    expect(sora).not.toContain("Band");
+    expect(buildSearchQueries(gbcTitles.BV19T421S7nv)).toContain("名もなき何もかも");
+    expect(buildSearchQueries(gbcTitles.BV15t421K7Le)).toContain("名もなき何もかも");
+    expect(buildSearchQueries(gbcTitles.BV1dy75z8Enu)).toContain("爆ぜて咲く。");
+    for (const title of Object.values(gbcTitles)) {
+      const queries = [...buildSearchQueries(title), ...identifyQueries({ ...input, title })];
+      expect(queries.filter(q => /^(girls|band|cry)$/i.test(q))).toEqual([]);
+    }
   });
 });
