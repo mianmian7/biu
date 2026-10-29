@@ -4,6 +4,7 @@ import type { IdentifyInput, SongCandidate } from "../../shared/auto-lyrics/iden
 
 import {
   clean,
+  identifyPrimaryQueries,
   identifyQueries,
   identifyRules,
   nameForms,
@@ -118,6 +119,73 @@ describe("rule identification", () => {
     expect(strongMatch("GIRLS", "【MV】GIRLS / The Kid LAROI")).toBe(true);
     expect(strongMatch("Lemon", "米津玄師 Lemon MV")).toBe(true);
     expect(strongMatch("Girls Band Cry", gbcTitles.BV1QhieYjEY2)).toBe(true);
+  });
+
+  // NetEase search results recorded on the Mac (2026-10-29), trimmed to the fields identify uses.
+  const laroiHits = [
+    { id: 1, name: "girls", artists: ["The Kid LAROI"], duration: 153 },
+    { id: 2, name: "GIRLS", artists: ["The Kid LAROI"], duration: 153 },
+  ];
+  const namonakiHits = [
+    {
+      id: 2051267438,
+      name: "名もなき何もかも",
+      artists: ["トゲナシトゲアリ"],
+      duration: 188.784,
+      aliases: ["皆无其名（TV动画 Girls Band Cry 第七话插入曲）"],
+    },
+    {
+      id: 2149020724,
+      name: "名もなき何もかも",
+      artists: ["トゲナシトゲアリ"],
+      duration: 189.118,
+      aliases: ["皆无其名"],
+    },
+    { id: 2629442227, name: "名もなき何もかも", artists: ["Hanser"], duration: 189.309 },
+    {
+      id: 2652041598,
+      name: "名もなき何もかも",
+      artists: ["トゲナシトゲアリ"],
+      duration: 189.118,
+      aliases: ["皆无其名（TV动画 Girls Band Cry 第七话插入曲）"],
+    },
+    { id: 2629306577, name: "名もなき何もかも", artists: ["orenji"], duration: 188.784 },
+    { id: 2645905503, name: "皆无其名", artists: ["翅月"], duration: 188.784 },
+  ];
+  const hazeteHits = [
+    { id: 2077537956, name: "爆ぜて咲く", artists: ["トゲナシトゲアリ"], duration: 221.44, aliases: ["爆裂绽放"] },
+    { id: 2149019978, name: "爆ぜて咲く", artists: ["トゲナシトゲアリ"], duration: 223.061, aliases: ["爆裂绽放"] },
+    { id: 2670185220, name: "爆ぜて咲く", artists: ["闪耀圣爱音", "夢ノ結唱 ROSE"], duration: 221.44 },
+    { id: 2752741984, name: "爆ぜて咲く", artists: ["晓月亨"], duration: 221.16 },
+    { id: 2652041600, name: "爆ぜて咲く", artists: ["トゲナシトゲアリ"], duration: 221.44, aliases: ["爆裂绽放"] },
+  ];
+
+  it("treats a translated title (皆无其名) as the same song and prefers the artist named in the title", () => {
+    const live = { ...input, title: gbcTitles.BV19T421S7nv, duration: 309, tid: 266 };
+    const result = identifyRules(live, [...laroiHits, ...namonakiHits]);
+    expect(result).toMatchObject({
+      status: "matched",
+      song: { name: "名もなき何もかも", artists: ["トゲナシトゲアリ"] },
+    });
+  });
+
+  it("picks the majority artist among same-title covers when the title names no artist", () => {
+    const live = { ...input, title: gbcTitles.BV1dy75z8Enu, duration: 248, tid: 29 };
+    const result = identifyRules(live, [...laroiHits, ...hazeteHits]);
+    expect(result).toMatchObject({ status: "matched", song: { name: "爆ぜて咲く", artists: ["トゲナシトゲアリ"] } });
+    // One original vs one cover stays ambiguous, and so does a tie between two artists.
+    expect(identifyRules(live, [hazeteHits[0], hazeteHits[2]]).status).toBe("unidentified");
+    expect(identifyRules(live, [hazeteHits[0], hazeteHits[1], hazeteHits[2], hazeteHits[3]]).status).toBe(
+      "unidentified",
+    );
+  });
+
+  it("drops commentary after a full stop from search queries", () => {
+    const live = { ...input, title: gbcTitles.BV1dy75z8Enu, duration: 248, tid: 29 };
+    const queries = identifyQueries(live);
+    expect(queries).toContain("爆ぜて咲く");
+    expect(identifyPrimaryQueries(live).filter(q => q.includes("互动拉满"))).toEqual([]);
+    expect(identifyPrimaryQueries({ ...input, title: "爆ぜて咲く。" })).toContain("爆ぜて咲く");
   });
 
   it("keeps series names whole in search queries instead of single English words", () => {

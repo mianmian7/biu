@@ -79,11 +79,14 @@ export function songText(videoTitle: string, pageTitle = ""): string {
     : videoTitle;
 }
 
+/** Text after a full stop is commentary: "爆ぜて咲く。现场互动拉满…" searches as "爆ぜて咲く". */
+const dropChatter = (text: string) => trimNoise(text.replace(/(?<=\S)\s*。[\s\S]*$/, ""));
+
 export function identifyPrimaryQueries(input: IdentifyInput): string[] {
   if (classify(input)) return [];
-  const text = songText(input.title, input.pageTitle);
+  const text = dropChatter(clean(songText(input.title, input.pageTitle)));
   return [
-    ...new Set([clean(text), clean(input.title), ...clean(text).split(/\s+[-|/]\s+/)].filter(q => normalize(q))),
+    ...new Set([text, dropChatter(clean(input.title)), ...text.split(/\s+[-|/]\s+/)].filter(q => normalize(q))),
   ].slice(0, 3);
 }
 
@@ -93,7 +96,7 @@ export function identifyQueries(input: IdentifyInput): string[] {
   const text = songText(input.title, input.pageTitle);
   const initial = identifyPrimaryQueries(input);
   const cleaned = trimNoise(
-    clean(text)
+    dropChatter(clean(text))
       .replace(SHOW_NOISE, " ")
       .replace(/[／/|｜]\s*[a-zA-Z0-9\s._-]*$/, " ")
       .replace(/\s+/g, " "),
@@ -162,6 +165,8 @@ export function strongMatch(title: string, text: string): boolean {
 interface RuleMatch {
   song: SongCandidate;
   title: string;
+  /** Normalized names, aliases and translations of the song that appear in the video title. */
+  titles: string[];
   artistMatch: boolean;
 }
 
@@ -183,38 +188,55 @@ export function ruleMatches(
       song.duration > 1200
     )
       continue;
-    const title = songTitles(song)
+    const titles = songTitles(song)
       .reverse()
-      .find(t => strongMatch(t, text));
+      .filter(t => strongMatch(t, text));
+    const title = titles[0];
     if (!title) continue;
     const escaped = title.normalize("NFKC").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (extra && new RegExp(`${escaped}-[A-Za-z0-9]`).test(text.normalize("NFKC"))) continue;
-    matches.push({ song, title, artistMatch: song.artists.some(a => strongMatch(a, context)) });
+    matches.push({
+      song,
+      title,
+      titles: titles.map(normalize),
+      artistMatch: song.artists.some(a => strongMatch(a, context)),
+    });
   }
   return matches;
 }
 
-/** Ambiguous identities are rejected; artist aliases may connect otherwise equal titles. */
-export function chooseRule(candidates: readonly RuleMatch[], duration: number): RuleMatch | undefined {
-  if (!candidates.length || new Set(candidates.map(c => normalize(c.title))).size > 1) return;
-  const explicit = candidates.filter(c => c.artistMatch);
-  const remaining = [...(explicit.length ? explicit : candidates)];
-  const group = remaining.splice(0, 1);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (let i = remaining.length - 1; i >= 0; i--) {
-      const candidate = remaining[i];
-      if (group.some(c => c.song.artists.some(a => candidate.song.artists.some(b => sameName(a, b))))) {
-        group.push(...remaining.splice(i, 1));
-        changed = true;
-      }
-    }
+/** Splits items into groups that are transitively linked. */
+function components<T>(items: readonly T[], linked: (a: T, b: T) => boolean): T[][] {
+  const groups: T[][] = [];
+  for (const item of items) {
+    const joined = groups.filter(group => group.some(other => linked(item, other)));
+    if (!joined.length) groups.push([item]);
+    else joined[0].push(item, ...joined.slice(1).flatMap(group => groups.splice(groups.indexOf(group), 1)[0]));
   }
-  if (remaining.length) return;
-  return group.sort(
+  return groups;
+}
+
+/**
+ * Ambiguous identities are rejected. A shared name, alias or translation makes one song
+ * (名もなき何もかも = 皆无其名); artist aliases connect its releases. Without the artist in the
+ * video title, covers are ambiguous unless one artist holds a strict majority of the releases.
+ */
+export function chooseRule(
+  candidates: readonly RuleMatch[],
+  duration: number,
+): { match: RuleMatch; majority: boolean } | undefined {
+  if (!candidates.length || components(candidates, (a, b) => a.titles.some(t => b.titles.includes(t))).length > 1)
+    return;
+  const explicit = candidates.filter(c => c.artistMatch);
+  const pool = explicit.length ? explicit : candidates;
+  const groups = components(pool, (a, b) => a.song.artists.some(x => b.song.artists.some(y => sameName(x, y))));
+  const majority = !explicit.length && groups.length > 1;
+  const group = majority ? groups.find(g => g.length * 2 > pool.length) : groups.length === 1 ? groups[0] : undefined;
+  if (!group) return;
+  const match = group.sort(
     (a, b) => Math.abs(a.song.duration - duration) - Math.abs(b.song.duration - duration) || a.song.id - b.song.id,
   )[0];
+  return { match, majority };
 }
 
 function classify(input: IdentifyInput): "not-music" | "collection" | undefined {
@@ -239,7 +261,7 @@ export function identifyRules(
   const matches = candidates.flatMap(song => ruleMatches([song], text, context, extra));
   const unique = [...new Map(matches.map(c => [c.song.id, c])).values()];
   const chosen = chooseRule(unique, input.duration);
-  return chosen
-    ? { status: "matched", song: chosen.song, confidence: chosen.artistMatch ? 0.95 : 0.8 }
-    : { status: "unidentified", confidence: 0 };
+  if (!chosen) return { status: "unidentified", confidence: 0 };
+  const { match, majority } = chosen;
+  return { status: "matched", song: match.song, confidence: match.artistMatch ? 0.95 : majority ? 0.65 : 0.8 };
 }
