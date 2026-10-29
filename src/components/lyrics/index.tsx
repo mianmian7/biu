@@ -28,10 +28,11 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
   const lineRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const [centerPadding, setCenterPadding] = useState(0);
   const playId = usePlayList(s => s.playId);
-  const { lyrics, translatedLyrics, offset, isLoading, autoStatus } = useLyricsStore(
+  const { lyrics, translatedLyrics, romajiLyrics, offset, isLoading, autoStatus } = useLyricsStore(
     useShallow(s => ({
       lyrics: s.lyrics,
       translatedLyrics: s.translatedLyrics,
+      romajiLyrics: s.romajiLyrics,
       offset: s.offset,
       isLoading: s.isLoading,
       autoStatus: s.autoStatus,
@@ -85,6 +86,9 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
     });
     return map;
   }, [translatedLyrics]);
+
+  // 罗马音与原文共用时间戳，按时间对应到行
+  const romajiMap = useMemo(() => new Map(romajiLyrics.map(item => [item.time, item.text])), [romajiLyrics]);
 
   const activeIndex = useMemo(() => {
     const found = getActiveLyricIndex(lyrics, currentMs);
@@ -175,10 +179,10 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
   }, [activeIndex]);
 
   const handleLyricsAdopted = useCallback(
-    (nextLyrics?: string, nextTLyrics?: string) => {
+    (nextLyrics?: string, nextTLyrics?: string, nextRLyrics?: string) => {
       onCloseSearch();
       if (nextLyrics) {
-        useLyricsStore.getState().applyLyrics(nextLyrics, nextTLyrics);
+        useLyricsStore.getState().applyLyrics(nextLyrics, nextTLyrics, nextRLyrics);
       }
     },
     [onCloseSearch],
@@ -225,6 +229,7 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
   const renderLine = (line: LyricLine, index: number) => {
     const isActive = index === activeIndex;
     const translation = translationMap.get(line.time);
+    const romaji = romajiMap.get(line.time);
     const activeWeight = isActive ? "font-extrabold" : "font-normal";
     const activeShadow = isActive ? activeTextBase : "";
 
@@ -247,6 +252,7 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
         >
           {line.text}
         </div>
+        {romaji ? <div className="mt-1 text-sm break-words whitespace-pre-wrap text-white/70">{romaji}</div> : null}
         {translation ? (
           <div className="mt-1 text-sm break-words whitespace-pre-wrap text-white/80">{translation}</div>
         ) : null}

@@ -90,6 +90,14 @@ const DesktopLyrics = () => {
             >
               {payload.text}
             </span>
+            {payload.romaji ? (
+              <span
+                className="mt-1 max-w-full truncate text-center text-white/75"
+                style={{ fontSize: translationFontSize, lineHeight: 1.3, textShadow }}
+              >
+                {payload.romaji}
+              </span>
+            ) : null}
             {payload.translation ? (
               <span
                 className="mt-1 max-w-full truncate text-center text-white/85"

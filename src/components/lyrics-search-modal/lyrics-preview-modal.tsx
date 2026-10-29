@@ -5,13 +5,16 @@ import { Button, Modal, ModalBody, ModalContent, ModalFooter, ModalHeader, Tab, 
 
 import ScrollContainer from "../scroll-container";
 
+type PreviewTab = "original" | "translation" | "romaji";
+
 interface LyricsPreviewModalProps {
   isOpen: boolean;
   onOpenChange: Dispatch<SetStateAction<boolean>>;
   title?: string;
   lyrics: string;
   tlyrics?: string;
-  onAdopt: (lyricsText: string, tLyricsText?: string) => void;
+  rlyrics?: string;
+  onAdopt: (lyricsText: string, tLyricsText?: string, rLyricsText?: string) => void;
   loading?: boolean;
 }
 
@@ -21,17 +24,18 @@ const LyricsPreviewModal = ({
   title,
   lyrics,
   tlyrics,
+  rlyrics,
   onAdopt,
   loading,
 }: LyricsPreviewModalProps) => {
-  const [activeTab, setActiveTab] = useState<"original" | "translation">("original");
+  const [activeTab, setActiveTab] = useState<PreviewTab>("original");
 
   useEffect(() => {
     setActiveTab("original");
-  }, [isOpen, tlyrics]);
+  }, [isOpen, tlyrics, rlyrics]);
 
   const handleAdopt = () => {
-    onAdopt(lyrics?.trim(), tlyrics);
+    onAdopt(lyrics?.trim(), tlyrics, rlyrics);
   };
 
   return (
@@ -39,17 +43,14 @@ const LyricsPreviewModal = ({
       <ModalContent>
         <ModalHeader>{title || "歌词预览"}</ModalHeader>
         <ModalBody className="px-0">
-          <Tabs
-            selectedKey={activeTab}
-            onSelectionChange={key => setActiveTab(key as "original" | "translation")}
-            className="px-4"
-          >
+          <Tabs selectedKey={activeTab} onSelectionChange={key => setActiveTab(key as PreviewTab)} className="px-4">
             <Tab key="original" title="歌词原文" />
             {Boolean(tlyrics) && <Tab key="translation" title="歌词翻译" />}
+            {Boolean(rlyrics) && <Tab key="romaji" title="罗马音" />}
           </Tabs>
           <ScrollContainer className="px-4">
             <pre className="text-foreground/90 max-h-[420px] text-sm leading-relaxed break-words whitespace-pre-wrap">
-              {activeTab === "original" ? lyrics || "暂无歌词" : tlyrics || "暂无歌词"}
+              {{ original: lyrics, translation: tlyrics, romaji: rlyrics }[activeTab] || "暂无歌词"}
             </pre>
           </ScrollContainer>
         </ModalBody>

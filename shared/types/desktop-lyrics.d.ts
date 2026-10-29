@@ -9,6 +9,8 @@ declare global {
     active: boolean;
     /** 当前歌词行文本 */
     text?: string;
+    /** 当前歌词行罗马音 */
+    romaji?: string;
     /** 当前歌词行翻译 */
     translation?: string;
     /** 是否正在播放 */

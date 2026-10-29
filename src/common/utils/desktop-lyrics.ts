@@ -11,12 +11,10 @@ function isSubWindow() {
   return hash.includes("mini-player") || hash.includes("desktop-lyrics");
 }
 
-/** 按歌词时间查找翻译文本 */
-const getTranslationByTime = (time?: number) => {
+/** 按歌词时间查找翻译或罗马音文本 */
+const getCompanionByTime = (companions: LyricLine[], time?: number) => {
   if (typeof time !== "number") return undefined;
-
-  const { translatedLyrics } = useLyricsStore.getState();
-  return translatedLyrics.find(item => item.time === time)?.text;
+  return companions.find(item => item.time === time)?.text;
 };
 
 /** 从播放列表中查找当前播放项 */
@@ -35,7 +33,7 @@ function computeDesktopLyricsPayload(): DesktopLyricsPayload {
   const settings = useSettings.getState();
   const { playId, isPlaying } = usePlayList.getState();
   const playItem = findPlayItem(playId);
-  const { lyrics, offset } = useLyricsStore.getState();
+  const { lyrics, translatedLyrics, romajiLyrics, offset } = useLyricsStore.getState();
   const currentTime = usePlayProgress.getState().currentTime;
 
   const activeIndex = getActiveLyricIndex(lyrics, currentTime * 1000 + offset);
@@ -48,7 +46,8 @@ function computeDesktopLyricsPayload(): DesktopLyricsPayload {
     locked: Boolean(settings.desktopLyricsLocked),
     active: Boolean(playItem) && Boolean(line),
     text: line?.text,
-    translation: getTranslationByTime(line?.time),
+    romaji: getCompanionByTime(romajiLyrics, line?.time),
+    translation: getCompanionByTime(translatedLyrics, line?.time),
     isPlaying: Boolean(isPlaying),
     playId,
     index,
@@ -107,6 +106,7 @@ export function startDesktopLyricsSync() {
       if (
         state.lyrics !== prevState.lyrics ||
         state.translatedLyrics !== prevState.translatedLyrics ||
+        state.romajiLyrics !== prevState.romajiLyrics ||
         state.offset !== prevState.offset ||
         state.isLoaded !== prevState.isLoaded
       ) {

@@ -6,7 +6,7 @@ import { formatDuration } from "@/common/utils/time";
 
 import LyricsPreviewModal from "./lyrics-preview-modal";
 
-export type AdoptLyricsHandler = (lyricsText: string, tLyricsText?: string) => Promise<boolean>;
+export type AdoptLyricsHandler = (lyricsText: string, tLyricsText?: string, rLyricsText?: string) => Promise<boolean>;
 
 interface NeteaseTabProps {
   songs: NeteaseSong[];
@@ -19,6 +19,7 @@ const NeteaseTab = ({ songs, loading, onAdoptLyrics }: NeteaseTabProps) => {
   const [lyricsTitle, setLyricsTitle] = useState<string>("");
   const [lyrics, setLyrics] = useState<string>("");
   const [tlyrics, setTlyrics] = useState<string>("");
+  const [rlyrics, setRlyrics] = useState<string>("");
   const [previewLoading, setPreviewLoading] = useState(false);
 
   const renderDuration = (value?: number) => {
@@ -43,6 +44,7 @@ const NeteaseTab = ({ songs, loading, onAdoptLyrics }: NeteaseTabProps) => {
     }
     setLyrics("");
     setTlyrics("");
+    setRlyrics("");
     setLyricsTitle("");
     setIsPreviewOpen(true);
     setPreviewLoading(true);
@@ -51,6 +53,7 @@ const NeteaseTab = ({ songs, loading, onAdoptLyrics }: NeteaseTabProps) => {
       const res = await window.electron.getNeteaseLyrics({ id });
       const text = res?.lrc?.lyric?.trim() || res?.klyric?.lyric?.trim() || "";
       const translation = res?.tlyric?.lyric?.trim() || "";
+      const romaji = res?.romalrc?.lyric?.trim() || "";
 
       if (!text) {
         addToast({ title: "未找到歌词内容", color: "warning" });
@@ -61,6 +64,7 @@ const NeteaseTab = ({ songs, loading, onAdoptLyrics }: NeteaseTabProps) => {
       setLyricsTitle(`${song.name || "未知歌曲"}-${renderArtists(song.artists)}`);
       setLyrics(text);
       setTlyrics(translation);
+      setRlyrics(romaji);
     } catch {
       addToast({ title: "获取歌词失败", color: "danger" });
       setIsPreviewOpen(false);
@@ -70,9 +74,9 @@ const NeteaseTab = ({ songs, loading, onAdoptLyrics }: NeteaseTabProps) => {
   }, []);
 
   const handleAdopt = useCallback(
-    async (lyricsText: string, tLyricsText?: string) => {
+    async (lyricsText: string, tLyricsText?: string, rLyricsText?: string) => {
       if (!lyricsText) return;
-      const ok = await onAdoptLyrics(lyricsText, tLyricsText);
+      const ok = await onAdoptLyrics(lyricsText, tLyricsText, rLyricsText);
       if (ok) {
         setIsPreviewOpen(false);
       }
@@ -113,6 +117,7 @@ const NeteaseTab = ({ songs, loading, onAdoptLyrics }: NeteaseTabProps) => {
         title={lyricsTitle}
         lyrics={lyrics}
         tlyrics={tlyrics}
+        rlyrics={rlyrics}
         loading={previewLoading}
         onAdopt={handleAdopt}
       />

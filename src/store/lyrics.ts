@@ -82,6 +82,8 @@ interface LyricsState {
   lyrics: LyricLine[];
   /** 翻译歌词 */
   translatedLyrics: LyricLine[];
+  /** 罗马音歌词，与原文共用时间戳 */
+  romajiLyrics: LyricLine[];
   /** 是否正在加载 */
   isLoading: boolean;
   /** 是否已完成一次加载（用于区分「加载中」和「确认没有歌词」） */
@@ -90,7 +92,7 @@ interface LyricsState {
   /** 加载当前播放歌曲的歌词（内部做去重，可被多处同时调用） */
   load: () => Promise<void>;
   /** 使用用户手动选择/搜索到的歌词 */
-  applyLyrics: (lyricsText?: string, tLyricsText?: string) => void;
+  applyLyrics: (lyricsText?: string, tLyricsText?: string, rLyricsText?: string) => void;
   /** 更新当前歌曲的歌词偏移量 */
   setOffset: (offset: number) => void;
   reset: () => void;
@@ -116,6 +118,7 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
   offset: 0,
   lyrics: [],
   translatedLyrics: [],
+  romajiLyrics: [],
   isLoading: false,
   isLoaded: false,
   reset: () => {
@@ -127,12 +130,13 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
       offset: 0,
       lyrics: [],
       translatedLyrics: [],
+      romajiLyrics: [],
       isLoading: false,
       isLoaded: false,
       autoStatus: undefined,
     });
   },
-  applyLyrics: (lyricsText, tLyricsText) => {
+  applyLyrics: (lyricsText, tLyricsText, rLyricsText) => {
     // 手动采用歌词后，之前仍在途的网络请求必须失效，避免旧歌词覆盖用户的选择
     requestSeq += 1;
     stopAutoProgress?.();
@@ -140,6 +144,7 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
     set({
       lyrics: parseLrc(lyricsText),
       translatedLyrics: parseLrc(tLyricsText),
+      romajiLyrics: parseLrc(rLyricsText),
       isLoading: false,
       isLoaded: true,
       autoStatus: undefined,
@@ -163,6 +168,7 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
         offset: 0,
         lyrics: [],
         translatedLyrics: [],
+        romajiLyrics: [],
         isLoading: false,
         isLoaded: true,
         autoStatus: undefined,
@@ -184,6 +190,7 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
       offset: 0,
       lyrics: [],
       translatedLyrics: [],
+      romajiLyrics: [],
       isLoading: true,
       isLoaded: false,
       autoStatus: undefined,
@@ -196,6 +203,7 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
       set({
         lyrics: parseLrc(auto.lyrics),
         translatedLyrics: parseLrc(auto.tLyrics),
+        romajiLyrics: parseLrc(auto.rLyrics),
         isLoading: false,
         isLoaded: true,
       });
@@ -213,7 +221,7 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
           if (seq !== requestSeq) return;
           applyAuto(result.lyrics);
           if (!result.lyrics && autoApplied) {
-            set({ lyrics: [], translatedLyrics: [] });
+            set({ lyrics: [], translatedLyrics: [], romajiLyrics: [] });
           }
           set({ autoStatus: result.lyrics ? undefined : AUTO_FAILURE[result.status] });
         })
@@ -244,6 +252,7 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
         set({
           lyrics: parseLrc(cached.lyrics),
           translatedLyrics: parseLrc(cached.tLyrics),
+          romajiLyrics: parseLrc(cached.rLyrics),
           isLoading: false,
           isLoaded: true,
         });
@@ -256,7 +265,7 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
 
       const cid = Number(playItem?.cid);
       if (!Number.isFinite(cid)) {
-        set({ lyrics: [], translatedLyrics: [], isLoading: false, isLoaded: true });
+        set({ lyrics: [], translatedLyrics: [], romajiLyrics: [], isLoading: false, isLoaded: true });
         return;
       }
 
@@ -275,10 +284,10 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
       const body = await getLyricsByBili(params);
       if (seq !== requestSeq || autoApplied) return;
 
-      set({ lyrics: body ?? [], translatedLyrics: [], isLoading: false, isLoaded: true });
+      set({ lyrics: body ?? [], translatedLyrics: [], romajiLyrics: [], isLoading: false, isLoaded: true });
     } catch {
       if (seq !== requestSeq || autoApplied) return;
-      set({ lyrics: [], translatedLyrics: [], isLoading: false, isLoaded: true });
+      set({ lyrics: [], translatedLyrics: [], romajiLyrics: [], isLoading: false, isLoaded: true });
     }
   },
 }));

@@ -127,7 +127,7 @@ describe("useLyricsStore", () => {
     key,
     phase: "coarse",
     coarse: { offsetSec: 0, confidence: 1 },
-    lyrics: { lyrics: "[00:01.00]coarse", tLyrics: "[00:01.00]粗对齐" },
+    lyrics: { lyrics: "[00:01.00]coarse", tLyrics: "[00:01.00]粗对齐", rLyrics: "[00:01.00]so a ra i" },
     timings: {},
   });
 
@@ -149,6 +149,7 @@ describe("useLyricsStore", () => {
     expect(useLyricsStore.getState()).toMatchObject({
       lyrics: [{ time: 1000, text: "coarse" }],
       translatedLyrics: [{ time: 1000, text: "粗对齐" }],
+      romajiLyrics: [{ time: 1000, text: "so a ra i" }],
       isLoading: false,
       isLoaded: true,
     });
@@ -160,11 +161,12 @@ describe("useLyricsStore", () => {
       key: "BV1xx-100",
       status: "matched",
       timings: {},
-      lyrics: { lyrics: "[00:02.00]final", tLyrics: "[00:02.00]最终" },
+      lyrics: { lyrics: "[00:02.00]final", tLyrics: "[00:02.00]最终", rLyrics: "[00:02.00]sa i shu u" },
     });
     await flushPromises();
     expect(useLyricsStore.getState().lyrics).toEqual([{ time: 2000, text: "final" }]);
     expect(useLyricsStore.getState().translatedLyrics).toEqual([{ time: 2000, text: "最终" }]);
+    expect(useLyricsStore.getState().romajiLyrics).toEqual([{ time: 2000, text: "sa i shu u" }]);
     expect(useLyricsStore.getState().autoStatus).toBeUndefined();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
@@ -205,6 +207,7 @@ describe("useLyricsStore", () => {
     expect(useLyricsStore.getState()).toMatchObject({
       lyrics: [],
       translatedLyrics: [],
+      romajiLyrics: [],
       autoStatus: "自动歌词：没有找到可对齐的原曲",
       isLoading: false,
       isLoaded: true,
@@ -298,7 +301,7 @@ describe("useLyricsStore", () => {
 
   test("uses cached lyrics without requesting the network", async () => {
     getElectronStoreMock().mockResolvedValue({
-      "BV1xx-100": { lyrics: "[00:01.00]cached line" },
+      "BV1xx-100": { lyrics: "[00:01.00]cached line", rLyrics: "[00:01.00]ka n" },
     });
     setPlayItem(createPlayItem());
 
@@ -306,6 +309,7 @@ describe("useLyricsStore", () => {
 
     expect(getLyricsByBili).not.toHaveBeenCalled();
     expect(useLyricsStore.getState().lyrics).toEqual([{ time: 1000, text: "cached line" }]);
+    expect(useLyricsStore.getState().romajiLyrics).toEqual([{ time: 1000, text: "ka n" }]);
     expect(useLyricsStore.getState().isLoaded).toBe(true);
     expect(useLyricsStore.getState().isLoading).toBe(false);
   });
@@ -374,13 +378,33 @@ describe("useLyricsStore", () => {
     expect(state.lyrics).toEqual([{ time: 0, text: "second song" }]);
   });
 
-  test("applyLyrics updates both original and translated lyrics", () => {
-    useLyricsStore.getState().applyLyrics("[00:01.00]hello", "[00:01.00]你好");
+  test("applyLyrics updates original, translated and romaji lyrics", () => {
+    useLyricsStore.getState().applyLyrics("[00:01.00]hello", "[00:01.00]你好", "[00:01.00]ha ro o");
 
     const state = useLyricsStore.getState();
     expect(state.lyrics).toEqual([{ time: 1000, text: "hello" }]);
     expect(state.translatedLyrics).toEqual([{ time: 1000, text: "你好" }]);
+    expect(state.romajiLyrics).toEqual([{ time: 1000, text: "ha ro o" }]);
     expect(state.isLoaded).toBe(true);
+  });
+
+  test("desktop lyrics payload carries romaji and translation of the active line", () => {
+    useSettings.setState({ showDesktopLyrics: true });
+    const item = createPlayItem();
+    setPlayItem(item);
+    usePlayList.setState({ playId: item.id, list: [item] });
+    useLyricsStore.getState().applyLyrics("[00:00.00]空の箱", "[00:00.00]空箱子", "[00:00.00]so ra no ha ko");
+    const stopSync = startDesktopLyricsSync();
+    try {
+      const sync = (window as any).electron.syncDesktopLyrics as ReturnType<typeof vi.fn>;
+      expect(sync.mock.lastCall?.[0]).toMatchObject({
+        text: "空の箱",
+        romaji: "so ra no ha ko",
+        translation: "空箱子",
+      });
+    } finally {
+      stopSync();
+    }
   });
 
   test("applies cached offset when loading lyrics", async () => {

@@ -16,7 +16,7 @@ const DEFAULT_LIMIT = 20;
 interface Props {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
-  onLyricsAdopted?: (lyricsText?: string, tLyricsText?: string) => void;
+  onLyricsAdopted?: (lyricsText?: string, tLyricsText?: string, rLyricsText?: string) => void;
 }
 
 const LyricsSearchModal = ({ isOpen, onOpenChange, onLyricsAdopted }: Props) => {
@@ -100,7 +100,7 @@ const LyricsSearchModal = ({ isOpen, onOpenChange, onLyricsAdopted }: Props) => 
   }, [isOpen, activeTab, handleSubmit]);
 
   const handleAdoptLyrics = useCallback<AdoptLyricsHandler>(
-    async (lyricsText, tLyricsText) => {
+    async (lyricsText, tLyricsText, rLyricsText) => {
       if (!lyricsText && !tLyricsText) return false;
 
       const current = getPlayItem();
@@ -114,6 +114,7 @@ const LyricsSearchModal = ({ isOpen, onOpenChange, onLyricsAdopted }: Props) => 
       const nextLyrics: MusicLyrics = {
         lyrics: lyricsText,
         tLyrics: tLyricsText,
+        rLyrics: rLyricsText,
       };
 
       try {
@@ -122,7 +123,7 @@ const LyricsSearchModal = ({ isOpen, onOpenChange, onLyricsAdopted }: Props) => 
         const prev = store?.[key] || {};
         const nextStore = { ...(store ?? {}), [key]: { ...prev, ...nextLyrics } };
         await window.electron.setStore(StoreNameMap.LyricsCache, nextStore);
-        onLyricsAdopted?.(lyricsText, tLyricsText);
+        onLyricsAdopted?.(lyricsText, tLyricsText, rLyricsText);
         return true;
       } catch {
         addToast({ title: "歌词保存失败", color: "danger" });
