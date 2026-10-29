@@ -3,6 +3,7 @@ import type { IpcHandlerProps } from "./types";
 import { registerAppHandlers } from "./app";
 import { registerAutoLyricsHandlers } from "./auto-lyrics";
 import { registerCookieIpcHandlers } from "./cookie";
+import { registerDesktopLyricsHandlers } from "./desktop-lyrics";
 import { registerDialogHandlers } from "./dialog";
 import { registerDownloadHandlers } from "./download";
 import { registerFontHandlers } from "./font";
@@ -20,6 +21,7 @@ export function registerIpcHandlers(props: IpcHandlerProps) {
   registerAppHandlers();
   registerCookieIpcHandlers();
   registerWindowHandlers(props);
+  registerDesktopLyricsHandlers(props);
   registerShortcutHandlers(props);
   registerLyricsHandlers();
   registerAutoLyricsHandlers();
