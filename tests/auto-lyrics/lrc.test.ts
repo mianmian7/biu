@@ -26,6 +26,12 @@ describe("LRC", () => {
     ]);
   });
 
+  it("drops NetEase credit rows before alignment", () => {
+    expect(
+      parseLrc("[00:00.05]作词 : 飛内将大\n[00:00.37]作曲：飛内将大\n[00:01.00]Composer: X\n[00:02]いつだって"),
+    ).toEqual([{ idx: 0, studio_start: 2, text: "いつだって" }]);
+  });
+
   it("round-trips aligned text and timestamps to centisecond precision", () => {
     const lines = parseLrc("[00:01.23]first [chorus]\n[00:59.999]second\n[02:00.10]third");
     const aligned = lines.map(line => ({

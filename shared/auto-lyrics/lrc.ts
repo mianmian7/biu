@@ -1,12 +1,16 @@
 import type { AlignLine, AlignResult } from "./types";
 
-/** Expand every time tag, discard empty lyrics, and assign indices in time order. */
+/** NetEase credit rows such as "作词 : xxx" are metadata, not sung lines. */
+const CREDIT =
+  /^(?:作词|作詞|作曲|编曲|編曲|制作人|製作人|监制|混音|母带|和声|吉他|贝斯|鼓|键盘|弦乐|词|曲|lyrics|lyricist|composer|arranger|producer)\s*[:：]/i;
+
+/** Expand every time tag, discard empty lyrics and credits, and assign indices in time order. */
 export function parseLrc(source: string): AlignLine[] {
   const entries: Omit<AlignLine, "idx">[] = [];
   for (const row of source.split(/\r?\n/)) {
     const tags = [...row.matchAll(/\[(\d+):(\d{2})(?:[.:](\d{1,3}))?\]/g)];
     const text = row.replace(/\[\d+:\d{2}(?:[.:]\d{1,3})?\]/g, "").trim();
-    if (!text) continue;
+    if (!text || CREDIT.test(text)) continue;
     for (const tag of tags) {
       const seconds = Number(tag[2]);
       if (seconds >= 60) continue;

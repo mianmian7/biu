@@ -1,4 +1,6 @@
 /** Rule-only port of the archive's song identification. All durations are seconds. */
+import { buildSearchQueries } from "./title-candidates";
+
 export interface IdentifyInput {
   title: string;
   pageTitle?: string;
@@ -101,7 +103,9 @@ export function identifyQueries(input: IdentifyInput): string[] {
     .filter(p => /[\u3040-\u30ff\u3400-\u9fff]/.test(p) && normalize(p).length >= 3)
     .sort((a, b) => normalize(b).length - normalize(a).length);
   const fallback = [...new Set([cleaned, ...pieces, clean(input.title)].filter(q => normalize(q)))].slice(0, 6);
-  return [...new Set([...initial, ...fallback])];
+  // Quoted names like 《雨爱》 that the archive rules drop (CJK pieces shorter than 3 chars).
+  const borrowed = buildSearchQueries(text).slice(0, 3);
+  return [...new Set([...initial, ...fallback, ...borrowed])];
 }
 
 export function nameForms(text: string): Set<string> {

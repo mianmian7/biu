@@ -28,6 +28,14 @@ describe("rule identification", () => {
     expect(identifyQueries(input)).toContain("トゲナシトゲアリ 名もなき何もかも");
   });
 
+  it("adds quoted short names from PR #263 title candidates as fallback queries", () => {
+    const title = "中日双语版《雨爱》老头子携影分身#合唱";
+    const queries = identifyQueries({ ...input, title });
+    expect(queries).toContain("雨爱");
+    const rainLove = { id: 9, name: "雨爱", artists: ["杨丞琳"], duration: 260 };
+    expect(identifyRules({ ...input, title, duration: 262 }, [rainLove])).toMatchObject({ status: "matched" });
+  });
+
   it("accepts MV, Live and TV-size video titles against an original studio candidate", () => {
     for (const suffix of ["MV", "Live 现场", "TV size"]) {
       expect(identifyRules({ ...input, title: `${song.name} ${suffix}` }, [song])).toMatchObject({
