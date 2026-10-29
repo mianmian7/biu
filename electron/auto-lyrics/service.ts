@@ -3,6 +3,7 @@ import type { ReferenceCandidate } from "../../shared/auto-lyrics/reference";
 import type { AutoLyricsParams, AutoLyricsProgress, AutoLyricsResult } from "../../shared/auto-lyrics/service-types";
 import type { AlignLine, AlignResult, GlobalOffset } from "../../shared/auto-lyrics/types";
 
+import { verifyScore } from "../../shared/auto-lyrics/align";
 import {
   identifyPrimaryQueries,
   identifyQueries,
@@ -35,6 +36,22 @@ export interface AutoLyricsDependencies {
     set(songId: number, value: ReferenceCandidate): void;
   };
   now?: () => number;
+}
+
+/** verifyScore a contender needs, and its lead over the runner-up (cross bench: same song ≥ 0.79, other ≤ 0.67). */
+const VERIFY_MIN_SCORE = 0.72;
+const VERIFY_MIN_MARGIN = 0.05;
+
+interface Attempt {
+  song: SongCandidate;
+  status: "matched" | "no-reference";
+  reference?: ReferenceCandidate;
+  coarse?: GlobalOffset;
+  lines?: AlignResult[];
+  verifyScore?: number;
+  lyrics?: MusicLyrics;
+  memoryPeakKB?: number;
+  error?: string;
 }
 
 interface Task {
@@ -154,6 +171,95 @@ export class AutoLyricsService {
     return identifyRules(params, [...candidates.values()]);
   }
 
+  /** Lyrics, a version-checked reference and alignment for one candidate song against the shared Live audio. */
+  private async attempt(
+    song: SongCandidate,
+    livePromise: Promise<Float32Array>,
+    signal: AbortSignal,
+    stamp: (stage: string) => void,
+    onCoarse?: (event: { coarse: GlobalOffset; lyrics: MusicLyrics }) => void,
+  ): Promise<Attempt> {
+    const savedReference = this.referenceCache.get(song.id) ?? this.dependencies.references.get(song.id);
+    const lyricPromise = this.dependencies.sources.lyric(song.id, signal).then(lyrics => {
+      stamp("lyric");
+      return lyrics;
+    });
+    const referenceErrors: string[] = [];
+    const referencePromise = (async () => {
+      const candidates = savedReference
+        ? [savedReference]
+        : rankReferences(await this.dependencies.sources.references(song, signal), song.duration).slice(0, 3);
+      stamp("referenceSearch");
+      for (let index = 0; index < candidates.length && index < 3; index++) {
+        const candidate = candidates[index];
+        try {
+          const bytes = await this.dependencies.sources.audio(candidate.bvid, candidate.cid, signal);
+          stamp(`reference${index + 1}Download`);
+          const pcm = await this.dependencies.decode(bytes, signal);
+          stamp(`reference${index + 1}Decode`);
+          const original = parseLrc((await lyricPromise).lrc);
+          if (original.length && checkVocalOnset(pcm, 22050, original[0].studio_start)) {
+            return { pcm, candidate };
+          }
+          referenceErrors.push(`${candidate.bvid}: vocal onset mismatch`);
+        } catch (error) {
+          signal.throwIfAborted();
+          if (isDecodeUnavailable(error)) throw error;
+          referenceErrors.push(`${candidate.bvid}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (savedReference && index === 0) {
+          const fallback = rankReferences(await this.dependencies.sources.references(song, signal), song.duration);
+          candidates.push(...fallback.filter(item => item.bvid !== savedReference.bvid).slice(0, 2));
+        }
+      }
+      return undefined;
+    })();
+    // Observe every branch immediately so cancellation cannot leave unhandled rejections.
+    const [lyrics, live, chosen] = await Promise.all([lyricPromise, livePromise, referencePromise]);
+    const lines = parseLrc(lyrics.lrc);
+    stamp("versionCheck");
+    if (!chosen)
+      return {
+        song,
+        status: "no-reference",
+        error: referenceErrors.join("; ") || "No duration-matched reference or timed lyrics",
+      };
+    const reference = chosen.candidate;
+    const makeLyrics = (aligned: AlignResult[], confidence: number): MusicLyrics => ({
+      source: "auto",
+      algoVersion: AUTO_LYRICS_ALGO_VERSION,
+      songId: song.id,
+      refBvid: reference.bvid,
+      confidence,
+      lyrics: generateLrc(aligned),
+      tLyrics: lyrics.tlyric ? mapCompanionLrc(lyrics.tlyric, aligned) : undefined,
+      rLyrics: lyrics.romalrc ? mapCompanionLrc(lyrics.romalrc, aligned) : undefined,
+    });
+    const aligned = await this.dependencies.align({ studio: chosen.pcm, live, lines }, signal, coarse => {
+      stamp("coarse");
+      if (!onCoarse || coarse.confidence < 0.1) return;
+      const coarseLines = lines.map(line => ({
+        idx: line.idx,
+        text: line.text,
+        studioStart: line.studio_start,
+        liveStartSec: line.studio_start + coarse.offsetSec,
+        confidence: coarse.confidence,
+        uncertain: false,
+      }));
+      onCoarse({ coarse, lyrics: makeLyrics(coarseLines, coarse.confidence) });
+    });
+    stamp("fine");
+    const base = { song, reference, coarse: aligned.coarse, memoryPeakKB: aligned.memoryPeakKB };
+    if (aligned.coarse.confidence < 0.1) return { ...base, status: "no-reference", error: "Low alignment confidence" };
+    return {
+      ...base,
+      status: "matched",
+      lines: aligned.lines,
+      verifyScore: verifyScore(aligned.lines),
+      lyrics: makeLyrics(aligned.lines, aligned.coarse.confidence),
+    };
+  }
+
   private async run(params: AutoLyricsParams, parentSignal: AbortSignal): Promise<AutoLyricsResult> {
     const controller = new AbortController();
     const signal = AbortSignal.any([parentSignal, controller.signal]);
@@ -188,114 +294,78 @@ export class AutoLyricsService {
       }
       const identified = await this.identify(params, signal);
       stamp("identify");
-      if (identified.status !== "matched" || !identified.song) return result(identified.status);
-      song = identified.song;
-      const selectedSong = song;
-      const savedReference = this.referenceCache.get(song.id) ?? this.dependencies.references.get(song.id);
-      const lyricPromise = this.dependencies.sources.lyric(song.id, signal).then(lyrics => {
-        stamp("lyric");
-        return lyrics;
-      });
+      if (identified.status !== "matched" && identified.status !== "ambiguous") return result(identified.status);
+      const arbitrate = identified.status === "ambiguous";
+      const songs = arbitrate ? identified.contenders : [identified.song];
       const livePromise = this.dependencies.sources.audio(params.bvid, params.cid, signal).then(async bytes => {
         stamp("liveDownload");
         const pcm = await this.dependencies.decode(bytes, signal);
         stamp("liveDecode");
         return pcm;
       });
-      const referenceErrors: string[] = [];
-      const referencePromise = (async () => {
-        const candidates = savedReference
-          ? [savedReference]
-          : rankReferences(
-              await this.dependencies.sources.references(selectedSong, signal),
-              selectedSong.duration,
-            ).slice(0, 3);
-        stamp("referenceSearch");
-        for (let index = 0; index < candidates.length && index < 3; index++) {
-          const candidate = candidates[index];
-          try {
-            const bytes = await this.dependencies.sources.audio(candidate.bvid, candidate.cid, signal);
-            stamp(`reference${index + 1}Download`);
-            const pcm = await this.dependencies.decode(bytes, signal);
-            stamp(`reference${index + 1}Decode`);
-            const original = parseLrc((await lyricPromise).lrc);
-            if (original.length && checkVocalOnset(pcm, 22050, original[0].studio_start)) {
-              return { pcm, candidate };
-            }
-            referenceErrors.push(`${candidate.bvid}: vocal onset mismatch`);
-          } catch (error) {
-            signal.throwIfAborted();
-            if (isDecodeUnavailable(error)) throw error;
-            referenceErrors.push(`${candidate.bvid}: ${error instanceof Error ? error.message : String(error)}`);
-          }
-          if (savedReference && index === 0) {
-            const fallback = rankReferences(
-              await this.dependencies.sources.references(selectedSong, signal),
-              selectedSong.duration,
-            );
-            candidates.push(...fallback.filter(item => item.bvid !== savedReference.bvid).slice(0, 2));
-          }
+      // Observe the shared Live branch now so a failed first contender cannot leave an unhandled rejection.
+      livePromise.catch(() => {});
+      const attempts: Attempt[] = [];
+      for (const [index, candidate] of songs.entries()) {
+        if (!arbitrate) {
+          attempts.push(
+            await this.attempt(candidate, livePromise, signal, stamp, event =>
+              this.emit({ key, phase: "coarse", ...event, timings: { ...timings } }),
+            ),
+          );
+          continue;
         }
-        return undefined;
-      })();
-      // Observe every branch immediately so cancellation cannot leave unhandled rejections.
-      const [lyrics, live, chosen] = await Promise.all([lyricPromise, livePromise, referencePromise]);
-      const lines = parseLrc(lyrics.lrc);
-      stamp("versionCheck");
-      if (!chosen)
-        return result("no-reference", {
-          error: referenceErrors.join("; ") || "No duration-matched reference or timed lyrics",
+        try {
+          attempts.push(await this.attempt(candidate, livePromise, signal, stage => stamp(`${stage}#${index + 1}`)));
+        } catch (error) {
+          signal.throwIfAborted();
+          await livePromise;
+          if (isDecodeUnavailable(error)) throw error;
+          attempts.push({
+            song: candidate,
+            status: "no-reference",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      const contenders = arbitrate
+        ? attempts.map(a => ({ song: a.song, status: a.status, verifyScore: a.verifyScore, error: a.error }))
+        : undefined;
+      const best = attempts
+        .filter(a => a.status === "matched")
+        .sort((a, b) => (b.verifyScore ?? 0) - (a.verifyScore ?? 0));
+      const [first, second] = best;
+      const chosen =
+        arbitrate &&
+        first &&
+        (first.verifyScore ?? 0) >= VERIFY_MIN_SCORE &&
+        (!second || (first.verifyScore ?? 0) - (second.verifyScore ?? 0) >= VERIFY_MIN_MARGIN)
+          ? first
+          : arbitrate
+            ? undefined
+            : attempts[0];
+      if (!chosen) return result("unidentified", { contenders, error: "Alignment could not confirm a contender" });
+      song = chosen.song;
+      reference = chosen.reference;
+      if (chosen.status !== "matched" || !chosen.lyrics || !chosen.reference)
+        return result(chosen.status, {
+          coarse: chosen.coarse,
+          utilityMemoryPeakKB: chosen.memoryPeakKB,
+          error: chosen.error,
         });
-      reference = chosen.candidate;
-      const studio = chosen.pcm;
-      this.referenceCache.set(song.id, reference);
-      this.dependencies.references.set(song.id, reference);
-      const makeLyrics = (aligned: AlignResult[], confidence: number): MusicLyrics => ({
-        source: "auto",
-        algoVersion: AUTO_LYRICS_ALGO_VERSION,
-        songId: selectedSong.id,
-        refBvid: reference?.bvid,
-        confidence,
-        lyrics: generateLrc(aligned),
-        tLyrics: lyrics.tlyric ? mapCompanionLrc(lyrics.tlyric, aligned) : undefined,
-        rLyrics: lyrics.romalrc ? mapCompanionLrc(lyrics.romalrc, aligned) : undefined,
-      });
-      const aligned = await this.dependencies.align({ studio, live, lines }, signal, coarse => {
-        stamp("coarse");
-        if (coarse.confidence < 0.1) return;
-        const coarseLines = lines.map(line => ({
-          idx: line.idx,
-          text: line.text,
-          studioStart: line.studio_start,
-          liveStartSec: line.studio_start + coarse.offsetSec,
-          confidence: coarse.confidence,
-          uncertain: false,
-        }));
-        this.emit({
-          key,
-          phase: "coarse",
-          coarse,
-          lyrics: makeLyrics(coarseLines, coarse.confidence),
-          timings: { ...timings },
-        });
-      });
-      stamp("fine");
-      if (aligned.coarse.confidence < 0.1)
-        return result("no-reference", {
-          coarse: aligned.coarse,
-          utilityMemoryPeakKB: aligned.memoryPeakKB,
-          error: "Low alignment confidence",
-        });
-      const musicLyrics = makeLyrics(aligned.lines, aligned.coarse.confidence);
+      this.referenceCache.set(chosen.song.id, chosen.reference);
+      this.dependencies.references.set(chosen.song.id, chosen.reference);
       // Re-read at write time: the user may have edited lyrics while this task ran.
-      if (!isManual(this.dependencies.cache.get(key))) this.dependencies.cache.set(key, musicLyrics);
+      if (!isManual(this.dependencies.cache.get(key))) this.dependencies.cache.set(key, chosen.lyrics);
       stamp("cacheWrite");
       const completed = result("matched", {
-        lyrics: musicLyrics,
-        coarse: aligned.coarse,
-        lines: aligned.lines,
-        confidence: aligned.coarse.confidence,
-        utilityMemoryPeakKB: aligned.memoryPeakKB,
+        lyrics: chosen.lyrics,
+        coarse: chosen.coarse,
+        lines: chosen.lines,
+        confidence: chosen.coarse?.confidence,
+        verifyScore: chosen.verifyScore,
+        contenders,
+        utilityMemoryPeakKB: chosen.memoryPeakKB,
       });
       this.emit({ key, phase: "fine", result: completed, timings: { ...timings } });
       return completed;

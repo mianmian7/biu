@@ -60,14 +60,17 @@ describe("rule identification", () => {
     expect(identifyRules({ ...input, title: "全曲合集", pageTitle: "正片" }, [song]).status).toBe("collection");
   });
 
-  it("rejects ambiguous identities, including multiple explicit songs", () => {
+  it("leaves same-title artists to alignment and rejects multiple explicit songs", () => {
     const cover = { ...song, id: 2, artists: ["another artist"] };
-    expect(identifyRules({ ...input, title: song.name }, [song, cover]).status).toBe("unidentified");
+    expect(identifyRules({ ...input, title: song.name }, [song, cover])).toMatchObject({
+      status: "ambiguous",
+      contenders: [song, cover],
+    });
     expect(identifyRules(input, [song, cover])).toMatchObject({ status: "matched", song });
     const other = { ...song, id: 3, name: "空の箱" };
     expect(identifyRules({ ...input, title: `${song.name} / 空の箱` }, [song, other]).status).toBe("unidentified");
     expect(identifyRules({ ...input, title: song.name, ownerName: cover.artists[0] }, [song, cover]).status).toBe(
-      "unidentified",
+      "ambiguous",
     );
   });
 
@@ -174,10 +177,8 @@ describe("rule identification", () => {
     const result = identifyRules(live, [...laroiHits, ...hazeteHits]);
     expect(result).toMatchObject({ status: "matched", song: { name: "爆ぜて咲く", artists: ["トゲナシトゲアリ"] } });
     // One original vs one cover stays ambiguous, and so does a tie between two artists.
-    expect(identifyRules(live, [hazeteHits[0], hazeteHits[2]]).status).toBe("unidentified");
-    expect(identifyRules(live, [hazeteHits[0], hazeteHits[1], hazeteHits[2], hazeteHits[3]]).status).toBe(
-      "unidentified",
-    );
+    expect(identifyRules(live, [hazeteHits[0], hazeteHits[2]]).status).toBe("ambiguous");
+    expect(identifyRules(live, [hazeteHits[0], hazeteHits[1], hazeteHits[2], hazeteHits[3]]).status).toBe("ambiguous");
   });
 
   it("lets a longer matched name cover a song whose name is only its prefix (爆ぜて咲く vs 爆ぜて咲)", () => {
@@ -211,6 +212,48 @@ describe("rule identification", () => {
     };
     const other = { id: 3327845552, name: "もう何もいらない未来", artists: ["トゲナシトゲアリ"], duration: 219 };
     expect(identifyRules(op, [mirai, other])).toMatchObject({ status: "matched", song: { id: mirai.id } });
+  });
+
+  // BV1StSoBPEwu (GBC movie OP/ED compilation): NetEase hits recorded on the Mac, 2026-10-29.
+  const movie = { ...input, title: "【中日歌词/GBC剧场版】命运之花完整版&剧场版OPED【MV】", tid: 130 };
+  const unmeiHits = [
+    { id: 2603229013, name: "運命の華", artists: ["トゲナシトゲアリ"], duration: 196, aliases: ["命运之花"] },
+    { id: 2621539074, name: "運命の華", artists: ["トゲナシトゲアリ"], duration: 196, aliases: ["命运之花"] },
+    { id: 31452205, name: "運命の華", artists: ["结香"], duration: 249, aliases: ["命运之花"] },
+    { id: 3371364144, name: "命运之花", artists: ["每天发呆15小时_mini"], duration: 222 },
+    { id: 2652039972, name: "運命の華", artists: ["トゲナシトゲアリ"], duration: 196, aliases: ["命运之花"] },
+    { id: 1415137515, name: "命运之花", artists: ["YXT"], duration: 211 },
+    { id: 3397706804, name: "命运之花", artists: ["康知南"], duration: 142 },
+    { id: 2614062525, name: "運命の華", artists: ["水樹愛理"], duration: 282, aliases: ["命运之花"] },
+  ];
+  const arrowHits = [
+    { id: 1821558171, name: "ARROW", artists: ["niki", "Lily"], duration: 233 },
+    { id: 2025912142, name: "ARROW (feat. Lily)", artists: ["niki", "Lily"], duration: 232 },
+    { id: 3325110244, name: "arrow", artists: ["トゲナシトゲアリ"], duration: 189 },
+    { id: 2640733832, name: "Arrow", artists: ["EMBRZ", "bailey"], duration: 245 },
+    { id: 2701550323, name: "Arrow", artists: ["stressd"], duration: 124 },
+  ];
+
+  it("hands a same-name title to alignment with the most-released artist first", () => {
+    const unmei = identifyRules({ ...movie, pageTitle: "命运之花【完整版】", duration: 214 }, unmeiHits);
+    expect(unmei.status).toBe("ambiguous");
+    if (unmei.status !== "ambiguous") return;
+    expect(unmei.contenders.map(c => c.artists[0])).toEqual(["トゲナシトゲアリ", "YXT", "每天发呆15小时_mini"]);
+    const arrow = identifyRules({ ...movie, pageTitle: "OP2「arrow」", duration: 90 }, arrowHits);
+    expect(arrow.status).toBe("ambiguous");
+    if (arrow.status !== "ambiguous") return;
+    expect(arrow.contenders.map(c => c.artists[0])).toEqual(["niki", "stressd", "トゲナシトゲアリ"]);
+  });
+
+  it("lets a quoted name in a non-music video reach alignment instead of rejecting it", () => {
+    const vlog = { ...input, title: "10.2港刺《爆ぜて咲く/爆裂绽放》", duration: 248, tid: 21 };
+    expect(identifyRules(vlog, [...laroiHits, ...hazeteHits])).toMatchObject({
+      status: "ambiguous",
+      contenders: [{ name: "爆ぜて咲く", artists: ["トゲナシトゲアリ"] }],
+    });
+    expect(identifyQueries(vlog)).toContain("爆ぜて咲く");
+    expect(identifyRules({ ...vlog, title: "10.2 港刺 vlog" }, hazeteHits).status).toBe("not-music");
+    expect(identifyQueries({ ...vlog, title: "10.2 港刺 vlog" })).toEqual([]);
   });
 
   it("drops commentary after a full stop from search queries", () => {

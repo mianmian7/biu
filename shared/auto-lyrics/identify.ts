@@ -19,6 +19,8 @@ export interface SongCandidate {
 
 export type Identification =
   | { status: "matched"; song: SongCandidate; confidence: number }
+  /** Rules cannot tell these songs apart (or the video may not be music); alignment must arbitrate. */
+  | { status: "ambiguous"; contenders: SongCandidate[]; confidence: number }
   | { status: "unidentified" | "not-music" | "collection"; confidence: number };
 
 export const LIVE = /(?<![a-z])(?:live|cover)(?![a-z])|现场|現場|翻唱|カバー|ライブ|演唱[会會]/i;
@@ -31,6 +33,7 @@ export const NOISE =
 export const BRACKETS = /[（(【[「『《〈]([^（）()【】[\]「」『』《》〈〉]*)[）)】\]」』》〉]/g;
 export const SHOW_NOISE =
   /(?<![\p{L}\p{N}_])(?:M-\d+|#\d+|No\.\s*\d+|Vo\.\s*\S+|\d+(?:st|nd|rd|th)\s*(?:live|one-?man|tour)?|day\s*\d+)/giu;
+const QUOTED = /《[^》]+》|「[^」]+」|『[^』]+』/;
 export const QUERY_SPLIT = /[／/|｜\-【】「」\s]+/;
 export const VERSION =
   /(?<![a-z])(?:ver\.?|version|edit|feat\.?|with|duet|tv\s*size)(?![a-z])|合唱|版本?|ヴァージョン|バージョン|デュエット|[&/×、]/i;
@@ -82,8 +85,11 @@ export function songText(videoTitle: string, pageTitle = ""): string {
 /** Text after a full stop is commentary: "爆ぜて咲く。现场互动拉满…" searches as "爆ぜて咲く". */
 const dropChatter = (text: string) => trimNoise(text.replace(/(?<=\S)\s*。[\s\S]*$/, ""));
 
+/** Only songs are searched; a "weak" video is searched and then confirmed by alignment. */
+const searchable = (input: IdentifyInput) => [undefined, "weak"].includes(classify(input));
+
 export function identifyPrimaryQueries(input: IdentifyInput): string[] {
-  if (classify(input)) return [];
+  if (!searchable(input)) return [];
   const text = dropChatter(clean(songText(input.title, input.pageTitle)));
   return [
     ...new Set([text, dropChatter(clean(input.title)), ...text.split(/\s+[-|/]\s+/)].filter(q => normalize(q))),
@@ -92,7 +98,7 @@ export function identifyPrimaryQueries(input: IdentifyInput): string[] {
 
 /** Initial queries followed by the archive's fallback query fragments. */
 export function identifyQueries(input: IdentifyInput): string[] {
-  if (classify(input)) return [];
+  if (!searchable(input)) return [];
   const text = songText(input.title, input.pageTitle);
   const initial = identifyPrimaryQueries(input);
   const cleaned = trimNoise(
@@ -218,34 +224,48 @@ function components<T>(items: readonly T[], linked: (a: T, b: T) => boolean): T[
   return groups;
 }
 
+/** Releases of one song: candidates linked by a shared artist name or alias. */
+function artistGroups(pool: readonly RuleMatch[], duration: number): RuleMatch[][] {
+  const gap = (c: RuleMatch) => Math.abs(c.song.duration - duration);
+  return components(pool, (a, b) => a.song.artists.some(x => b.song.artists.some(y => sameName(x, y)))).map(group =>
+    group.sort((a, b) => gap(a) - gap(b) || a.song.id - b.song.id),
+  );
+}
+
 /**
  * Ambiguous identities are rejected. A shared name, alias or translation makes one song
  * (名もなき何もかも = 皆无其名); artist aliases connect its releases. Without the artist in the
  * video title, covers are ambiguous unless one artist holds a strict majority of the releases.
+ * An ambiguous single title yields up to three contenders, most releases first, for alignment to arbitrate.
  */
 export function chooseRule(
   candidates: readonly RuleMatch[],
   duration: number,
-): { match: RuleMatch; majority: boolean } | undefined {
+): { match: RuleMatch; majority: boolean } | { contenders: SongCandidate[] } | undefined {
   if (!candidates.length || components(candidates, (a, b) => a.titles.some(t => b.titles.includes(t))).length > 1)
     return;
   const explicit = candidates.filter(c => c.artistMatch);
   const pool = explicit.length ? explicit : candidates;
-  const groups = components(pool, (a, b) => a.song.artists.some(x => b.song.artists.some(y => sameName(x, y))));
+  const groups = artistGroups(pool, duration);
   const majority = !explicit.length && groups.length > 1;
   const group = majority ? groups.find(g => g.length * 2 > pool.length) : groups.length === 1 ? groups[0] : undefined;
-  if (!group) return;
-  const match = group.sort(
-    (a, b) => Math.abs(a.song.duration - duration) - Math.abs(b.song.duration - duration) || a.song.id - b.song.id,
-  )[0];
-  return { match, majority };
+  if (group) return { match: group[0], majority };
+  const gap = (g: RuleMatch[]) => Math.abs(g[0].song.duration - duration);
+  return {
+    contenders: groups
+      .sort((a, b) => b.length - a.length || gap(a) - gap(b))
+      .slice(0, 3)
+      .map(g => g[0].song),
+  };
 }
 
-function classify(input: IdentifyInput): "not-music" | "collection" | undefined {
+/** "weak": no music category or wording, but a quoted name such as 港刺《爆ぜて咲く》 may still be a song. */
+function classify(input: IdentifyInput): "not-music" | "collection" | "weak" | undefined {
   const context = `${input.title}\n${input.pageTitle ?? ""}`;
   if (NON_SONG.test(context) || WRONG_VERSION.test(context)) return "not-music";
   if (COLLECTION.test(songText(input.title, input.pageTitle))) return "collection";
-  if (!MUSIC_TIDS.has(input.tid) && !MUSIC_TITLE.test(context) && !LIVE.test(context)) return "not-music";
+  if (!MUSIC_TIDS.has(input.tid) && !MUSIC_TITLE.test(context) && !LIVE.test(context))
+    return QUOTED.test(context) ? "weak" : "not-music";
 }
 
 export function identifyRules(
@@ -254,7 +274,7 @@ export function identifyRules(
   extra = false,
 ): Identification {
   const status = classify(input);
-  if (status) return { status, confidence: 1 };
+  if (status && status !== "weak") return { status, confidence: 1 };
   if (!Number.isFinite(input.duration) || input.duration <= 0 || input.duration > 1200)
     return { status: "unidentified", confidence: 0 };
   const text = songText(input.title, input.pageTitle);
@@ -270,6 +290,8 @@ export function identifyRules(
     input.duration,
   );
   if (!chosen) return { status: "unidentified", confidence: 0 };
+  if ("contenders" in chosen) return { status: "ambiguous", contenders: chosen.contenders, confidence: 0 };
   const { match, majority } = chosen;
+  if (status === "weak") return { status: "ambiguous", contenders: [match.song], confidence: 0 };
   return { status: "matched", song: match.song, confidence: match.artistMatch ? 0.95 : majority ? 0.65 : 0.8 };
 }

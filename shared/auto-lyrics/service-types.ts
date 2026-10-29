@@ -30,6 +30,10 @@ export interface AutoLyricsResult {
   coarse?: GlobalOffset;
   lines?: AlignResult[];
   confidence?: number;
+  /** Line-alignment fit of the reference; see verifyScore. */
+  verifyScore?: number;
+  /** Songs that alignment arbitrated between when rules were ambiguous. */
+  contenders?: { song: SongCandidate; status: string; verifyScore?: number; error?: string }[];
   utilityMemoryPeakKB?: number;
   error?: string;
 }

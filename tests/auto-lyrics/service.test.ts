@@ -72,7 +72,46 @@ function setup() {
       }),
     },
   } satisfies AutoLyricsDependencies;
-  return { dependencies, entries, service: new AutoLyricsService(dependencies) };
+  return { dependencies, entries, pcm, service: new AutoLyricsService(dependencies) };
+}
+
+/** Two same-title songs by different artists; each one's reference decodes to a distinguishable length. */
+function arbitration(scores: Record<number, number>) {
+  const context = setup();
+  const { dependencies, pcm } = context;
+  const cover = { ...song, id: 43, artists: ["Other"] };
+  const lengths = new Map([
+    [song.id, pcm.length],
+    [cover.id, pcm.length + 1],
+  ]);
+  dependencies.sources.search.mockResolvedValue([song, cover]);
+  dependencies.sources.references.mockImplementation((async (candidate: typeof song) => [
+    { ...reference, bvid: `BVref${candidate.id}` },
+  ]) as never);
+  dependencies.sources.audio.mockImplementation(
+    (async (bvid: string) => new Uint8Array([bvid === `BVref${cover.id}` ? 2 : 1])) as never,
+  );
+  dependencies.decode.mockImplementation((async (bytes: Uint8Array) =>
+    bytes[0] === 2 ? Float32Array.from([...pcm, 0]) : pcm) as never);
+  dependencies.align.mockImplementation(async (input, _signal, onCoarse) => {
+    const id = [...lengths].find(([, length]) => length === input.studio.length)?.[0] ?? 0;
+    const coarse = { offsetSec: 1, confidence: 0.9 };
+    onCoarse(coarse);
+    return {
+      coarse,
+      lines: input.lines.map(line => ({
+        idx: line.idx,
+        text: line.text,
+        studioStart: line.studio_start,
+        liveStartSec: line.studio_start + 1,
+        confidence: scores[id] ?? 0,
+        uncertain: (scores[id] ?? 0) < 0.65,
+      })),
+    };
+  });
+  const events: AutoLyricsProgress[] = [];
+  context.service.onProgress(event => events.push(event));
+  return { ...context, cover, events };
 }
 
 describe("AutoLyricsService", () => {
@@ -243,13 +282,42 @@ describe("AutoLyricsService", () => {
     expect(dependencies.sources.references).toHaveBeenCalledTimes(1);
   });
 
-  it("collects every primary query before rejecting ambiguous artists", async () => {
+  it("lets line alignment choose between ambiguous artists without showing coarse lyrics first", async () => {
+    const { service, dependencies, entries, cover, events } = arbitration({ 42: 0.7, 43: 0.9 });
+    const result = await service.start(params);
+    expect(result).toMatchObject({ status: "matched", song: { id: cover.id }, reference: { bvid: "BVref43" } });
+    expect(result.verifyScore).toBeCloseTo(0.9);
+    expect(result.contenders?.map(c => [c.song.id, c.verifyScore])).toEqual([
+      [42, expect.closeTo(0.7)],
+      [43, expect.closeTo(0.9)],
+    ]);
+    expect(dependencies.sources.audio.mock.calls.filter(args => (args as unknown[])[0] === params.bvid)).toHaveLength(
+      1,
+    );
+    expect(events.some(event => event.phase === "coarse")).toBe(false);
+    expect(entries.get(result.key)?.songId).toBe(cover.id);
+  });
+
+  it("stays unidentified when alignment cannot separate the contenders", async () => {
+    for (const scores of [
+      { 42: 0.9, 43: 0.88 },
+      { 42: 0.69, 43: 0.4 },
+    ]) {
+      const { service, entries } = arbitration(scores);
+      const result = await service.start(params);
+      expect(result.status).toBe("unidentified");
+      expect(result.contenders).toHaveLength(2);
+      expect(entries.size).toBe(0);
+    }
+  });
+
+  it("collects every primary query before handing ambiguous artists to alignment", async () => {
     const { service, dependencies } = setup();
     dependencies.sources.search
       .mockResolvedValueOnce([song])
       .mockResolvedValueOnce([{ ...song, id: 43, artists: ["Other"] }]);
     const result = await service.identify({ ...params, title: "DECORATOR / stage", pageTitle: "DECORATOR" });
-    expect(result.status).toBe("unidentified");
+    expect(result).toMatchObject({ status: "ambiguous", contenders: [{ id: song.id }, { id: 43 }] });
     expect(dependencies.sources.search.mock.calls.map(args => args[0])).toEqual(["DECORATOR", "DECORATOR / stage"]);
   });
 
