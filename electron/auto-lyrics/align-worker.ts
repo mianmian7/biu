@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 
-import { alignLinesGapDTW, estimateGlobalOffset } from "../../shared/auto-lyrics/align";
+import { alignLinesGapDTW, estimateGlobalOffset, lyricAnchors, selectReference } from "../../shared/auto-lyrics/align";
 import { AudioFeatures } from "../../shared/auto-lyrics/features";
 import { alignRequestSchema } from "./worker-protocol";
 
@@ -15,11 +15,14 @@ process.parentPort.once("message", event => {
     try {
       const request = alignRequestSchema.parse(message.data);
       const extractor = new AudioFeatures({ sampleRate: 22050 });
-      const studio = extractor.extract(request.studio);
+      const studios = request.studios.map(pcm => extractor.extract(pcm));
+      const selection = selectReference(studios);
+      const studio = studios[selection.referenceIndex];
       const live = extractor.extract(request.live);
-      const coarse = estimateGlobalOffset(studio, live);
+      const coarse = estimateGlobalOffset(studio, live, null, lyricAnchors(request.lines));
       port.postMessage({
         kind: "coarse",
+        ...selection,
         coarse,
         elapsedMs: performance.now() - started,
         memoryPeakKB: process.resourceUsage().maxRSS,
@@ -27,6 +30,7 @@ process.parentPort.once("message", event => {
       const lines = alignLinesGapDTW(request.lines, studio, live);
       port.postMessage({
         kind: "fine",
+        ...selection,
         coarse,
         lines,
         elapsedMs: performance.now() - started,

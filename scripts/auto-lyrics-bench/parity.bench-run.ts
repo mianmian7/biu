@@ -4,6 +4,9 @@ import { expect, test } from "vitest";
 
 import type { Lines } from "./common";
 
+/** The prototype's per-line post-processing: onset snapping, no outlier smoothing. */
+const ORIGINAL_LINE_OPTIONS = { onsetRefineSec: 0.25, outlierWindow: 0 };
+
 import {
   algorithm,
   dataRoot,
@@ -38,7 +41,9 @@ test.skipIf(!dataRoot)("prototype and TypeScript parity on every synth, silver a
   ) {
     const tsOffset = measurement.run(`${label}:tsCoarse`, () => algorithm.estimateGlobalOffset(tsStudio, tsLive));
     const jsOffset = measurement.run(`${label}:jsCoarse`, () => original.estimateGlobalOffset(jsStudio, jsLive));
-    const tsLines = measurement.run(`${label}:tsAlign`, () => algorithm.alignLinesGapDTW(lines, tsStudio, tsLive));
+    const tsLines = measurement.run(`${label}:tsAlign`, () =>
+      algorithm.alignLinesGapDTW(lines, tsStudio, tsLive, ORIGINAL_LINE_OPTIONS),
+    );
     const jsLines = measurement.run(`${label}:jsAlign`, () => original.alignLinesGapDTW(lines, jsStudio, jsLive));
     expect(tsLines.map(line => line.idx)).toEqual(jsLines.map(line => line.idx));
     const maxLineDifferenceMs = Math.max(

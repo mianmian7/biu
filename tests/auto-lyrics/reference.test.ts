@@ -1,25 +1,71 @@
 import { describe, expect, it } from "vitest";
 
+import type { SongCandidate } from "../../shared/auto-lyrics/identify";
+
 import { checkVocalOnset, rankReferences } from "../../shared/auto-lyrics/reference";
 
+const song: SongCandidate = { id: 1, name: "Test Song", artists: [], duration: 190 };
+
 describe("studio reference selection", () => {
+  it.each(["【MV】Test Song", "Test Song Project DIVA Arcade", "Test Song 官方MV"])(
+    "ranks %s below studio audio",
+    title => {
+      const studio = {
+        bvid: "z-studio",
+        title: title.includes("官方") ? "Test Song 官方音源" : "Test Song CD音源",
+        duration: 190,
+      };
+      const video = { bvid: "a-video", title, duration: 190 };
+      const ranked = rankReferences([video, studio], song);
+      expect(ranked.map(candidate => candidate.bvid)).toEqual(["z-studio", "a-video"]);
+      expect(ranked[1].score).toBe(title.includes("官方") ? 55 : 30);
+    },
+  );
+
+  it("ranks an AI cover below studio audio without matching AI inside words", () => {
+    const candidates = [
+      { bvid: "ai", title: "【AI高松灯】Test Song", duration: 190 },
+      { bvid: "main", title: "Test Song MAIN THEME", duration: 190 },
+    ];
+    expect(rankReferences(candidates, song).map(c => [c.bvid, c.score])).toEqual([
+      ["main", 60],
+      ["ai", -20],
+    ]);
+  });
+
   it("enforces a two-second duration gate and rewards original audio evidence", () => {
     const candidates = [
-      { bvid: "original", title: "原曲 CD 歌词 罗马音", duration: 190 },
-      { bvid: "neutral", title: "Title", duration: 189 },
-      { bvid: "live", title: "Title Live 现场", duration: 189 },
-      { bvid: "cover", title: "翻唱 cover 教学 reaction 伴奏", duration: 189 },
-      { bvid: "long", title: "原曲官方MV", duration: 192 },
-      { bvid: "border", title: "扒谱 假名", duration: 191 },
+      { bvid: "original", title: "Test Song 原曲 CD 歌词 罗马音", duration: 190 },
+      { bvid: "neutral", title: "Test Song", duration: 189 },
+      { bvid: "live", title: "Test Song Live 现场", duration: 189 },
+      { bvid: "cover", title: "Test Song 翻唱 cover 教学 reaction 伴奏", duration: 189 },
+      { bvid: "long", title: "Test Song 原曲官方MV", duration: 192 },
+      { bvid: "border", title: "Test Song 扒谱 假名", duration: 191 },
     ];
-    expect(rankReferences(candidates, 189).map(c => c.bvid)).toEqual([
+    expect(rankReferences(candidates, { ...song, duration: 189 }).map(c => c.bvid)).toEqual([
       "original",
       "neutral",
       "border",
       "live",
       "cover",
     ]);
-    expect(rankReferences(candidates, NaN)).toEqual([]);
+    expect(rankReferences(candidates, { ...song, duration: NaN })).toEqual([]);
+  });
+
+  it("requires the song title or an alias even when durations match", () => {
+    const song: SongCandidate = {
+      name: "空の箱 (井芹仁菜、河原木桃香)",
+      artists: ["トゲナシトゲアリ"],
+      aliases: ["空之箱"],
+      duration: 200,
+      id: 1,
+    };
+    const candidates = [
+      { bvid: "wrong", title: "【4KHi-res】无声之鱼（声なき魚）《少女乐队的呐喊》第三集插入曲完整版", duration: 200 },
+      { bvid: "original", title: "空の箱 / トゲナシトゲアリ 官方音源", duration: 200 },
+      { bvid: "alias", title: "【中字】空之箱 CD", duration: 200 },
+    ];
+    expect(rankReferences(candidates, song).map(c => c.bvid)).toEqual(["alias", "original"]);
   });
 
   it("requires an audible energy rise within 1.5 seconds of the lyric", () => {

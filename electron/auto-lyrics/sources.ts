@@ -131,7 +131,7 @@ export const sources = {
           title: item.title.replace(/<[^>]*>/g, ""),
           duration: durationSeconds(item.duration),
         })),
-        song.duration,
+        song,
       );
     }
     return [];

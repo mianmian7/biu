@@ -1,24 +1,37 @@
+import type { SongCandidate } from "./identify";
+
+import { songTitles, strongMatch } from "./identify";
+
 export interface ReferenceCandidate {
   bvid: string;
   title: string;
   duration: number;
   cid?: number;
+  checked?: boolean;
 }
 
 /** Enforce the two-second duration gate before ranking title evidence. */
 export function rankReferences(
   candidates: readonly ReferenceCandidate[],
-  songDuration: number,
+  song: SongCandidate,
 ): (ReferenceCandidate & { score: number })[] {
+  const songDuration = song.duration;
   if (!Number.isFinite(songDuration) || songDuration <= 0) return [];
   return candidates
     .filter(c => Number.isFinite(c.duration) && c.duration > 0 && Math.abs(c.duration - songDuration) <= 2)
+    .filter(c => songTitles(song).some(title => strongMatch(title, c.title)))
     .map(c => {
       let score = Math.abs(c.duration - songDuration) <= 1 ? 60 : 40;
       if (/官方|原曲|\bcd\b|cd音源|hi-?res|完整版|无损/i.test(c.title)) score += 25;
       if (/罗马音|假名|歌词|扒谱|动态鼓谱|总谱/.test(c.title)) score += 15;
       if (/live|现场|現場|ライブ|演唱会|巡演|切片/i.test(c.title)) score -= 50;
-      if (/翻唱|cover|试听|伴奏|无贝斯|无吉他|反应|reaction|教[学學]/i.test(c.title)) score -= 80;
+      if (
+        /(?<![a-z])(?:mv|pv)(?![a-z])|music ?video|project ?diva|游戏|遊戲|ゲーム|(?<![a-z])game(?![a-z])/i.test(
+          c.title,
+        )
+      )
+        score -= 30;
+      if (/翻唱|cover|(?<![a-z])ai(?![a-z])|试听|伴奏|无贝斯|无吉他|反应|reaction|教[学學]/i.test(c.title)) score -= 80;
       return { ...c, score };
     })
     .sort(

@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AutoLyricsDependencies } from "../../electron/auto-lyrics/service";
+import type { ReferenceCandidate } from "../../shared/auto-lyrics/reference";
 import type { AutoLyricsParams, AutoLyricsProgress } from "../../shared/auto-lyrics/service-types";
 
 import { DecodeUnavailableError } from "../../electron/auto-lyrics/ffmpeg-resolve";
@@ -28,7 +29,7 @@ function deferred<T>() {
 
 function setup() {
   const entries = new Map<string, MusicLyrics>();
-  const references = new Map<number, typeof reference>();
+  const references = new Map<number, ReferenceCandidate>();
   const pcm = Float32Array.from({ length: 22050 * 5 }, (_, index) =>
     index < 22050 * 2 ? 0 : 0.4 * Math.sin(index * 0.13),
   );
@@ -41,7 +42,7 @@ function setup() {
         romalrc: "[00:02.00]hello",
       })),
       references: vi.fn(async () => [reference]),
-      audio: vi.fn(async () => new Uint8Array([1])),
+      audio: vi.fn<AutoLyricsDependencies["sources"]["audio"]>(async () => new Uint8Array([1])),
     },
     decode: vi.fn(async () => pcm),
     align: vi.fn<AutoLyricsDependencies["align"]>(async (input, _signal, onCoarse) => {
@@ -49,6 +50,9 @@ function setup() {
       onCoarse(coarse);
       return {
         coarse,
+        referenceIndex: 0,
+        referenceConsensus: true,
+        referenceLags: [],
         lines: input.lines.map(line => ({
           idx: line.idx,
           text: line.text,
@@ -67,7 +71,7 @@ function setup() {
     },
     references: {
       get: (id: number) => references.get(id),
-      set: vi.fn((id: number, value: typeof reference) => {
+      set: vi.fn((id: number, value: ReferenceCandidate) => {
         references.set(id, value);
       }),
     },
@@ -94,11 +98,14 @@ function arbitration(scores: Record<number, number>) {
   dependencies.decode.mockImplementation((async (bytes: Uint8Array) =>
     bytes[0] === 2 ? Float32Array.from([...pcm, 0]) : pcm) as never);
   dependencies.align.mockImplementation(async (input, _signal, onCoarse) => {
-    const id = [...lengths].find(([, length]) => length === input.studio.length)?.[0] ?? 0;
+    const id = [...lengths].find(([, length]) => length === input.studios[0].length)?.[0] ?? 0;
     const coarse = { offsetSec: 1, confidence: 0.9 };
     onCoarse(coarse);
     return {
       coarse,
+      referenceIndex: 0,
+      referenceConsensus: true,
+      referenceLags: [],
       lines: input.lines.map(line => ({
         idx: line.idx,
         text: line.text,
@@ -115,6 +122,129 @@ function arbitration(scores: Record<number, number>) {
 }
 
 describe("AutoLyricsService", () => {
+  it.each([
+    [0.44, "no-reference"],
+    [0.6, "matched"],
+  ] as const)("gates single-song alignment score %s as %s", async (score, status) => {
+    const { service, dependencies } = setup();
+    const align = dependencies.align.getMockImplementation()!;
+    dependencies.align.mockImplementation(async (...args) => {
+      const aligned = await align(...args);
+      return { ...aligned, lines: aligned.lines.map(line => ({ ...line, confidence: score, uncertain: false })) };
+    });
+    const result = await service.start(params);
+    expect(result.status).toBe(status);
+    expect(result.verifyScore).toBeCloseTo(score);
+    if (status === "no-reference") {
+      expect(result).toMatchObject({
+        error: "Line alignment score too low",
+        coarse: { offsetSec: 1 },
+        referenceCheck: { chosen: 0 },
+      });
+      expect(result.lyrics).toBeUndefined();
+      expect(dependencies.cache.set).not.toHaveBeenCalled();
+      expect(dependencies.references.set).not.toHaveBeenCalled();
+      await service.start({ ...params, cid: 3 });
+      expect(dependencies.sources.references).toHaveBeenCalledTimes(2);
+    } else {
+      expect(dependencies.cache.set).toHaveBeenCalledTimes(1);
+      expect(dependencies.references.set).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("aligns three ranked references and saves the selected reference as checked", async () => {
+    const { service, dependencies, pcm } = setup();
+    const candidates = ["BVref0", "BVref1", "BVref2"].map(bvid => ({ ...reference, bvid }));
+    dependencies.sources.references.mockResolvedValue(candidates);
+    const originalAlign = dependencies.align.getMockImplementation()!;
+    dependencies.align.mockImplementation(async (...args) => ({
+      ...(await originalAlign(...args)),
+      referenceIndex: 1,
+    }));
+    const result = await service.start(params);
+    expect(dependencies.align.mock.calls[0][0].studios).toHaveLength(3);
+    expect(dependencies.align.mock.calls[0][0].studios.every(studio => studio === pcm)).toBe(true);
+    expect(result).toMatchObject({
+      status: "matched",
+      reference: { bvid: "BVref1" },
+      referenceCheck: { candidates: candidates.map(candidate => candidate.bvid), chosen: 1, consensus: true, lags: [] },
+    });
+    expect(result.lyrics?.refBvid).toBe("BVref1");
+    expect(dependencies.references.set).toHaveBeenCalledWith(song.id, { ...candidates[1], score: 85, checked: true });
+  });
+
+  it("ignores saved references without a check", async () => {
+    const { service, dependencies } = setup();
+    dependencies.references.set(song.id, { ...reference, bvid: "BVold" });
+    expect((await service.start(params)).status).toBe("matched");
+    expect(dependencies.sources.references).toHaveBeenCalledTimes(1);
+    expect(dependencies.sources.audio.mock.calls.flat()).not.toContain("BVold");
+  });
+
+  it("downloads candidates concurrently and retains rank order after one fails", async () => {
+    const { service, dependencies, pcm } = setup();
+    const downloads = [deferred<Uint8Array>(), deferred<Uint8Array>(), deferred<Uint8Array>()];
+    dependencies.sources.references.mockResolvedValue(
+      downloads.map((_, index) => ({ ...reference, bvid: `BVref${index}` })),
+    );
+    dependencies.sources.audio.mockImplementation(async (...args: unknown[]) => {
+      const index = downloads.findIndex((_, index) => args[0] === `BVref${index}`);
+      return index < 0 ? new Uint8Array([1]) : downloads[index].promise;
+    });
+    const second = Float32Array.from([...pcm, 0]);
+    dependencies.decode.mockImplementation(async (...args: unknown[]) => {
+      const bytes = args[0];
+      if (bytes instanceof Uint8Array && bytes[0] === 0) throw new Error("download corrupt");
+      return bytes instanceof Uint8Array && bytes[0] === 2 ? second : pcm;
+    });
+    const task = service.start(params);
+    await vi.waitFor(() => expect(dependencies.sources.audio).toHaveBeenCalledTimes(4));
+    downloads[2].resolve(new Uint8Array([2]));
+    downloads[0].resolve(new Uint8Array([0]));
+    downloads[1].resolve(new Uint8Array([1]));
+    const result = await task;
+    expect(result).toMatchObject({ status: "matched", referenceCheck: { candidates: ["BVref1", "BVref2"] } });
+    const studios = dependencies.align.mock.calls[0][0].studios;
+    expect(studios).toHaveLength(2);
+    expect(studios[0]).toBe(pcm);
+    expect(studios[1]).toBe(second);
+  });
+
+  it("falls back to search when the saved checked reference fails", async () => {
+    const { service, dependencies, pcm } = setup();
+    dependencies.references.set(song.id, { ...reference, bvid: "BVsaved", checked: true });
+    dependencies.sources.audio.mockImplementation(
+      async (...args: unknown[]) => new Uint8Array([args[0] === "BVsaved" ? 0 : 1]),
+    );
+    dependencies.decode.mockImplementation(async (...args: unknown[]) => {
+      const bytes = args[0];
+      return bytes instanceof Uint8Array && bytes[0] === 0 ? new Float32Array(pcm.length) : pcm;
+    });
+    expect(await service.start(params)).toMatchObject({
+      status: "matched",
+      reference: { bvid: reference.bvid, checked: true },
+    });
+    expect(dependencies.sources.references).toHaveBeenCalledTimes(1);
+  });
+
+  it("downloads only the saved checked reference", async () => {
+    const { service, dependencies } = setup();
+    dependencies.references.set(song.id, { ...reference, bvid: "BVsaved", checked: true });
+    expect((await service.start(params)).status).toBe("matched");
+    expect(dependencies.sources.references).not.toHaveBeenCalled();
+    expect(dependencies.sources.audio).toHaveBeenCalledTimes(2);
+    expect(dependencies.sources.audio).toHaveBeenCalledWith("BVsaved", reference.cid, expect.any(AbortSignal));
+    expect(dependencies.align.mock.calls[0][0].studios).toHaveLength(1);
+  });
+
+  it("ignores a saved checked reference whose title does not name the song", async () => {
+    const { service, dependencies } = setup();
+    dependencies.references.set(song.id, { ...reference, bvid: "BVsaved", title: "声なき魚 CD", checked: true });
+    expect((await service.start(params)).status).toBe("matched");
+    expect(dependencies.sources.references).toHaveBeenCalledTimes(1);
+    expect(dependencies.sources.audio).not.toHaveBeenCalledWith("BVsaved", reference.cid, expect.any(AbortSignal));
+  });
+
   it("returns a valid automatic cache without fetching", async () => {
     const { service, entries, dependencies } = setup();
     entries.set("BVcurrent-1", { source: "auto", lyrics: "cached", algoVersion: AUTO_LYRICS_ALGO_VERSION });

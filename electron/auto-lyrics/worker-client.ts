@@ -3,6 +3,7 @@ import log from "electron-log";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { selectReference } from "../../shared/auto-lyrics/align";
 import type { AlignResult, GlobalOffset } from "../../shared/auto-lyrics/types";
 import type { AlignRequest } from "./worker-protocol";
 
@@ -12,7 +13,7 @@ export function alignAudio(
   request: AlignRequest,
   signal: AbortSignal,
   onCoarse: (coarse: GlobalOffset) => void,
-): Promise<{ coarse: GlobalOffset; lines: AlignResult[]; memoryPeakKB: number }> {
+): Promise<{ coarse: GlobalOffset; lines: AlignResult[]; memoryPeakKB: number } & ReturnType<typeof selectReference>> {
   signal.throwIfAborted();
   const workerPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "align-worker.cjs");
   return new Promise((resolve, reject) => {
@@ -66,7 +67,14 @@ export function alignAudio(
       } else {
         settled = true;
         cleanup();
-        resolve({ coarse: data.coarse, lines: data.lines, memoryPeakKB: data.memoryPeakKB });
+        resolve({
+          coarse: data.coarse,
+          lines: data.lines,
+          memoryPeakKB: data.memoryPeakKB,
+          referenceIndex: data.referenceIndex,
+          referenceConsensus: data.referenceConsensus,
+          referenceLags: data.referenceLags,
+        });
       }
     });
     port1.start();

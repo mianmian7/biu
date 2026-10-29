@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const alignRequestSchema = z.object({
-  studio: z.instanceof(Float32Array),
+  studios: z.array(z.instanceof(Float32Array)).min(1).max(3),
   live: z.instanceof(Float32Array),
   lines: z.array(z.object({ idx: z.number().int(), studio_start: z.number().finite(), text: z.string() })),
 });
@@ -20,10 +20,31 @@ const lineSchema = z.object({
   uncertain: z.boolean(),
 });
 
+const referenceCheckShape = {
+  referenceIndex: z.number().int().min(0).max(2),
+  referenceConsensus: z.boolean(),
+  referenceLags: z.array(
+    z.object({
+      i: z.number().int(),
+      j: z.number().int(),
+      lagSec: z.number().finite(),
+      spreadSec: z.number().finite(),
+      sim: z.number().finite(),
+    }),
+  ),
+};
+
 export const alignResponseSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("coarse"), coarse: coarseSchema, elapsedMs: z.number(), memoryPeakKB: z.number() }),
+  z.object({
+    kind: z.literal("coarse"),
+    coarse: coarseSchema,
+    elapsedMs: z.number(),
+    memoryPeakKB: z.number(),
+    ...referenceCheckShape,
+  }),
   z.object({
     kind: z.literal("fine"),
+    ...referenceCheckShape,
     coarse: coarseSchema,
     lines: z.array(lineSchema),
     elapsedMs: z.number(),

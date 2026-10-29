@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { alignLinesGapDTW, estimateGlobalOffset } from "../../shared/auto-lyrics/align";
+import {
+  alignLinesGapDTW,
+  estimateGlobalOffset,
+  referenceLag,
+  chooseConsensus,
+  selectReference,
+} from "../../shared/auto-lyrics/align";
 import { AudioFeatures } from "../../shared/auto-lyrics/features";
 import { FFT } from "../../shared/auto-lyrics/fft";
 
@@ -54,6 +60,52 @@ describe("audio alignment", () => {
   const extractor = new AudioFeatures({ sampleRate, hopSize });
   const studio = extractor.extract(studioSamples);
 
+  it("measures a reference delayed by one second within one frame", () => {
+    const delayed = new Float32Array(studioSamples.length + sampleRate);
+    delayed.set(studioSamples, sampleRate);
+    const result = referenceLag(studio, extractor.extract(delayed));
+    expect(Math.abs(result.lagSec - 1)).toBeLessThanOrEqual(1 / studio.fps);
+    expect(result.sim).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it("compares every pair and selects the agreeing studio timelines", () => {
+    const delayed = new Float32Array(studioSamples.length + sampleRate);
+    delayed.set(studioSamples, sampleRate);
+    const result = selectReference([extractor.extract(delayed), studio, studio]);
+    expect(result.referenceLags.map(({ i, j }) => [i, j])).toEqual([
+      [0, 1],
+      [0, 2],
+      [1, 2],
+    ]);
+    expect(result.referenceIndex).toBe(1);
+    expect(result.referenceConsensus).toBe(true);
+  });
+
+  it("chooses the first ranked reference agreeing with another", () => {
+    const agree = { lagSec: 0, spreadSec: 0.1, sim: 0.9 };
+    const disagree = { lagSec: 1, spreadSec: 0.1, sim: 0.9 };
+    expect(chooseConsensus([{ i: 0, j: 1, ...agree }], 3)).toEqual({ index: 0, consensus: true });
+    expect(
+      chooseConsensus(
+        [
+          { i: 0, j: 1, ...disagree },
+          { i: 0, j: 2, ...disagree },
+          { i: 1, j: 2, ...agree },
+        ],
+        3,
+      ),
+    ).toEqual({ index: 1, consensus: true });
+    expect(chooseConsensus([{ i: 0, j: 1, ...disagree }], 2)).toEqual({ index: 0, consensus: false });
+    expect(chooseConsensus([], 1)).toEqual({ index: 0, consensus: true });
+  });
+
+  it.each([
+    [0.19, true],
+    [0.5, false],
+  ])("checks reference consensus at lag %s", (lagSec, consensus) => {
+    expect(chooseConsensus([{ i: 0, j: 1, lagSec, spreadSec: 0, sim: 0.9 }], 2)).toEqual({ index: 0, consensus });
+  });
+
   it("produces unit L2 CENS vectors and zero vectors for silence", () => {
     expect(studio.numFrames).toBe(Math.floor((studioSamples.length - 2048) / hopSize) + 1);
     expect(studio.fps).toBe(sampleRate / hopSize);
@@ -73,6 +125,18 @@ describe("audio alignment", () => {
     liveSamples.set(studioSamples, shift);
     const live = extractor.extract(liveSamples);
     const result = estimateGlobalOffset(studio, live);
+    expect(Math.abs(result.offsetSec - shift / sampleRate)).toBeLessThanOrEqual(1 / studio.fps);
+    expect(result.confidence).toBeGreaterThan(0.9);
+  });
+
+  it("lets lyric anchors outvote a reworked intro", () => {
+    const shift = 43 * hopSize;
+    const introEnd = Math.floor(sampleRate * 3.5);
+    const liveSamples = new Float32Array(studioSamples.length + shift);
+    liveSamples.set(studioSamples, shift);
+    for (let i = 0; i < introEnd; i++) liveSamples[shift + i] = 0.2 * Math.sin((2 * Math.PI * 97 * i) / sampleRate);
+    const live = extractor.extract(liveSamples);
+    const result = estimateGlobalOffset(studio, live, null, [4, 5.5, 7]);
     expect(Math.abs(result.offsetSec - shift / sampleRate)).toBeLessThanOrEqual(1 / studio.fps);
     expect(result.confidence).toBeGreaterThan(0.9);
   });

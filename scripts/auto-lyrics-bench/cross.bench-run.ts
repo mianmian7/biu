@@ -7,6 +7,7 @@ import path from "node:path";
 import { expect, test } from "vitest";
 
 import { verifyScore } from "../../shared/auto-lyrics/align";
+import { lyricAnchors } from "../../shared/auto-lyrics/align";
 import { algorithm, dataRoot, linesSchema, Measurement, readJson, root, writeReport } from "./common";
 
 const LIVE: Record<string, string> = {
@@ -49,7 +50,7 @@ test.skipIf(!dataRoot)("cross: same-song alignment scores above different-song a
       ] as const
     ).flatMap(([cut, live]) =>
       Object.entries(studios).map(([song, studio]) => {
-        const coarse = algorithm.estimateGlobalOffset(studio.feat, live);
+        const coarse = algorithm.estimateGlobalOffset(studio.feat, live, null, lyricAnchors(studio.lines));
         const lines = algorithm.alignLinesGapDTW(studio.lines, studio.feat, live);
         const score = verifyScore(lines);
         return { bvid, cut, song, same: song === truth, coarse: coarse.confidence, score };

@@ -27,6 +27,12 @@ export interface AutoLyricsResult {
   lyrics?: MusicLyrics;
   song?: SongCandidate;
   reference?: ReferenceCandidate;
+  referenceCheck?: {
+    candidates: string[];
+    lags: { i: number; j: number; lagSec: number; spreadSec: number; sim: number }[];
+    chosen: number;
+    consensus: boolean;
+  };
   coarse?: GlobalOffset;
   lines?: AlignResult[];
   confidence?: number;

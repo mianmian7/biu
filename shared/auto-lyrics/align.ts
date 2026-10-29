@@ -30,14 +30,76 @@ function dot12(a: Float32Array, b: Float32Array): number {
   );
 }
 
+/** Locate five windows of a in b; positive lag means b plays the same music later. */
+export function referenceLag(
+  a: AudioFeatureSet,
+  b: AudioFeatureSet,
+): { lagSec: number; spreadSec: number; sim: number } {
+  const winFrames = Math.floor(Math.min(12, a.duration * 0.25) * a.fps);
+  if (winFrames < 1 || a.numFrames < winFrames || b.numFrames < winFrames) {
+    return { lagSec: 0, spreadSec: 0, sim: 0 };
+  }
+  const votes = [0.1, 0.3, 0.5, 0.7, 0.9].map(fraction => {
+    const start = Math.min(Math.floor(a.numFrames * fraction), a.numFrames - winFrames);
+    let bestSim = -1;
+    let bestFrame = 0;
+    for (let frame = 0; frame <= b.numFrames - winFrames; frame++) {
+      let sum = 0;
+      for (let k = 0; k < winFrames; k += 2) sum += dot12(a.cens[start + k], b.cens[frame + k]);
+      const sim = sum / Math.ceil(winFrames / 2);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestFrame = frame;
+      }
+    }
+    return { lag: (bestFrame - start) / a.fps, sim: bestSim };
+  });
+  const lags = votes.map(vote => vote.lag).sort((a, b) => a - b);
+  return {
+    lagSec: lags[2],
+    spreadSec: lags[4] - lags[0],
+    sim: votes.reduce((sum, vote) => sum + vote.sim, 0) / votes.length,
+  };
+}
+
+/** First ranked reference agreeing within 0.3 s lag/spread and similarity >= 0.8; fall back to rank zero. */
+export function chooseConsensus(
+  lags: { i: number; j: number; lagSec: number; spreadSec: number; sim: number }[],
+  count: number,
+): { index: number; consensus: boolean } {
+  if (count === 1) return { index: 0, consensus: true };
+  for (let index = 0; index < count; index++) {
+    if (
+      lags.some(
+        lag =>
+          (lag.i === index || lag.j === index) && Math.abs(lag.lagSec) < 0.3 && lag.spreadSec < 0.3 && lag.sim >= 0.8,
+      )
+    ) {
+      return { index, consensus: true };
+    }
+  }
+  return { index: 0, consensus: false };
+}
+
+export function selectReference(studios: AudioFeatureSet[]) {
+  const referenceLags = studios.flatMap((a, i) =>
+    studios.slice(i + 1).map((b, offset) => ({ i, j: i + offset + 1, ...referenceLag(a, b) })),
+  );
+  const { index: referenceIndex, consensus: referenceConsensus } = chooseConsensus(referenceLags, studios.length);
+  return { referenceIndex, referenceConsensus, referenceLags };
+}
+
 /**
  * 1. Coarse Alignment: Global Offset Estimation
- * Estimates the start time of the reference song in live audio.
+ * Estimates the start time of the reference song in live audio. Without anchors one window just after the studio
+ * start decides. Lives often rework the intro, so with lyric anchors (studio seconds, see lyricAnchors) the intro
+ * window and one window per anchor vote, and the largest group agreeing within 0.3 s wins.
  */
 export function estimateGlobalOffset(
   studioFeat: AudioFeatureSet,
   liveFeat: AudioFeatureSet,
   maxSearchSec: number | null = null,
+  anchorsSec: readonly number[] = [],
 ): GlobalOffset {
   const fps = studioFeat.fps;
   const winSec = Math.min(12.0, studioFeat.duration * 0.25);
@@ -50,7 +112,47 @@ export function estimateGlobalOffset(
     return { offsetSec: 0, confidence: 0 };
   }
 
-  const refStart = Math.min(Math.floor(1.0 * fps), studioFeat.numFrames - winFrames);
+  const scan = (refStart: number, earliestPeak: boolean) =>
+    scanWindow(studioFeat, liveFeat, refStart, winFrames, liveMaxFrames, earliestPeak);
+  const intro = scan(Math.min(Math.floor(1.0 * fps), studioFeat.numFrames - winFrames), true);
+  if (!anchorsSec.length) return intro;
+
+  // A chorus window can land on another chorus; agreement between windows outvotes it.
+  const votes = [
+    intro,
+    ...anchorsSec.map(sec =>
+      scan(Math.max(0, Math.min(Math.floor((sec - 0.5) * fps), studioFeat.numFrames - winFrames)), false),
+    ),
+  ];
+  const sum = (group: GlobalOffset[], key: "offsetSec" | "confidence") =>
+    group.reduce((total, vote) => total + vote[key], 0);
+  const best = votes
+    .map(vote => votes.filter(other => Math.abs(other.offsetSec - vote.offsetSec) < 0.3))
+    .reduce((a, b) =>
+      b.length > a.length || (b.length === a.length && sum(b, "confidence") > sum(a, "confidence")) ? b : a,
+    );
+  // No two windows agree: a Live that repeats choruses scatters them, so keep the intro estimate.
+  if (best.length < 2) return intro;
+  const confidence = sum(best, "confidence") / best.length;
+  return { offsetSec: sum(best, "offsetSec") / best.length, confidence, bestSim: confidence };
+}
+
+/** Studio times of the first lyric line and the lines a third and two thirds in, for estimateGlobalOffset. */
+export function lyricAnchors(lines: readonly AlignLine[]): number[] {
+  const picks = new Set([0, Math.floor(lines.length / 3), Math.floor((lines.length * 2) / 3)]);
+  return lines.length ? [...picks].map(index => lines[index].studio_start) : [];
+}
+
+/** Best Live position of one studio window; earliestPeak prefers the first of near-equal peaks (intro window). */
+function scanWindow(
+  studioFeat: AudioFeatureSet,
+  liveFeat: AudioFeatureSet,
+  refStart: number,
+  winFrames: number,
+  liveMaxFrames: number,
+  earliestPeak: boolean,
+): GlobalOffset {
+  const fps = studioFeat.fps;
   const refCens = studioFeat.cens.slice(refStart, refStart + winFrames);
 
   const scores: { frame: number; sim: number }[] = [];
@@ -73,7 +175,7 @@ export function estimateGlobalOffset(
 
   // Detect earliest significant peak
   const peaks: typeof scores = [];
-  for (let i = 1; i < scores.length - 1; i++) {
+  for (let i = 1; earliestPeak && i < scores.length - 1; i++) {
     if (scores[i].sim > scores[i - 1].sim && scores[i].sim > scores[i + 1].sim && scores[i].sim > 0.65) {
       peaks.push(scores[i]);
     }
@@ -183,6 +285,8 @@ export function alignLinesGapDTW(
   const gapLiveOpen = options.gapLiveOpen !== undefined ? options.gapLiveOpen : 0.25;
   const gapLiveExt = options.gapLiveExt !== undefined ? options.gapLiveExt : 0.015;
   const gapStudioSkip = options.gapStudioSkip !== undefined ? options.gapStudioSkip : 0.4;
+  const onsetRefineSec = options.onsetRefineSec ?? 0;
+  const outlierWindow = options.outlierWindow ?? 3;
 
   const step = 2; // ~21.5 fps for speed & memory
   const sSteps = Math.floor(S / step);
@@ -300,7 +404,7 @@ export function alignLinesGapDTW(
     const sim = dot12(sFeatVec, lFeatVec);
     const inGap = studioState[sStepIdx] === 1 || studioState[sStepIdx] === 2;
 
-    liveSec = refineWithOnset(liveFeat, liveSec, 0.25);
+    if (onsetRefineSec > 0) liveSec = refineWithOnset(liveFeat, liveSec, onsetRefineSec);
 
     const confidence = inGap ? Math.min(0.3, sim * 0.5) : Math.max(0, Math.min(1, sim));
     const uncertain = inGap || confidence < 0.65;
@@ -315,7 +419,31 @@ export function alignLinesGapDTW(
     });
   }
 
+  if (outlierWindow > 0) smoothOutliers(results, outlierWindow);
   return results;
+}
+
+/**
+ * Within a song the Live-minus-studio offset is piecewise constant, but the path can wander 0.4–1 s at section
+ * changes (chorus entries after a break). A line whose offset is far from both the preceding and the following
+ * neighbours' median takes the nearer median; a line beside a real step (cut or held pause) matches one side and
+ * stays. The first and last lines have one side only and are left alone.
+ */
+function smoothOutliers(results: AlignResult[], window: number) {
+  const offsets = results.map(result => result.liveStartSec - result.studioStart);
+  const median = (values: number[]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  };
+  results.forEach((result, index) => {
+    if (index === 0 || index === results.length - 1) return;
+    const before = median(offsets.slice(Math.max(0, index - window), index));
+    const after = median(offsets.slice(index + 1, index + 1 + window));
+    const own = offsets[index];
+    if (Math.abs(own - before) <= 0.25 || Math.abs(own - after) <= 0.25) return;
+    result.liveStartSec = result.studioStart + (Math.abs(own - before) < Math.abs(own - after) ? before : after);
+  });
 }
 
 function refineWithOnset(feat: AudioFeatureSet, timestampSec: number, radiusSec = 0.25): number {

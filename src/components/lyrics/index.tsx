@@ -132,6 +132,11 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
         .then(result => {
           if (canceled) return;
           applyAuto(result.lyrics);
+          if (!result.lyrics && autoApplied && !manualAdoptedRef.current) {
+            setLyrics([]);
+            setTranslatedLyrics([]);
+            autoApplied = false;
+          }
           setAutoStatus(result.lyrics ? undefined : AUTO_FAILURE[result.status]);
         })
         .catch(() => {

@@ -41,6 +41,10 @@ export interface GapDTWOptions {
   gapLiveOpen?: number;
   gapLiveExt?: number;
   gapStudioSkip?: number;
+  /** Snap each line to the strongest onset within this radius; 0 disables (full-band onsets are mostly drums). */
+  onsetRefineSec?: number;
+  /** Replace a line offset > 0.25 s from the medians of both its N preceding and N following lines; 0 disables. */
+  outlierWindow?: number;
 }
 
 export interface MedleySong {

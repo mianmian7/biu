@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 
 import type { Lines, SilverEntry } from "./common";
 
+import { lyricAnchors } from "../../shared/auto-lyrics/align";
 import {
   algorithm,
   dataRoot,
@@ -26,37 +27,8 @@ function collapse(entries: SilverEntry[]): SilverEntry[] {
   }
   return out;
 }
-function disambiguate(entries: SilverEntry[], lines: Lines): SilverEntry[] {
-  const norm = (text: string) => text.replace(/[\s\p{P}\p{S}]+/gu, "");
-  const byText = new Map<string, Lines>();
-  for (const line of lines) {
-    const key = norm(line.text);
-    const group = byText.get(key) || [];
-    group.push(line);
-    byText.set(key, group);
-  }
-  const studioOf = new Map(lines.map(line => [line.idx, line.studio_start]));
-  const textOf = new Map(lines.map(line => [line.idx, norm(line.text)]));
-  const candidates = (entry: SilverEntry) =>
-    byText.get(requireValue(textOf.get(entry.idx), `line text ${entry.idx}`)) || [];
-  const unique = entries.filter(entry => candidates(entry).length === 1);
-  for (const entry of entries) {
-    const cands = candidates(entry);
-    if (cands.length < 2 || !unique.length) continue;
-    const prev = [...unique].reverse().find(anchor => anchor.live_start <= entry.live_start);
-    const next = unique.find(anchor => anchor.live_start >= entry.live_start);
-    const anchors = [prev, next].filter(anchor => anchor !== undefined);
-    const expected =
-      anchors.reduce(
-        (sum, anchor) =>
-          sum + entry.live_start - anchor.live_start + requireValue(studioOf.get(anchor.idx), `anchor ${anchor.idx}`),
-        0,
-      ) / anchors.length;
-    entry.idx = cands.reduce((best, candidate) =>
-      Math.abs(candidate.studio_start - expected) < Math.abs(best.studio_start - expected) ? candidate : best,
-    ).idx;
-  }
-  return collapse(entries);
+function norm(text: string) {
+  return text.replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 function stats(errors: number[], totalCount: number) {
   const round = (value: number | null, digits: number) => (value === null ? null : +value.toFixed(digits));
@@ -71,7 +43,7 @@ function stats(errors: number[], totalCount: number) {
   };
 }
 
-test.skipIf(!dataRoot)("silver metrics with collapsed and disambiguated ground truth", () => {
+test.skipIf(!dataRoot)("silver metrics with collapsed ground truth and text-matched predictions", () => {
   const measurement = new Measurement();
   const results = [];
   const ids = silverIds();
@@ -79,7 +51,7 @@ test.skipIf(!dataRoot)("silver metrics with collapsed and disambiguated ground t
   for (const id of ids) {
     const dir = path.join(root(), "silver", id);
     const lines = linesSchema.parse(readJson(path.join(dir, "lines.json")));
-    const gt = disambiguate(collapse(silverGtSchema.parse(readJson(path.join(dir, "gt.json"))).gt), lines);
+    const gt = collapse(silverGtSchema.parse(readJson(path.join(dir, "gt.json"))).gt);
     const { studioFeat, liveFeat } = loadPair(
       path.join(dir, "studio.wav"),
       path.join(dir, "live.wav"),
@@ -87,7 +59,9 @@ test.skipIf(!dataRoot)("silver metrics with collapsed and disambiguated ground t
       measurement,
       id,
     );
-    const coarse = measurement.run(`${id}:coarse`, () => algorithm.estimateGlobalOffset(studioFeat, liveFeat));
+    const coarse = measurement.run(`${id}:coarse`, () =>
+      algorithm.estimateGlobalOffset(studioFeat, liveFeat, null, lyricAnchors(lines)),
+    );
     const preds = measurement.run(`${id}:align`, () => algorithm.alignLinesGapDTW(lines, studioFeat, liveFeat));
     const lrcMap = new Map(lines.map(line => [line.idx, line.studio_start]));
     const differences = gt.flatMap(entry => {
@@ -96,32 +70,51 @@ test.skipIf(!dataRoot)("silver metrics with collapsed and disambiguated ground t
     });
     const medianOffset = quantile(differences, 0.5) ?? 0;
     const coarseError = +(coarse.offsetSec - medianOffset).toFixed(3);
-    const predByIdx = new Map<number, number[]>();
-    for (const pred of preds) {
-      const group = predByIdx.get(pred.idx) || [];
-      group.push(pred.liveStartSec);
-      predByIdx.set(pred.idx, group);
+    const linesByText = new Map<string, Lines>();
+    const textByIdx = new Map(lines.map(line => [line.idx, norm(line.text)]));
+    for (const line of lines) {
+      const key = norm(line.text);
+      const group = linesByText.get(key) || [];
+      group.push(line);
+      linesByText.set(key, group);
     }
-    const frequency = new Map<number, number>();
-    for (const entry of gt) frequency.set(entry.idx, (frequency.get(entry.idx) || 0) + 1);
+    const predictionsByText = new Map<string, number[]>();
+    for (const pred of preds) {
+      const key = requireValue(textByIdx.get(pred.idx), `line text ${pred.idx}`);
+      const group = predictionsByText.get(key) || [];
+      group.push(pred.liveStartSec);
+      predictionsByText.set(key, group);
+    }
+    const signedErrors: number[] = [];
     const all: number[] = [],
       single: number[] = [],
       repeated: number[] = [];
     let singleTotal = 0,
       repeatedTotal = 0;
     for (const entry of gt) {
-      const isRepeated = (frequency.get(entry.idx) || 0) > 1;
+      const key = requireValue(textByIdx.get(entry.idx), `line text ${entry.idx}`);
+      const isRepeated = (linesByText.get(key)?.length || 0) > 1;
       if (isRepeated) repeatedTotal++;
       else singleTotal++;
-      const times = predByIdx.get(entry.idx);
+      const times = predictionsByText.get(key);
       if (!times?.length) continue;
-      const error = Math.min(...times.map(time => Math.abs(time - entry.live_start)));
+      const nearest = times.reduce((best, time) =>
+        Math.abs(time - entry.live_start) < Math.abs(best - entry.live_start) ? time : best,
+      );
+      const signed = nearest - entry.live_start;
+      signedErrors.push(signed);
+      const error = Math.abs(signed);
       all.push(error);
       (isRepeated ? repeated : single).push(error);
     }
+    const bias = quantile(signedErrors, 0.5) ?? 0;
+    const residuals = signedErrors.map(signed => Math.abs(signed - bias));
     results.push({
       bvid: id,
       matchedGtCount: gt.length,
+      bias: +bias.toFixed(3),
+      residual: stats(residuals, gt.length),
+      outliers: residuals.filter(residual => residual > 1).length,
       coarse: {
         predOffset: +coarse.offsetSec.toFixed(3),
         gtMedianOffset: +medianOffset.toFixed(3),
@@ -141,6 +134,10 @@ test.skipIf(!dataRoot)("silver metrics with collapsed and disambiguated ground t
     results.map(result => ({
       bvid: result.bvid,
       coarseErrorSec: result.coarse.absCoarseError,
+      bias: result.bias,
+      residualMedian: result.residual.median,
+      residualP90: result.residual.p90,
+      outliers: result.outliers,
       ...result.lineStats.all,
     })),
   );

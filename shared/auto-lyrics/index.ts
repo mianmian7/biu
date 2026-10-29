@@ -1,4 +1,12 @@
-export { alignLinesGapDTW, estimateGlobalOffset, findMedleySongs } from "./align";
+export {
+  alignLinesGapDTW,
+  estimateGlobalOffset,
+  findMedleySongs,
+  lyricAnchors,
+  referenceLag,
+  chooseConsensus,
+  selectReference,
+} from "./align";
 export { AudioFeatures } from "./features";
 export { FFT } from "./fft";
 export { generateLrc, parseLrc } from "./lrc";

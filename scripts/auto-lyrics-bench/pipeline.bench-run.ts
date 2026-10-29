@@ -15,6 +15,7 @@ import type { AutoLyricsResult } from "../../shared/auto-lyrics/service-types";
 import { AutoLyricsService } from "../../electron/auto-lyrics/service";
 import { sources } from "../../electron/auto-lyrics/sources";
 import { generateLrc } from "../../shared/auto-lyrics";
+import { lyricAnchors, selectReference } from "../../shared/auto-lyrics/align";
 import { normalize } from "../../shared/auto-lyrics/identify";
 import { algorithm, dataRoot, Measurement, root, writeReport } from "./common";
 
@@ -115,12 +116,14 @@ test.skipIf(!dataRoot)("pipeline: identify -> netease lyric -> reference -> coar
       },
     },
     decode: async bytes => algorithm.readWav(bytes).samples,
-    async align({ studio, live, lines }, _signal, onCoarse) {
-      const s = extractor().extract(studio);
+    async align({ studios, live, lines }, _signal, onCoarse) {
+      const features = studios.map(pcm => extractor().extract(pcm));
+      const selection = selectReference(features);
+      const s = features[selection.referenceIndex];
       const l = extractor().extract(live);
-      const coarse = algorithm.estimateGlobalOffset(s, l);
+      const coarse = algorithm.estimateGlobalOffset(s, l, null, lyricAnchors(lines));
       onCoarse(coarse);
-      return { coarse, lines: algorithm.alignLinesGapDTW(lines, s, l) };
+      return { ...selection, coarse, lines: algorithm.alignLinesGapDTW(lines, s, l) };
     },
     cache: { get: () => undefined, set: () => {} },
     references: { get: () => undefined, set: () => {} },

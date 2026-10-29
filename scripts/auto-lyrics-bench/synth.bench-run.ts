@@ -4,6 +4,7 @@ import { expect, test } from "vitest";
 
 import type { Prediction, SynthGt } from "./common";
 
+import { lyricAnchors } from "../../shared/auto-lyrics/align";
 import {
   algorithm,
   dataRoot,
@@ -148,7 +149,9 @@ test.skipIf(!dataRoot)("synthetic gold metrics", () => {
       continue;
     }
     const base = requireValue(cache.get(gt.base_song || ""), `base song for ${id}`);
-    const coarse = measurement.run(`${id}:coarse`, () => algorithm.estimateGlobalOffset(base.feat, liveFeat));
+    const coarse = measurement.run(`${id}:coarse`, () =>
+      algorithm.estimateGlobalOffset(base.feat, liveFeat, null, lyricAnchors(base.lines)),
+    );
     const preds = measurement.run(`${id}:align`, () => algorithm.alignLinesGapDTW(base.lines, base.feat, liveFeat));
     const transStats = byTransform.get(gt.transform) || emptyStats();
     evaluate(preds, gt, aggregate);
