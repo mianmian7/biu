@@ -135,7 +135,9 @@ export function sameName(a: string, b: string): boolean {
 }
 
 export function songTitles(song: SongCandidate): string[] {
-  return [...new Set([...titleVariants(song.name, song.artists), ...(song.aliases ?? []).filter(a => a.trim())])];
+  // NetEase annotates aliases: 无需既定的未来（少女乐队的呐喊 剧场版…主题曲）.
+  const aliases = (song.aliases ?? []).flatMap(a => [a, a.replace(/\s*[（(][^（）()]*[）)]\s*$/, "")]);
+  return [...new Set([...titleVariants(song.name, song.artists), ...aliases.filter(a => a.trim())])];
 }
 
 export function strongMatch(title: string, text: string): boolean {

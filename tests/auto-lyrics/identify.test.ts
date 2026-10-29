@@ -194,6 +194,25 @@ describe("rule identification", () => {
     });
   });
 
+  it("matches an alias without its trailing bracketed annotation (无需既定的未来)", () => {
+    const op = {
+      ...input,
+      title: "【中日歌词/GBC剧场版】命运之花完整版&剧场版OPED【MV】",
+      pageTitle: "OP1「无需既定的未来」",
+      duration: 94,
+      tid: 130,
+    };
+    const mirai = {
+      id: 3320294433,
+      name: "もう何もいらない未来",
+      artists: ["トゲナシトゲアリ"],
+      duration: 219,
+      aliases: ["无需既定的未来（少女乐队的呐喊 剧场版『【前篇】 青春狂走曲』主题曲）"],
+    };
+    const other = { id: 3327845552, name: "もう何もいらない未来", artists: ["トゲナシトゲアリ"], duration: 219 };
+    expect(identifyRules(op, [mirai, other])).toMatchObject({ status: "matched", song: { id: mirai.id } });
+  });
+
   it("drops commentary after a full stop from search queries", () => {
     const live = { ...input, title: gbcTitles.BV1dy75z8Enu, duration: 248, tid: 29 };
     const queries = identifyQueries(live);
