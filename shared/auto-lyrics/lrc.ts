@@ -31,3 +31,15 @@ export function generateLrc(lines: readonly AlignResult[]): string {
     })
     .join("\n");
 }
+
+/** Map source timestamps, never text or row numbers; omitted lines stay omitted. */
+export function mapCompanionLrc(source: string, aligned: readonly AlignResult[]): string {
+  const companions = parseLrc(source);
+  const mapped: AlignResult[] = [];
+  for (const line of aligned) {
+    // NetEase companions occasionally round milliseconds to centiseconds.
+    const matches = companions.filter(c => Math.abs(c.studio_start - line.studioStart) <= 0.011);
+    for (const companion of matches) mapped.push({ ...line, text: companion.text });
+  }
+  return generateLrc(mapped);
+}

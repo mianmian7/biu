@@ -2,9 +2,10 @@ import got from "got";
 
 import { UserAgent } from "../../network/user-agent";
 
-export function getSongByNetease(params: SearchSongByNeteaseParams) {
+export function getSongByNetease(params: SearchSongByNeteaseParams, signal?: AbortSignal) {
   return got
     .get("https://interface.music.163.com/api/search/get", {
+      signal,
       searchParams: {
         ...params,
       },
@@ -19,9 +20,10 @@ export function getSongByNetease(params: SearchSongByNeteaseParams) {
     .json<SearchSongByNeteaseResponse>();
 }
 
-export function getLyricsByNetease(params: GetLyricsByNeteaseParams) {
+export function getLyricsByNetease(params: GetLyricsByNeteaseParams, signal?: AbortSignal) {
   return got
     .get("https://interface.music.163.com/api/song/lyric", {
+      signal,
       searchParams: {
         ...params,
         tv: -1,

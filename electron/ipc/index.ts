@@ -1,6 +1,7 @@
 import type { IpcHandlerProps } from "./types";
 
 import { registerAppHandlers } from "./app";
+import { registerAutoLyricsHandlers } from "./auto-lyrics";
 import { registerCookieIpcHandlers } from "./cookie";
 import { registerDialogHandlers } from "./dialog";
 import { registerDownloadHandlers } from "./download";
@@ -21,5 +22,6 @@ export function registerIpcHandlers(props: IpcHandlerProps) {
   registerWindowHandlers(props);
   registerShortcutHandlers(props);
   registerLyricsHandlers();
+  registerAutoLyricsHandlers();
   registerLocalMusicHandlers();
 }

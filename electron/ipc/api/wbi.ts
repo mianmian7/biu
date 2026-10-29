@@ -17,9 +17,11 @@ const getMixinKey = (orig: string) =>
     .slice(0, 32);
 
 // 获取最新的 img_key 和 sub_key
-const getWbiKeys = async (cookie: string) => {
+const getWbiKeys = async (cookie: string, signal?: AbortSignal) => {
   try {
     const { body } = await got.get("https://api.bilibili.com/x/web-interface/nav", {
+      signal,
+      timeout: { request: 10000 },
       headers: {
         Cookie: cookie,
         "User-Agent": UserAgent,
@@ -42,8 +44,8 @@ const getWbiKeys = async (cookie: string) => {
 };
 
 // 为请求参数进行 wbi 签名
-export const encodeParamsWbi = async (params: Record<string, any>, cookie: string) => {
-  const { img_key, sub_key } = await getWbiKeys(cookie);
+export const encodeParamsWbi = async (params: Record<string, any>, cookie: string, signal?: AbortSignal) => {
+  const { img_key, sub_key } = await getWbiKeys(cookie, signal);
 
   if (!img_key || !sub_key) {
     return params;

@@ -4,6 +4,7 @@ import log from "electron-log";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { benchConfigPath, runAutoLyricsBench } from "./auto-lyrics/bench-runner";
 import { applyProxySettings } from "./ipc/app";
 import { channel } from "./ipc/channel";
 import { quitAndSaveTasks } from "./ipc/download";
@@ -132,7 +133,17 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    if (benchConfigPath !== undefined) {
+      try {
+        await runAutoLyricsBench(benchConfigPath);
+        app.exit(0);
+      } catch (error) {
+        log.error("[auto-lyrics-bench] Fatal configuration/output error:", error);
+        app.exit(1);
+      }
+      return;
+    }
     try {
       const settings = appSettingsStore.get("appSettings");
       applyProxySettings(settings?.proxySettings).catch(error => {

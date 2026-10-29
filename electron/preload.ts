@@ -21,6 +21,19 @@ const api: ElectronAPI = {
   searchNeteaseSongs: params => ipcRenderer.invoke(channel.lyrics.searchNeteaseSongs, params),
   getNeteaseLyrics: params => ipcRenderer.invoke(channel.lyrics.getNeteaseLyrics, params),
   searchLrclibLyrics: params => ipcRenderer.invoke(channel.lyrics.searchLrclib, params),
+  autoLyrics: {
+    start: params => ipcRenderer.invoke(channel.autoLyrics.start, params),
+    prefetch: params => ipcRenderer.invoke(channel.autoLyrics.prefetch, params),
+    cancel: key => ipcRenderer.invoke(channel.autoLyrics.cancel, key),
+    onProgress: cb => {
+      const handler = (
+        _: Electron.IpcRendererEvent,
+        progress: import("../shared/auto-lyrics/service-types").AutoLyricsProgress,
+      ) => cb(progress);
+      ipcRenderer.on(channel.autoLyrics.progress, handler);
+      return () => ipcRenderer.removeListener(channel.autoLyrics.progress, handler);
+    },
+  },
   setProxySettings: proxySettings => ipcRenderer.invoke(channel.app.setProxySettings, proxySettings),
   scanLocalMusic: dirs => ipcRenderer.invoke(channel.localMusic.scan, dirs),
   deleteLocalMusicFile: filePath => ipcRenderer.invoke(channel.localMusic.deleteFile, filePath),

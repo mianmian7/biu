@@ -14,6 +14,18 @@ declare global {
   }
 
   interface ElectronAPI {
+    autoLyrics: {
+      start: (
+        params: import("../auto-lyrics/service-types").AutoLyricsParams,
+      ) => Promise<import("../auto-lyrics/service-types").AutoLyricsResult>;
+      prefetch: (
+        params: import("../auto-lyrics/service-types").AutoLyricsParams,
+      ) => Promise<import("../auto-lyrics/service-types").AutoLyricsResult>;
+      cancel: (key?: string) => Promise<void>;
+      onProgress: (
+        callback: (progress: import("../auto-lyrics/service-types").AutoLyricsProgress) => void,
+      ) => VoidFunction;
+    };
     /** 获取指定name的存储值 */
     getStore: <N extends StoreName>(name: N) => Promise<StoreDataMap[N] | undefined>;
     /** 设置指定name的存储值 */

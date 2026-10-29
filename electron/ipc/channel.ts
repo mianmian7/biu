@@ -32,6 +32,12 @@ export const channel = {
     sync: "download:sync",
     clear: "download:clear",
   },
+  autoLyrics: {
+    start: "auto-lyrics:start",
+    prefetch: "auto-lyrics:prefetch",
+    cancel: "auto-lyrics:cancel",
+    progress: "auto-lyrics:progress",
+  },
   lyrics: {
     searchNeteaseSongs: "lyrics:netease-search",
     getNeteaseLyrics: "lyrics:netease-lyrics",

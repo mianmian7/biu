@@ -255,10 +255,12 @@ export interface Honor {
  * @param params 请求参数
  * @returns Promise<WebInterfaceViewResponse>
  */
-export const getWebInterfaceView = async (params: WebInterfaceViewRequestParams) => {
+export const getWebInterfaceView = async (params: WebInterfaceViewRequestParams, signal?: AbortSignal) => {
   const cookie = await getCookieString();
 
   const { body } = await got.get("https://api.bilibili.com/x/web-interface/view", {
+    signal,
+    timeout: { request: 15000 },
     headers: {
       "User-Agent": UserAgent,
       Cookie: cookie,
