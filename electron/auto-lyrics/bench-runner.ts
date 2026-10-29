@@ -8,7 +8,7 @@ import type { Identification } from "../../shared/auto-lyrics/identify";
 import type { AutoLyricsResult } from "../../shared/auto-lyrics/service-types";
 
 import { autoLyricsService } from "./runtime";
-import { sources } from "./sources";
+import { pageParams, sources } from "./sources";
 
 const caseSchema = z.object({
   bvid: z.string().regex(/^BV[\da-zA-Z]{10}$/),
@@ -62,19 +62,12 @@ function memorySampler() {
   };
 }
 
+/** Same identification input as the app: a single-part video's part name (often a file name) is ignored. */
 async function videoParams(item: z.infer<typeof caseSchema>, signal: AbortSignal) {
   const video = await sources.view(item.bvid, signal);
   const page = video.pages.find(page => page.page === item.page);
   if (!page) throw new Error(`Page ${item.page} not found for ${item.bvid}`);
-  return {
-    bvid: video.bvid,
-    cid: page.cid,
-    title: video.title,
-    pageTitle: page.part,
-    duration: page.duration,
-    tid: video.tid,
-    ownerName: video.ownerName,
-  };
+  return pageParams(video, page.cid);
 }
 
 /** Explicit opt-in only. Network failures are results; malformed configuration is fatal. */

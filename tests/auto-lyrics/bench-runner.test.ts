@@ -10,7 +10,10 @@ vi.mock("electron", () => ({
   app: { getAppMetrics: () => [{ pid: 1, type: "Browser", memory: { workingSetSize: 123, privateBytes: 100 } }] },
 }));
 vi.mock("electron-log", () => ({ default: { info: vi.fn() } }));
-vi.mock("../../electron/auto-lyrics/sources", () => ({ sources: { view: mocks.view } }));
+vi.mock("../../electron/auto-lyrics/sources", async importOriginal => ({
+  ...(await importOriginal<typeof import("../../electron/auto-lyrics/sources")>()),
+  sources: { view: mocks.view },
+}));
 vi.mock("../../electron/auto-lyrics/runtime", () => ({
   autoLyricsService: { start: mocks.start, identify: mocks.identify, onProgress: () => mocks.unsubscribe },
 }));
@@ -47,7 +50,10 @@ describe("Electron bench runner", () => {
       title: "合集",
       tid: 3,
       ownerName: "UP",
-      pages: [{ page: 2, cid: 20, part: "song", duration: 200 }],
+      pages: [
+        { page: 1, cid: 10, part: "intro", duration: 100 },
+        { page: 2, cid: 20, part: "song", duration: 200 },
+      ],
     });
     mocks.start.mockResolvedValue({ key: "BV1StSoBPEwu-20", status: "matched", timings: { coarse: 30, fine: 50 } });
     mocks.identify.mockResolvedValue({ status: "unidentified", confidence: 0 });
@@ -67,6 +73,23 @@ describe("Electron bench runner", () => {
     expect(rows[0].memory.peaks[0].workingSetKB).toBe(123);
     expect(rows[2].expect).toBe("unidentified");
     expect(mocks.unsubscribe).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores the part name of a single-part video, like the app", async () => {
+    mocks.view.mockResolvedValue({
+      bvid: "BV1gLHj6XEWY",
+      title: "10.2港刺《爆ぜて咲く/爆裂绽放》",
+      tid: 21,
+      ownerName: "UP",
+      pages: [{ page: 1, cid: 30, part: "TG-2026-10-04-172657959", duration: 248 }],
+    });
+    mocks.identify.mockResolvedValue({ status: "unidentified", confidence: 0 });
+    const { filename } = await config({ identifyOnly: [{ bvid: "BV1gLHj6XEWY" }] });
+    await runAutoLyricsBench(filename);
+    expect(mocks.identify).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cid: 30, pageTitle: undefined, duration: 248 }),
+      expect.any(AbortSignal),
+    );
   });
 
   it("records view failures and continues with the following case", async () => {

@@ -31,6 +31,25 @@ function durationSeconds(value: string | number): number {
   return value.split(":").reduce((total, part) => total * 60 + Number(part), 0);
 }
 
+type VideoView = Awaited<ReturnType<typeof sources.view>>;
+
+/**
+ * Identification input for one page. The page title is only trusted on multi-part videos: a single part is
+ * usually named after the uploaded file (TG-2026-10-04-172657959).
+ */
+export function pageParams(video: VideoView, cid: number) {
+  const page = video.pages.find(item => item.cid === cid);
+  return {
+    bvid: video.bvid,
+    cid,
+    title: video.title,
+    pageTitle: video.pages.length > 1 ? page?.part : undefined,
+    duration: page?.duration ?? video.duration,
+    tid: video.tid,
+    ownerName: video.ownerName,
+  };
+}
+
 export const sources = {
   async search(query: string, signal: AbortSignal): Promise<SongCandidate[]> {
     const response = await getSongByNetease({ s: query, type: 1, limit: 20, offset: 0 }, signal);
@@ -70,19 +89,8 @@ export const sources = {
     };
   },
 
-  /** Identification input for one page; the page title is only trusted on multi-part videos. */
   async params(bvid: string, cid: number, signal: AbortSignal) {
-    const video = await sources.view(bvid, signal);
-    const page = video.pages.find(item => item.cid === cid);
-    return {
-      bvid,
-      cid,
-      title: video.title,
-      pageTitle: video.pages.length > 1 ? page?.part : undefined,
-      duration: page?.duration ?? video.duration,
-      tid: video.tid,
-      ownerName: video.ownerName,
-    };
+    return pageParams(await sources.view(bvid, signal), cid);
   },
 
   async references(song: SongCandidate, signal: AbortSignal): Promise<ReferenceCandidate[]> {
