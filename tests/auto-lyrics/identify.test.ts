@@ -180,6 +180,20 @@ describe("rule identification", () => {
     );
   });
 
+  it("lets a longer matched name cover a song whose name is only its prefix (爆ぜて咲く vs 爆ぜて咲)", () => {
+    const live = { ...input, title: "【拉刺】爆ぜて咲く / 爆裂绽放", duration: 253, tid: 29 };
+    const prefix = { id: 3442900298, name: "爆ぜて咲", artists: ["Jav @須野高校軽音部"], duration: 213 };
+    expect(identifyRules(live, [...hazeteHits, prefix])).toMatchObject({
+      status: "matched",
+      song: { name: "爆ぜて咲く", artists: ["トゲナシトゲアリ"] },
+    });
+    // The short name still wins when it is the only song named in the title.
+    expect(identifyRules({ ...live, title: "爆ぜて咲 MV" }, [...hazeteHits, prefix])).toMatchObject({
+      status: "matched",
+      song: { id: prefix.id },
+    });
+  });
+
   it("drops commentary after a full stop from search queries", () => {
     const live = { ...input, title: gbcTitles.BV1dy75z8Enu, duration: 248, tid: 29 };
     const queries = identifyQueries(live);

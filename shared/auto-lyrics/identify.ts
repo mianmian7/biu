@@ -260,7 +260,13 @@ export function identifyRules(
   const context = `${input.title}\n${input.pageTitle ?? ""}`;
   const matches = candidates.flatMap(song => ruleMatches([song], text, context, extra));
   const unique = [...new Map(matches.map(c => [c.song.id, c])).values()];
-  const chosen = chooseRule(unique, input.duration);
+  // 爆ぜて咲 only matches because the title says 爆ぜて咲く, which another candidate is named.
+  const longer = unique.flatMap(c => c.titles);
+  const covered = (title: string) => longer.some(other => other.length > title.length && other.includes(title));
+  const chosen = chooseRule(
+    unique.filter(c => !c.titles.every(covered)),
+    input.duration,
+  );
   if (!chosen) return { status: "unidentified", confidence: 0 };
   const { match, majority } = chosen;
   return { status: "matched", song: match.song, confidence: match.artistMatch ? 0.95 : majority ? 0.65 : 0.8 };
