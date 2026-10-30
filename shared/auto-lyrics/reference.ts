@@ -1,6 +1,6 @@
 import type { SongCandidate } from "./identify";
 
-import { songTitles, strongMatch } from "./identify";
+import { songTitles, strongMatch, withoutTrailingNote } from "./identify";
 
 export interface ReferenceCandidate {
   bvid: string;
@@ -17,9 +17,11 @@ export function rankReferences(
 ): (ReferenceCandidate & { score: number })[] {
   const songDuration = song.duration;
   if (!Number.isFinite(songDuration) || songDuration <= 0) return [];
+  // An upload of swim (Cover) / MyGO!!!!! is titled 【MyGO!!!!!】swim.
+  const titles = [...new Set(songTitles(song).flatMap(title => [title, withoutTrailingNote(title)]))];
   return candidates
     .filter(c => Number.isFinite(c.duration) && c.duration > 0 && Math.abs(c.duration - songDuration) <= 2)
-    .filter(c => songTitles(song).some(title => strongMatch(title, c.title)))
+    .filter(c => titles.some(title => strongMatch(title, c.title)))
     .map(c => {
       let score = Math.abs(c.duration - songDuration) <= 1 ? 60 : 40;
       if (/官方|原曲|\bcd\b|cd音源|hi-?res|完整版|无损/i.test(c.title)) score += 25;

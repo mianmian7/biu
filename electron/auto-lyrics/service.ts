@@ -1,16 +1,10 @@
-import type { IdentifyInput, SongCandidate } from "../../shared/auto-lyrics/identify";
+import type { Identification, IdentifyInput, SongCandidate } from "../../shared/auto-lyrics/identify";
 import type { ReferenceCandidate } from "../../shared/auto-lyrics/reference";
 import type { AutoLyricsParams, AutoLyricsProgress, AutoLyricsResult } from "../../shared/auto-lyrics/service-types";
 import type { AlignLine, AlignResult, GlobalOffset } from "../../shared/auto-lyrics/types";
 
 import { selectReference, verifyScore } from "../../shared/auto-lyrics/align";
-import {
-  identifyPrimaryQueries,
-  identifyQueries,
-  identifyRules,
-  ruleMatches,
-  songText,
-} from "../../shared/auto-lyrics/identify";
+import { identifyBySearch, LIVE, normalize, unmentionedNote } from "../../shared/auto-lyrics/identify";
 import { generateLrc, mapCompanionLrc, parseLrc } from "../../shared/auto-lyrics/lrc";
 import { checkVocalOnset, rankReferences } from "../../shared/auto-lyrics/reference";
 import { isDecodeUnavailable } from "./ffmpeg-resolve";
@@ -45,6 +39,13 @@ export interface AutoLyricsDependencies {
 
 /** verifyScore a contender needs, and its lead over the runner-up (cross bench: same song ≥ 0.79, other ≤ 0.67). */
 const VERIFY_MIN_SCORE = 0.72;
+/**
+ * Without any reference, a studio upload (same length as the release, not a Live) is its own reference: the
+ * release's timestamps apply as they are once the first lyric line starts on a vocal onset. Confidence stays
+ * low because only the opening is checked.
+ */
+const SELF_REFERENCE_MAX_GAP = 2;
+const SELF_REFERENCE_CONFIDENCE = 0.6;
 const VERIFY_MIN_MARGIN = 0.05;
 
 interface Attempt {
@@ -58,6 +59,14 @@ interface Attempt {
   lyrics?: MusicLyrics;
   memoryPeakKB?: number;
   error?: string;
+}
+
+/** Releases and covers of one song share most lyric lines; different songs that share a name do not. */
+function sameLyrics(a: Attempt, b: Attempt): boolean {
+  const lines = (attempt: Attempt) => new Set((attempt.lines ?? []).map(line => normalize(line.text)).filter(Boolean));
+  const [x, y] = [lines(a), lines(b)];
+  const shared = [...x].filter(line => y.has(line)).length;
+  return Math.min(x.size, y.size) > 0 && shared >= 0.8 * Math.min(x.size, y.size);
 }
 
 interface Task {
@@ -153,33 +162,13 @@ export class AutoLyricsService {
     return task.promise;
   }
 
-  async identify(params: IdentifyInput, signal = new AbortController().signal) {
-    const initial = identifyRules(params, []);
-    if (initial.status === "collection" || initial.status === "not-music") return initial;
-    const candidates = new Map<number, SongCandidate>();
-    const text = songText(params.title, params.pageTitle);
-    const context = `${params.title}\n${params.pageTitle ?? ""}`;
-    const primary = identifyPrimaryQueries(params);
-    const search = async (query: string, extra: boolean) => {
+  identify(params: IdentifyInput, signal = new AbortController().signal) {
+    return identifyBySearch(params, async query => {
       signal.throwIfAborted();
       const songs = await this.dependencies.sources.search(query, signal);
       signal.throwIfAborted();
-      for (const match of ruleMatches(songs, text, context, extra)) candidates.set(match.song.id, match.song);
-    };
-    for (const query of primary) await search(query, false);
-    if (!candidates.size) {
-      for (const query of identifyQueries(params)) {
-        if (primary.includes(query)) continue;
-        await search(query, true);
-        if (candidates.size) break;
-      }
-    }
-    const identified = identifyRules(params, [...candidates.values()]);
-    if (identified.status !== "ambiguous") return identified;
-    // Search order: NetEase ranks the canonical release of a shared title first.
-    const rank = [...candidates.keys()];
-    identified.contenders.sort((a, b) => rank.indexOf(a.id) - rank.indexOf(b.id));
-    return identified;
+      return songs;
+    });
   }
 
   /** Lyrics, a version-checked reference and alignment for one candidate song against the shared Live audio. */
@@ -291,6 +280,62 @@ export class AutoLyricsService {
     };
   }
 
+  /** Other releases by the same artist, then the upload itself as the reference. */
+  private async fallback(
+    identified: Extract<Identification, { status: "matched" }>,
+    params: AutoLyricsParams,
+    livePromise: Promise<Float32Array>,
+    signal: AbortSignal,
+    stamp: (stage: string) => void,
+  ): Promise<Attempt | undefined> {
+    for (const [index, alternate] of (identified.alternates ?? []).slice(0, 2).entries()) {
+      try {
+        const attempt = await this.attempt(alternate, livePromise, signal, stage => stamp(`${stage}~${index + 1}`));
+        if (attempt.status === "matched") return attempt;
+      } catch (error) {
+        signal.throwIfAborted();
+        if (isDecodeUnavailable(error)) throw error;
+      }
+    }
+    if (LIVE.test(`${params.title}\n${params.pageTitle ?? ""}`)) return;
+    const live = await livePromise;
+    const seconds = live.length / 22050;
+    const song = [identified.song, ...(identified.alternates ?? [])].find(
+      candidate => Math.abs(candidate.duration - seconds) <= SELF_REFERENCE_MAX_GAP,
+    );
+    if (!song) return;
+    const lyrics = await this.dependencies.sources.lyric(song.id, signal);
+    const lines = parseLrc(lyrics.lrc);
+    if (!lines.length || !checkVocalOnset(live, 22050, lines[0].studio_start)) return;
+    stamp("selfReference");
+    const aligned: AlignResult[] = lines.map(line => ({
+      idx: line.idx,
+      text: line.text,
+      studioStart: line.studio_start,
+      liveStartSec: line.studio_start,
+      confidence: SELF_REFERENCE_CONFIDENCE,
+      uncertain: false,
+    }));
+    const coarse = { offsetSec: 0, confidence: SELF_REFERENCE_CONFIDENCE };
+    return {
+      song,
+      status: "matched",
+      coarse,
+      lines: aligned,
+      verifyScore: verifyScore(aligned),
+      lyrics: {
+        source: "auto",
+        algoVersion: AUTO_LYRICS_ALGO_VERSION,
+        songId: song.id,
+        refBvid: params.bvid,
+        confidence: SELF_REFERENCE_CONFIDENCE,
+        lyrics: generateLrc(aligned),
+        tLyrics: lyrics.tlyric ? mapCompanionLrc(lyrics.tlyric, aligned) : undefined,
+        rLyrics: lyrics.romalrc ? mapCompanionLrc(lyrics.romalrc, aligned) : undefined,
+      },
+    };
+  }
+
   private async run(params: AutoLyricsParams, parentSignal: AbortSignal): Promise<AutoLyricsResult> {
     const controller = new AbortController();
     const signal = AbortSignal.any([parentSignal, controller.signal]);
@@ -359,13 +404,29 @@ export class AutoLyricsService {
           });
         }
       }
+      if (!arbitrate && attempts[0].status === "no-reference") {
+        const fallback = await this.fallback(identified, params, livePromise, signal, stamp);
+        if (fallback) attempts[0] = fallback;
+      }
       const contenders = arbitrate
         ? attempts.map(a => ({ song: a.song, status: a.status, verifyScore: a.verifyScore, error: a.error }))
         : undefined;
       const best = attempts
         .filter(a => a.status === "matched")
         .sort((a, b) => (b.verifyScore ?? 0) - (a.verifyScore ?? 0));
-      const [first, second] = best;
+      // Contenders within the margin that carry the same lyrics are one song (an album track and its covers fit
+      // equally well): the best-ranked search hit among them stands for the group. A release whose note the video
+      // does not mention gives way to the one release without it: 影色舞 over 影色舞(中文版).
+      const tied = best.filter(a => (best[0].verifyScore ?? 0) - (a.verifyScore ?? 0) < VERIFY_MIN_MARGIN);
+      const context = `${params.title}\n${params.pageTitle ?? ""}`;
+      const plain = tied.filter(a => !unmentionedNote(a.song.name, context));
+      const merged = tied.length > 1 && (plain.length === 1 || tied.every(a => sameLyrics(a, best[0])));
+      const leader = !merged
+        ? best[0]
+        : plain.length === 1
+          ? plain[0]
+          : tied.sort((a, b) => songs.indexOf(a.song) - songs.indexOf(b.song))[0];
+      const [first, second] = merged ? [leader, best.find(a => !tied.includes(a))] : best;
       // The top search hit as the only contender with a reference needs no lead, just the single-song fit.
       const loneTopHit = !second && first?.song.id === songs[0].id && (first.verifyScore ?? 0) >= VERIFY_MIN_SINGLE;
       const chosen =
@@ -388,14 +449,16 @@ export class AutoLyricsService {
           referenceCheck: chosen.referenceCheck,
           coarse: chosen.coarse,
         });
-      if (chosen.status !== "matched" || !chosen.lyrics || !chosen.reference)
+      if (chosen.status !== "matched" || !chosen.lyrics)
         return result(chosen.status, {
           coarse: chosen.coarse,
           utilityMemoryPeakKB: chosen.memoryPeakKB,
           error: chosen.error,
         });
-      this.referenceCache.set(chosen.song.id, chosen.reference);
-      this.dependencies.references.set(chosen.song.id, chosen.reference);
+      if (chosen.reference) {
+        this.referenceCache.set(chosen.song.id, chosen.reference);
+        this.dependencies.references.set(chosen.song.id, chosen.reference);
+      }
       // Re-read at write time: the user may have edited lyrics while this task ran.
       if (!isManual(this.dependencies.cache.get(key))) this.dependencies.cache.set(key, chosen.lyrics);
       stamp("cacheWrite");

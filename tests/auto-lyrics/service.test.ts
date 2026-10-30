@@ -80,10 +80,15 @@ function setup() {
 }
 
 /** Two same-title songs by different artists; each one's reference decodes to a distinguishable length. */
-function arbitration(scores: Record<number, number>) {
+/** Two contenders sharing a name; they are different songs (different lyrics) unless `sameLyrics`. */
+function arbitration(scores: Record<number, number>, sameLyrics = false) {
   const context = setup();
   const { dependencies, pcm } = context;
   const cover = { ...song, id: 43, artists: ["Other"] };
+  if (!sameLyrics)
+    dependencies.sources.lyric.mockImplementation((async (id: number) => ({
+      lrc: id === cover.id ? "[00:02.00]other\n[00:03.00]song" : "[00:02.00]hello\n[00:03.00]world",
+    })) as never);
   const lengths = new Map([
     [song.id, pcm.length],
     [cover.id, pcm.length + 1],
@@ -441,6 +446,60 @@ describe("AutoLyricsService", () => {
     }
   });
 
+  it("treats tied contenders with the same lyrics as one song and keeps the top search hit", async () => {
+    for (const scores of [
+      { 42: 0.9, 43: 0.92 },
+      { 42: 0.66, 43: 0.67 },
+    ]) {
+      const { service } = arbitration(scores, true);
+      const result = await service.start(params);
+      expect(result.status).toBe("matched");
+      expect(result.song?.id).toBe(42);
+    }
+  });
+
+  it("prefers the release without an unmentioned note when alignment ties (影色舞 over 影色舞(中文版))", async () => {
+    const { service, dependencies, cover } = arbitration({ 42: 0.88, 43: 0.9 });
+    dependencies.sources.search.mockResolvedValue([song, { ...cover, name: `${song.name} (中文版)` }]);
+    const result = await service.start(params);
+    expect(result.status).toBe("matched");
+    expect(result.song?.id).toBe(42);
+    const mentioned = arbitration({ 42: 0.88, 43: 0.9 });
+    mentioned.dependencies.sources.search.mockResolvedValue([song, { ...cover, name: `${song.name} (中文版)` }]);
+    const named = await mentioned.service.start({ ...params, title: `${params.title} 中文版` });
+    expect([named.status, named.song?.id]).toEqual(["matched", 43]);
+  });
+
+  it("tries another release by the same artist when the chosen one has no reference", async () => {
+    const { service, dependencies } = setup();
+    const anime = { ...song, id: 50, name: "DECORATOR (Anime ver.)", duration: params.duration };
+    const studio = { ...song, id: 51, duration: params.duration + 1 };
+    dependencies.sources.search.mockResolvedValue([anime, studio]);
+    dependencies.sources.references.mockImplementation((async (candidate: typeof song) =>
+      candidate.id === studio.id ? [reference] : []) as never);
+    const result = await service.start(params);
+    expect(result.status).toBe("matched");
+    expect(result.song?.id).toBe(studio.id);
+  });
+
+  it("uses a studio upload as its own reference when no reference exists", async () => {
+    const { service, dependencies, entries } = setup();
+    dependencies.sources.references.mockResolvedValue([]);
+    const result = await service.start(params);
+    expect(result.status).toBe("matched");
+    expect(result.lines?.[0]).toMatchObject({ liveStartSec: 2 });
+    expect(entries.get(result.key)).toMatchObject({ refBvid: params.bvid, lyrics: expect.stringContaining("hello") });
+
+    const live = setup();
+    live.dependencies.sources.references.mockResolvedValue([]);
+    expect((await live.service.start({ ...params, title: "DECORATOR LIVE" })).status).toBe("no-reference");
+
+    const silent = setup();
+    silent.dependencies.sources.references.mockResolvedValue([]);
+    silent.dependencies.decode.mockResolvedValue(new Float32Array(22050 * 5));
+    expect((await silent.service.start(params)).status).toBe("no-reference");
+  });
+
   it("accepts the top search hit when it is the only contender with a reference", async () => {
     for (const [scores, status] of [
       [{ 42: 0.52 }, "matched"],
@@ -464,7 +523,7 @@ describe("AutoLyricsService", () => {
   it("orders ambiguous contenders by NetEase search rank", async () => {
     const { service, dependencies } = setup();
     const near = { ...song, id: 44, artists: ["Near"], duration: params.duration };
-    dependencies.sources.search.mockResolvedValue([{ ...song, duration: params.duration + 30 }, near]);
+    dependencies.sources.search.mockResolvedValue([{ ...song, duration: params.duration + 1 }, near]);
     const result = await service.identify(params);
     expect(result).toMatchObject({ status: "ambiguous", contenders: [{ id: song.id }, { id: 44 }] });
   });
@@ -476,7 +535,11 @@ describe("AutoLyricsService", () => {
       .mockResolvedValueOnce([{ ...song, id: 43, artists: ["Other"] }]);
     const result = await service.identify({ ...params, title: "DECORATOR / stage", pageTitle: "DECORATOR" });
     expect(result).toMatchObject({ status: "ambiguous", contenders: [{ id: song.id }, { id: 43 }] });
-    expect(dependencies.sources.search.mock.calls.map(args => args[0])).toEqual(["DECORATOR", "DECORATOR / stage"]);
+    // Still ambiguous after the primary queries, so the fallback fragments are searched too.
+    expect(dependencies.sources.search.mock.calls.map(args => args[0]).slice(0, 2)).toEqual([
+      "DECORATOR",
+      "DECORATOR / stage",
+    ]);
   });
 
   it("applies the stricter fallback rule to avoid matching a title prefix", async () => {

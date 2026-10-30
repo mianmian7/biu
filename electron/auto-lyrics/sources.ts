@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { SongCandidate } from "../../shared/auto-lyrics/identify";
 import type { ReferenceCandidate } from "../../shared/auto-lyrics/reference";
 
+import { withoutTrailingNote } from "../../shared/auto-lyrics/identify";
 import { rankReferences } from "../../shared/auto-lyrics/reference";
 import { getDashurl } from "../ipc/api/dash-url";
 import { getLyricsByNetease, getSongByNetease } from "../ipc/api/netease-lyric";
@@ -100,7 +101,7 @@ export const sources = {
       const params = await encodeParamsWbi(
         {
           search_type: "video",
-          keyword: `${song.name} ${song.artists[0] ?? ""}`,
+          keyword: `${withoutTrailingNote(song.name)} ${song.artists[0] ?? ""}`,
           page: 1,
           page_size: 50,
           order: "totalrank",

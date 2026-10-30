@@ -16,7 +16,7 @@ const QUOTE_PATTERN =
 
 const ALBUM_PATTERN = /(ost|soundtrack|原声|原声带|专辑|精选集|音乐集)/i;
 
-const GENERIC_CANDIDATE_PATTERN =
+export const GENERIC_CANDIDATE_PATTERN =
   /^(bgm|ost|ep|op|ed|pv|mv|demo|remix|intro|outro|instrumental|i|ii|iii|iv|v|vi|vii|viii|ix|x|from|with|the|and|for|you|me|my|your|our|this|that|ver|version|feat|ft|full|part|pt|original|audio|video|song|track|theme|boss战?|战斗曲?|决战|序章|序曲|终章|插曲|主题曲|片尾曲|片头曲|前奏|间奏|尾声|伴奏|纯音乐|试听|完整版|加长版|变奏版|变奏|现场版|电台|合集|片段|剪辑|剧情|场景|鉴赏|纪念|庆典|动画|预告|主题|音乐|游戏|官方|原唱|翻唱|歌词|字幕|中字|双语|国语|日语|英语)$/i;
 
 const BRACKET_PATTERN = /[【[（(〔［｛]([^】\]）)〕］｝]*)[】\]）)〕］｝]/g;

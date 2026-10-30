@@ -13,6 +13,7 @@ import {
   sameName,
   strongMatch,
   titleVariants,
+  unmentionedNote,
 } from "../../shared/auto-lyrics/identify";
 import { romanizeKana } from "../../shared/auto-lyrics/kana";
 import { buildSearchQueries } from "../../shared/auto-lyrics/title-candidates";
@@ -193,6 +194,124 @@ describe("rule identification", () => {
     expect(strongMatch("Girls Band Cry", gbcTitles.BV1QhieYjEY2)).toBe(true);
   });
 
+  it("matches a quoted one-word English title followed by a romaji artist", () => {
+    const title = "【中日歌词/后篇主题曲/完整版】少女乐队的呐喊 剧场版后篇主题曲「arrow」TOGENASHI TOGEARI【无损音质】";
+    // NetEase hits for the BV1vX2iB1ERj title (Mac, 2026-10-30).
+    const arrow = [
+      { id: 3325110244, name: "arrow", artists: ["トゲナシトゲアリ"], duration: 188 },
+      { id: 3327846337, name: "arrow", artists: ["トゲナシトゲアリ"], duration: 188 },
+    ];
+    expect(strongMatch("arrow", title)).toBe(true);
+    const identified = identifyRules({ ...input, title, duration: 189, tid: 130 }, arrow);
+    expect(identified.status).toBe("matched");
+    expect(identified.status === "matched" && identified.song.name).toBe("arrow");
+  });
+
+  it("drops setlist marks from searches and names (BV1coZbY6EfE)", () => {
+    const encore = {
+      ...input,
+      title: "【Hires】EN2 名もなき何もかも(reprise)-トゲナシトゲアリ | 1st",
+      duration: 230,
+      tid: 29,
+    };
+    const queries = identifyPrimaryQueries(encore);
+    expect(queries).not.toContain("1st");
+    expect(queries).toContain("トゲナシトゲアリ");
+    // NetEase hits for "1st" and "名もなき何もかも reprise" (Mac, 2026-10-30).
+    const hits = [
+      { id: 22829662, name: "1ST", artists: ["Buzz"], duration: 248 },
+      { id: 3327800495, name: "1st", artists: ["Chuckyy"], duration: 139 },
+      { id: 2051267438, name: "名もなき何もかも", artists: ["トゲナシトゲアリ"], duration: 188 },
+      { id: 2629442227, name: "名もなき何もかも", artists: ["Hanser"], duration: 189 },
+      { id: 2149020724, name: "名もなき何もかも", artists: ["トゲナシトゲアリ"], duration: 189 },
+    ];
+    const identified = identifyRules(encore, hits);
+    expect(identified.status).toBe("matched");
+    expect(identified.status === "matched" && identified.song.artists).toEqual(["トゲナシトゲアリ"]);
+  });
+
+  // Playlist titles (Mac, 2026-10-30) whose setlist or display marks matched unrelated NetEase songs.
+  it("ignores display and setlist marks as song names", () => {
+    const toge = (name: string, aliases: string[] = []) => ({
+      id: name.length,
+      name,
+      artists: ["トゲナシトゲアリ"],
+      duration: 200,
+      aliases,
+    });
+    const noise = ["BD", "M-15", "Encore", "CV", "井芹仁菜", "第一话"].map((name, i) => ({
+      id: 900 + i,
+      name,
+      artists: ["Other"],
+      duration: 200,
+    }));
+    for (const [title, song] of [
+      ["【4K·BD｜中字】赌上命运的理论 - 无刺有刺「3rd」", toge("運命に賭けたい論理", ["赌上命运的理论"])],
+      [
+        "4th_M-15 Vo.理名 - 雑踏、僕らの街／トゲナシトゲアリ 4th ONE-MAN LIVE「協奏の響」24.12.20",
+        toge("雑踏、僕らの街"),
+      ],
+      ["EN-1 Vo.理名 - 偽りの理 [ENCORE]／2nd LIVE", toge("偽りの理")],
+      ["M-01_Vo.井芹仁菜 CV.理名 - 名もなき何もかも／TOGENASHI TOGEARI 1st ONE-MAN LIVE", toge("名もなき何もかも")],
+    ] as const) {
+      const identified = identifyRules({ ...input, title, duration: 200, tid: 29 }, [song, ...noise]);
+      expect(identified.status === "matched" && identified.song.name).toBe(song.name);
+    }
+    const title = "【中日歌词/第一话插曲完整版】哭泣少女乐队(闺泣)Girls Band Cry 「空箱」TOGENASHI TOGEARI【无损】";
+    const filler = { id: 1365727194, name: "从今以后", artists: ["Super Girls"], duration: 200, aliases: ["完整版"] };
+    expect(identifyRules({ ...input, title, duration: 184, tid: 193 }, [filler, ...noise]).status).toBe("unidentified");
+  });
+
+  it("keeps the song when a cover joins its name and translation, or an alias is a role", () => {
+    const toge = {
+      id: 1,
+      name: "名もなき何もかも",
+      artists: ["トゲナシトゲアリ"],
+      duration: 189,
+      aliases: ["皆无其名"],
+    };
+    const joined = { id: 2, name: "「名もなき何もかも」- 皆无其名", artists: ["咲间妮娜Official"], duration: 208 };
+    const role = { id: 3, name: "找回自己的开始", artists: ["花嫁小么的帅哥"], duration: 200, aliases: ["插曲"] };
+    const cover = { id: 4, name: "皆无其名", artists: ["翅月"], duration: 188 };
+    for (const title of [
+      "【GIRLS BAND CRY/LIVE】名もなき何もかも「皆无其名」最初的歌！最初的五人！最初的live！さいこう！",
+      "【中日歌词MV/第七话插曲/完整版】哭泣少女乐队(闺泣) 「皆无其名」TOGENASHI TOGEARI",
+    ]) {
+      const identified = identifyRules({ ...input, title, duration: 240, tid: 29 }, [
+        toge,
+        { ...toge, id: 5 },
+        joined,
+        role,
+        cover,
+      ]);
+      expect(identified.status === "matched" && identified.song.artists).toEqual(["トゲナシトゲアリ"]);
+    }
+    const page = "Vo.井芹仁菜 CV.理名_雑踏、僕らの街 ／TOGENASHI TOGEARI 1st ONE-MAN LIVE";
+    expect(identifyPrimaryQueries({ ...input, title: page, tid: 29 }).some(q => q.includes("雑踏、僕らの街"))).toBe(
+      true,
+    );
+  });
+
+  it("lets a specific name outrank a stray word that is also a song (GBC)", () => {
+    const title = "「GBC」空白与宣泄4K120帧HiresMV-空白とカタルシス";
+    const hits = [
+      { id: 7, name: "GBC (feat. lil faradeyyy)", artists: ["xenshel"], duration: 150 },
+      { id: 8, name: "空白とカタルシス", artists: ["トゲナシトゲアリ"], duration: 190, aliases: ["空白与宣泄"] },
+    ];
+    const identified = identifyRules({ ...input, title, duration: 191, tid: 193 }, hits);
+    expect(identified.status === "matched" && identified.song.id).toBe(8);
+  });
+
+  it("gives no lyrics to a video that sings new words (填词) over a song", () => {
+    const title = "【填词/八幡海铃】“让集体荣誉感和团魂见鬼去吧！”《说谎的马卡龙》";
+    expect(identifyRules({ ...input, title, duration: 160, tid: 30 }, []).status).toBe("not-music");
+  });
+
+  it("searches a quoted name early", () => {
+    const title = "[4k60帧/live优化]「空の箱」-トゲナシトゲアリ | 5th";
+    expect(identifyPrimaryQueries({ ...input, title, duration: 351, tid: 29 })).toContain("空の箱");
+  });
+
   // NetEase search results recorded on the Mac (2026-10-29), trimmed to the fields identify uses.
   const laroiHits = [
     { id: 1, name: "girls", artists: ["The Kid LAROI"], duration: 153 },
@@ -346,5 +465,18 @@ describe("rule identification", () => {
       const queries = [...buildSearchQueries(title), ...identifyQueries({ ...input, title })];
       expect(queries.filter(q => /^(girls|band|cry)$/i.test(q))).toEqual([]);
     }
+  });
+  it("splits a one-character name off a bracketed tag (【Official Music Video】栞)", () => {
+    const shiori = { id: 60, name: "栞", artists: ["MyGO!!!!!"], duration: 228 };
+    const mv = { ...input, title: "MyGO!!!!!「栞」【Official Music Video】栞 （Shiori）", duration: 230 };
+    expect(identifyRules(mv, [shiori])).toMatchObject({ status: "matched", song: { name: "栞" } });
+    expect(identifyRules({ ...mv, title: "MyGO!!!!!【Official Music Video】栞 （Shiori）" }, [shiori])).toMatchObject({
+      status: "matched",
+    });
+  });
+  it("tells a release note the video does not mention", () => {
+    expect(unmentionedNote("影色舞(中文版)", "影色舞【MyGO!!!!!】")).toBe(true);
+    expect(unmentionedNote("春日影（粤语版）", "粤语版 春日影")).toBe(false);
+    expect(unmentionedNote("影色舞", "影色舞")).toBe(false);
   });
 });

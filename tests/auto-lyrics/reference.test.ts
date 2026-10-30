@@ -114,4 +114,8 @@ describe("studio reference selection", () => {
     }
     expect(checkVocalOnset(entrance, rate, 2)).toBe(true);
   });
+  it("matches a reference title without the release's trailing note (swim (Cover))", () => {
+    const cover: SongCandidate = { id: 2, name: "swim (Cover)", artists: ["MyGO!!!!!"], duration: 220 };
+    expect(rankReferences([{ bvid: "swim", title: "【MyGO!!!!!】swim 原曲", duration: 220 }], cover)).toHaveLength(1);
+  });
 });
