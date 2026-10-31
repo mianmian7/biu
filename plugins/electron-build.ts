@@ -2,6 +2,9 @@ import { logger } from "@rsbuild/core";
 import { build as electronBuild } from "electron-builder";
 
 import pkg from "../package.json";
+
+// Releases and auto-updates go to the repository that builds them (a fork publishes to itself).
+const [owner, repo] = (process.env.GITHUB_REPOSITORY ?? "wood3n/biu").split("/");
 import { ELECTRON_OUT_DIRNAME, ELECTRON_ICON_BASE_PATH } from "../shared/path";
 
 export async function buildElectron() {
@@ -80,8 +83,8 @@ export async function buildElectron() {
       },
       publish: {
         provider: "github",
-        owner: "wood3n",
-        repo: "biu",
+        owner,
+        repo,
         releaseType: null,
       },
     },

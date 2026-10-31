@@ -14,6 +14,23 @@ declare global {
   }
 
   interface ElectronAPI {
+    autoLyrics: {
+      /** Only bvid/cid are required; the main process fills title/tid/duration from the view API. */
+      start: (
+        params:
+          | import("../auto-lyrics/service-types").AutoLyricsParams
+          | { bvid: string; cid: number; bypassCache?: boolean },
+      ) => Promise<import("../auto-lyrics/service-types").AutoLyricsResult>;
+      prefetch: (
+        params:
+          | import("../auto-lyrics/service-types").AutoLyricsParams
+          | { bvid: string; cid: number; bypassCache?: boolean },
+      ) => Promise<import("../auto-lyrics/service-types").AutoLyricsResult>;
+      cancel: (key?: string) => Promise<void>;
+      onProgress: (
+        callback: (progress: import("../auto-lyrics/service-types").AutoLyricsProgress) => void,
+      ) => VoidFunction;
+    };
     /** 获取指定name的存储值 */
     getStore: <N extends StoreName>(name: N) => Promise<StoreDataMap[N] | undefined>;
     /** 设置指定name的存储值 */
@@ -80,6 +97,20 @@ declare global {
     quitAndInstall: () => Promise<void>;
     /** 切换 mini/主窗口 */
     toggleMiniPlayer: () => Promise<void>;
+    /** 同步桌面歌词状态与展示内容（主窗口 -> 主进程 -> 桌面歌词窗口） */
+    syncDesktopLyrics: (payload: DesktopLyricsPayload) => void;
+    /** 桌面歌词窗口：订阅展示内容 */
+    onDesktopLyricsContent: (cb: (payload: DesktopLyricsPayload) => void) => VoidFunction;
+    /** 桌面歌词窗口：主动获取当前展示内容 */
+    getDesktopLyricsContent: () => Promise<DesktopLyricsPayload | undefined>;
+    /** 主窗口：订阅“显示/隐藏桌面歌词”请求（来自托盘或桌面歌词窗口按钮） */
+    onDesktopLyricsToggleRequested: (cb: () => void) => VoidFunction;
+    /** 主窗口：订阅“锁定/解锁桌面歌词”请求 */
+    onDesktopLyricsLockToggleRequested: (cb: () => void) => VoidFunction;
+    /** 请求切换桌面歌词显示状态（桌面歌词窗口按钮使用） */
+    requestDesktopLyricsToggle: () => void;
+    /** 请求切换桌面歌词锁定状态（桌面歌词窗口按钮使用） */
+    requestDesktopLyricsToggleLock: () => void;
     /** 最小化窗口 */
     minimizeWindow: () => void;
     /** 最大化/还原窗口 */

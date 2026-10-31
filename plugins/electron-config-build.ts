@@ -10,6 +10,7 @@ import { ELECTRON_OUT_DIR, ICONS_DST_DIR } from "../shared/path";
 
 const MAIN_ENTRY = path.resolve(process.cwd(), "electron/main.ts");
 const PRELOAD_ENTRY = path.resolve(process.cwd(), "electron/preload.ts");
+const ALIGN_WORKER_ENTRY = path.resolve(process.cwd(), "electron/auto-lyrics/align-worker.ts");
 const ICONS_SRC_DIR = path.resolve(process.cwd(), "electron/icons");
 
 function createRollupOptions(input: string): RollupOptions {
@@ -38,17 +39,17 @@ function createRollupOptions(input: string): RollupOptions {
   };
 }
 
-function createOutput(format: "es" | "cjs", entryName: "main" | "preload"): OutputOptions {
+function createOutput(format: "es" | "cjs", entryName: "main" | "preload" | "align-worker"): OutputOptions {
   return {
     dir: ELECTRON_OUT_DIR,
     format,
     sourcemap: false,
     // 保持独立产物：主进程输出 main.js，预加载输出 preload.cjs
-    entryFileNames: entryName === "main" ? "main.mjs" : "preload.cjs",
+    entryFileNames: entryName === "main" ? "main.mjs" : `${entryName}.cjs`,
   };
 }
 
-async function waitForFirstBuild(watcher: RollupWatcher, entryName: "main" | "preload") {
+async function waitForFirstBuild(watcher: RollupWatcher, entryName: "main" | "preload" | "align-worker") {
   return new Promise<void>((resolve, reject) => {
     watcher.on("event", event => {
       if (event.code === "START") {
@@ -74,6 +75,8 @@ export async function buildElectronConfig(mode: "development" | "production" = "
   const mainOutput = createOutput("es", "main");
   const preloadOptions = createRollupOptions(PRELOAD_ENTRY);
   const preloadOutput = createOutput("cjs", "preload");
+  const workerOptions = createRollupOptions(ALIGN_WORKER_ENTRY);
+  const workerOutput = createOutput("cjs", "align-worker");
 
   async function ensureDir(dir: string) {
     await fs.mkdir(dir, { recursive: true }).catch(() => void 0);
@@ -129,9 +132,14 @@ export async function buildElectronConfig(mode: "development" | "production" = "
   if (mode === "development") {
     const mainWatcher = watch({ ...mainOptions, output: mainOutput });
     const preloadWatcher = watch({ ...preloadOptions, output: preloadOutput });
-    await Promise.all([waitForFirstBuild(mainWatcher, "main"), waitForFirstBuild(preloadWatcher, "preload")]);
+    const workerWatcher = watch({ ...workerOptions, output: workerOutput });
+    await Promise.all([
+      waitForFirstBuild(mainWatcher, "main"),
+      waitForFirstBuild(preloadWatcher, "preload"),
+      waitForFirstBuild(workerWatcher, "align-worker"),
+    ]);
     await copyIconsForPlatform();
-    return { mainWatcher, preloadWatcher } as unknown as RollupWatcher;
+    return { mainWatcher, preloadWatcher, workerWatcher } as unknown as RollupWatcher;
   }
 
   const mainBundle = await rollup(mainOptions);
@@ -141,6 +149,11 @@ export async function buildElectronConfig(mode: "development" | "production" = "
   const preloadBundle = await rollup(preloadOptions);
   const preloadWrite = await preloadBundle.write(preloadOutput);
   await preloadBundle.close();
+
+  const workerBundle = await rollup(workerOptions);
+  const workerWrite = await workerBundle.write(workerOutput);
+  await workerBundle.close();
+  logger.info(`[electron] align worker (cjs) files: ${workerWrite.output.map(o => o.fileName).join(", ")}`);
 
   // 产物存在性与简单格式验证日志
   const mainFiles = mainWrite.output.map(o => o.fileName).join(", ");

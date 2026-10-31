@@ -3,6 +3,7 @@ import log from "electron-log";
 
 import { StoreNameMap } from "@shared/store";
 
+import { markManualEdits } from "../auto-lyrics/manual-cache";
 import { appSettingsStore, lyricsCacheStore, shortcutKeyStore, userStore } from "../store";
 import { channel } from "./channel";
 
@@ -46,7 +47,7 @@ export function registerStoreHandlers() {
       }
 
       if (name === StoreNameMap.LyricsCache) {
-        lyricsCacheStore.set(value);
+        lyricsCacheStore.set(markManualEdits(lyricsCacheStore.store, value));
       }
     } catch (err) {
       log.error(`[store:set] Error setting store ${String(name)}:`, err);

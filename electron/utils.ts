@@ -2,18 +2,20 @@ import { app } from "electron";
 import isDev from "electron-is-dev";
 import log from "electron-log";
 import ffmpeg from "fluent-ffmpeg";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 import { ELECTRON_ICON_BASE_PATH } from "@shared/path";
 
+import { bundledFfmpegFileName, selectRunnableFfmpeg, SYSTEM_FFMPEG_PATHS } from "./auto-lyrics/ffmpeg-resolve";
 import { appSettingsStore } from "./store";
 
 export const IconBase = isDev ? process.cwd() : process.resourcesPath;
 
-export const getUserDataPath = () => {
+export function getUserDataPath() {
   return isDev ? path.join(app.getPath("appData"), `biu-dev`) : app.getPath("userData");
-};
+}
 
 export const getWindowIcon = () =>
   process.platform === "darwin"
@@ -24,59 +26,85 @@ export const getWindowIcon = () =>
         process.platform === "win32" ? (isDev ? "dev.ico" : "logo.ico") : "logo.png",
       );
 
-export const fixFfmpegPath = () => {
+let resolvedFfmpegPath: string | undefined;
+
+/** Drop a cached binary after ENOEXEC so the next decode tries another candidate. */
+export function clearResolvedFfmpegPath() {
+  resolvedFfmpegPath = undefined;
+}
+
+function readExecutableHeader(candidate: string): Uint8Array | undefined {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(candidate, "r");
+    const header = Buffer.alloc(4096);
+    const bytes = fs.readSync(fd, header, 0, header.length, 0);
+    return header.subarray(0, bytes);
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function probeFfmpeg(candidate: string, bundled: boolean): "ok" | "enoexec" | "failed" {
+  if (bundled && process.platform !== "win32") {
+    try {
+      fs.chmodSync(candidate, 0o755);
+    } catch (err) {
+      log.error(`Failed to chmod ffmpeg at ${candidate}`, err);
+    }
+  }
+  const result = spawnSync(candidate, ["-hide_banner", "-version"], {
+    timeout: 8000,
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  const code = result.error && "code" in result.error ? result.error.code : undefined;
+  if (code === "ENOEXEC") return "enoexec";
+  return result.status === 0 ? "ok" : "failed";
+}
+
+/**
+ * User settings, then BIU_FFMPEG_PATH, then common system paths, then the bundled binary.
+ * A candidate whose CPU does not match, or that fails with ENOEXEC, is skipped.
+ */
+export const resolveFfmpegPath = (): string => {
+  if (resolvedFfmpegPath && fs.existsSync(resolvedFfmpegPath)) return resolvedFfmpegPath;
+  const userPaths: string[] = [];
   try {
     const settings = appSettingsStore.get("appSettings");
-    if (settings?.ffmpegPath && fs.existsSync(settings.ffmpegPath)) {
-      log.info(`Found user configured ffmpeg at ${settings.ffmpegPath}`);
-      ffmpeg.setFfmpegPath(settings.ffmpegPath);
-      return;
-    }
+    if (settings?.ffmpegPath) userPaths.push(settings.ffmpegPath);
   } catch (err) {
     log.error("Error reading ffmpeg path from settings:", err);
   }
-
-  if (process.platform === "darwin" || process.platform === "linux") {
-    const paths = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg", "/snap/bin/ffmpeg"];
-    for (const p of paths) {
-      if (fs.existsSync(p)) {
-        log.info(`Found ffmpeg at ${p}`);
-        ffmpeg.setFfmpegPath(p);
-        return;
-      }
-    }
-  }
-
-  const getFfmpegName = () => {
-    switch (process.platform) {
-      case "win32":
-        return "ffmpeg.exe";
-      case "darwin":
-        return process.arch === "arm64" ? "ffmpeg-mac-arm64" : "ffmpeg-mac-x64";
-      case "linux":
-        return "ffmpeg-linux";
-      default:
-        return "ffmpeg";
-    }
-  };
-
-  const localFfmpegPath = path.join(
+  if (process.env.BIU_FFMPEG_PATH) userPaths.push(process.env.BIU_FFMPEG_PATH);
+  const systemPaths = process.platform === "darwin" || process.platform === "linux" ? [...SYSTEM_FFMPEG_PATHS] : [];
+  const bundledPath = path.join(
     isDev ? process.cwd() : process.resourcesPath,
     "electron",
     "ffmpeg",
-    getFfmpegName(),
+    bundledFfmpegFileName(process.platform, process.arch),
   );
+  const chosen = selectRunnableFfmpeg({
+    userPaths,
+    systemPaths,
+    bundledPath,
+    processArch: process.arch,
+    exists: candidate => fs.existsSync(candidate),
+    readHeader: readExecutableHeader,
+    probe: candidate => probeFfmpeg(candidate, candidate === bundledPath),
+  });
+  resolvedFfmpegPath = chosen;
+  log.info(`Found ffmpeg at ${chosen}`);
+  return chosen;
+};
 
-  if (fs.existsSync(localFfmpegPath)) {
-    if (process.platform !== "win32") {
-      try {
-        fs.chmodSync(localFfmpegPath, "755");
-      } catch (err) {
-        log.error(`Failed to chmod ffmpeg at ${localFfmpegPath}`, err);
-      }
-    }
-    ffmpeg.setFfmpegPath(localFfmpegPath);
-    return;
+export const fixFfmpegPath = () => {
+  try {
+    ffmpeg.setFfmpegPath(resolveFfmpegPath());
+  } catch (error) {
+    log.error("Failed to resolve ffmpeg:", error);
   }
 };
 

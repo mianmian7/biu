@@ -126,6 +126,12 @@ interface LyricLine {
 }
 
 interface MusicLyrics {
+  source?: "auto" | "manual";
+  algoVersion?: string;
+  songId?: number;
+  refBvid?: string;
+  confidence?: number;
+  rLyrics?: string;
   fontSize?: number;
   offset?: number;
   lyrics?: string;

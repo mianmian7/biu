@@ -1,6 +1,6 @@
 {
   "name": "biu",
-  "version": "1.16.0",
+  "version": "1.16.1-autolyrics.4",
   "private": true,
   "engines": {
     "node": "22.17.1"
@@ -33,6 +33,7 @@
     "dev": "rsbuild dev",
     "build": "rsbuild build",
     "test": "vitest",
+    "bench:auto-lyrics": "vitest run --config scripts/auto-lyrics-bench/vitest.config.ts",
     "knip": "knip --no-exit-code --max-show-issues 5 --reporter github-actions",
     "release": "git fetch --tags --force && changelogen --release --push --hideAuthorEmail",
     "release:beta": "git fetch --tags --force && changelogen --release --push --hideAuthorEmail --prerelease beta",
