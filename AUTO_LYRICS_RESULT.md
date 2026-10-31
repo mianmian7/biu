@@ -1,3 +1,5 @@
+> 历史记录：以下结果不代表当前提交。2026-10-30 的阈值、版本降级和评测有效性复核见 [最新复核](docs/auto-lyrics-review-2026-10-30.md)。
+
 # 自动歌词 v2 — P1 交付结果（2026-10-29）
 
 分支 `feat/auto-lyrics-p1`，本地提交 3 个（trailer `Executor: claude`），未 push：

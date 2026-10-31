@@ -9,10 +9,10 @@ import { generateLrc, mapCompanionLrc, parseLrc } from "../../shared/auto-lyrics
 import { checkVocalOnset, rankReferences } from "../../shared/auto-lyrics/reference";
 import { isDecodeUnavailable } from "./ffmpeg-resolve";
 
-// Correct device matches scored 0.71–0.88 (a rearranged festival Heavenly Me 0.52); the wrong 空の箱 reference 0.44.
+// Alignment quality gate, not proof of song identity. Different releases of the right song may also fail.
 const VERIFY_MIN_SINGLE = 0.5;
 
-export const AUTO_LYRICS_ALGO_VERSION = "p1-gap-dtw-5";
+export const AUTO_LYRICS_ALGO_VERSION = "p1-gap-dtw-6";
 
 export interface AutoLyricsDependencies {
   sources: {
@@ -178,11 +178,15 @@ export class AutoLyricsService {
     signal: AbortSignal,
     stamp: (stage: string) => void,
     onCoarse?: (event: { coarse: GlobalOffset; lyrics: MusicLyrics }) => void,
+    verifySingle = true,
+    skipSavedReference = false,
   ): Promise<Attempt> {
     const storedReference = this.referenceCache.get(song.id) ?? this.dependencies.references.get(song.id);
     // A saved reference must still pass today's gates (title naming the song, duration).
     const savedReference =
-      storedReference?.checked && rankReferences([storedReference], song).length ? storedReference : undefined;
+      !skipSavedReference && storedReference?.checked && rankReferences([storedReference], song).length
+        ? storedReference
+        : undefined;
     const lyricPromise = this.dependencies.sources.lyric(song.id, signal).then(lyrics => {
       stamp("lyric");
       return lyrics;
@@ -218,7 +222,7 @@ export class AutoLyricsService {
         if (saved.length) return saved;
       }
       const candidates = rankReferences(await this.dependencies.sources.references(song, signal), song)
-        .filter(candidate => candidate.bvid !== savedReference?.bvid)
+        .filter(candidate => candidate.bvid !== (skipSavedReference ? storedReference?.bvid : savedReference?.bvid))
         .slice(0, savedReference ? 2 : 3);
       stamp("referenceSearch");
       return loadCandidates(candidates, savedReference ? 1 : 0);
@@ -244,6 +248,7 @@ export class AutoLyricsService {
       tLyrics: lyrics.tlyric ? mapCompanionLrc(lyrics.tlyric, aligned) : undefined,
       rLyrics: lyrics.romalrc ? mapCompanionLrc(lyrics.romalrc, aligned) : undefined,
     });
+    let pendingCoarse: { coarse: GlobalOffset; lyrics: MusicLyrics } | undefined;
     const aligned = await this.dependencies.align(
       { studios: chosen.map(item => item.pcm), live, lines },
       signal,
@@ -258,16 +263,31 @@ export class AutoLyricsService {
           confidence: coarse.confidence,
           uncertain: false,
         }));
-        onCoarse({ coarse, lyrics: makeLyrics(coarseLines, coarse.confidence) });
+        pendingCoarse = { coarse, lyrics: makeLyrics(coarseLines, coarse.confidence) };
       },
     );
     reference = { ...chosen[aligned.referenceIndex].candidate, checked: true };
     stamp("fine");
     const base = { song, reference, coarse: aligned.coarse, memoryPeakKB: aligned.memoryPeakKB };
     if (aligned.coarse.confidence < 0.1) return { ...base, status: "no-reference", error: "Low alignment confidence" };
+    const score = verifyScore(aligned.lines);
+    if (savedReference && score < VERIFY_MIN_SINGLE) {
+      try {
+        const retry = await this.attempt(song, livePromise, signal, stamp, onCoarse, verifySingle, true);
+        if (retry.status === "matched" && (retry.verifyScore ?? 0) >= VERIFY_MIN_SINGLE) return retry;
+      } catch (error) {
+        signal.throwIfAborted();
+        if (isDecodeUnavailable(error)) throw error;
+        // Keep the rejected alignment diagnostics if reference search/download is temporarily unavailable.
+      }
+    }
+    const verified = !verifySingle || score >= VERIFY_MIN_SINGLE;
+    // Coarse fit alone can look convincing for the wrong song/version. Publish only after line validation.
+    if (verified && pendingCoarse) onCoarse?.(pendingCoarse);
     return {
       ...base,
-      status: "matched",
+      status: verified ? "matched" : "no-reference",
+      error: verified ? undefined : "Line alignment score too low",
       referenceCheck: {
         candidates: chosen.map(item => item.candidate.bvid),
         lags: aligned.referenceLags,
@@ -275,8 +295,8 @@ export class AutoLyricsService {
         consensus: aligned.referenceConsensus,
       },
       lines: aligned.lines,
-      verifyScore: verifyScore(aligned.lines),
-      lyrics: makeLyrics(aligned.lines, aligned.coarse.confidence),
+      verifyScore: score,
+      lyrics: verified ? makeLyrics(aligned.lines, aligned.coarse.confidence) : undefined,
     };
   }
 
@@ -287,17 +307,20 @@ export class AutoLyricsService {
     livePromise: Promise<Float32Array>,
     signal: AbortSignal,
     stamp: (stage: string) => void,
+    allowSelfReference: boolean,
   ): Promise<Attempt | undefined> {
+    let alignmentRejected = !allowSelfReference;
     for (const [index, alternate] of (identified.alternates ?? []).slice(0, 2).entries()) {
       try {
         const attempt = await this.attempt(alternate, livePromise, signal, stage => stamp(`${stage}~${index + 1}`));
         if (attempt.status === "matched") return attempt;
+        if (attempt.coarse) alignmentRejected = true;
       } catch (error) {
         signal.throwIfAborted();
         if (isDecodeUnavailable(error)) throw error;
       }
     }
-    if (LIVE.test(`${params.title}\n${params.pageTitle ?? ""}`)) return;
+    if (alignmentRejected || LIVE.test(`${params.title}\n${params.pageTitle ?? ""}`)) return;
     const live = await livePromise;
     const seconds = live.length / 22050;
     const song = [identified.song, ...(identified.alternates ?? [])].find(
@@ -392,7 +415,16 @@ export class AutoLyricsService {
           continue;
         }
         try {
-          attempts.push(await this.attempt(candidate, livePromise, signal, stage => stamp(`${stage}#${index + 1}`)));
+          attempts.push(
+            await this.attempt(
+              candidate,
+              livePromise,
+              signal,
+              stage => stamp(`${stage}#${index + 1}`),
+              undefined,
+              false,
+            ),
+          );
         } catch (error) {
           signal.throwIfAborted();
           await livePromise;
@@ -405,7 +437,7 @@ export class AutoLyricsService {
         }
       }
       if (!arbitrate && attempts[0].status === "no-reference") {
-        const fallback = await this.fallback(identified, params, livePromise, signal, stamp);
+        const fallback = await this.fallback(identified, params, livePromise, signal, stamp, !attempts[0].coarse);
         if (fallback) attempts[0] = fallback;
       }
       const contenders = arbitrate
@@ -420,7 +452,7 @@ export class AutoLyricsService {
       const tied = best.filter(a => (best[0].verifyScore ?? 0) - (a.verifyScore ?? 0) < VERIFY_MIN_MARGIN);
       const context = `${params.title}\n${params.pageTitle ?? ""}`;
       const plain = tied.filter(a => !unmentionedNote(a.song.name, context));
-      const merged = tied.length > 1 && (plain.length === 1 || tied.every(a => sameLyrics(a, best[0])));
+      const merged = tied.length > 1 && tied.every(a => sameLyrics(a, best[0]));
       const leader = !merged
         ? best[0]
         : plain.length === 1
@@ -442,16 +474,11 @@ export class AutoLyricsService {
       if (!chosen) return result("unidentified", { contenders, error: "Alignment could not confirm a contender" });
       song = chosen.song;
       reference = chosen.reference;
-      if (!arbitrate && chosen.status === "matched" && (chosen.verifyScore ?? 0) < VERIFY_MIN_SINGLE)
-        return result("no-reference", {
-          error: "Line alignment score too low",
-          verifyScore: chosen.verifyScore,
-          referenceCheck: chosen.referenceCheck,
-          coarse: chosen.coarse,
-        });
       if (chosen.status !== "matched" || !chosen.lyrics)
         return result(chosen.status, {
           coarse: chosen.coarse,
+          verifyScore: chosen.verifyScore,
+          referenceCheck: chosen.referenceCheck,
           utilityMemoryPeakKB: chosen.memoryPeakKB,
           error: chosen.error,
         });

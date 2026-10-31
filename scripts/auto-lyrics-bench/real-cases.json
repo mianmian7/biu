@@ -1,0 +1,55 @@
+{
+  "outDir": "/tmp/biu-auto-lyrics-review",
+  "repeat": 1,
+  "cases": [
+    {
+      "bvid": "BV15t421K7Le",
+      "page": 1
+    },
+    {
+      "bvid": "BV1QhieYjEY2",
+      "page": 1
+    },
+    {
+      "bvid": "BV19T421S7nv",
+      "page": 1
+    },
+    {
+      "bvid": "BV1dy75z8Enu",
+      "page": 1
+    },
+    {
+      "bvid": "BV19s6cBxEmc",
+      "page": 1
+    },
+    {
+      "bvid": "BV1StSoBPEwu",
+      "page": 1
+    },
+    {
+      "bvid": "BV1StSoBPEwu",
+      "page": 2
+    },
+    {
+      "bvid": "BV1StSoBPEwu",
+      "page": 3
+    },
+    {
+      "bvid": "BV1StSoBPEwu",
+      "page": 4
+    },
+    {
+      "bvid": "BV1StSoBPEwu",
+      "page": 5
+    },
+    {
+      "bvid": "BV1gLHj6XEWY",
+      "page": 1
+    },
+    {
+      "bvid": "BV1DV81zKEYm",
+      "page": 1
+    }
+  ],
+  "identifyOnly": []
+}

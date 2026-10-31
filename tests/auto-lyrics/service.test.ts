@@ -128,7 +128,10 @@ function arbitration(scores: Record<number, number>, sameLyrics = false) {
 
 describe("AutoLyricsService", () => {
   it.each([
+    [0.287, "no-reference"],
+    [0.437, "no-reference"],
     [0.44, "no-reference"],
+    [0.499, "no-reference"],
     [0.5, "matched"],
   ] as const)("gates single-song alignment score %s as %s", async (score, status) => {
     const { service, dependencies } = setup();
@@ -137,10 +140,13 @@ describe("AutoLyricsService", () => {
       const aligned = await align(...args);
       return { ...aligned, lines: aligned.lines.map(line => ({ ...line, confidence: score, uncertain: false })) };
     });
+    const events: AutoLyricsProgress[] = [];
+    service.onProgress(event => events.push(event));
     const result = await service.start(params);
     expect(result.status).toBe(status);
     expect(result.verifyScore).toBeCloseTo(score);
     if (status === "no-reference") {
+      expect(events.some(event => event.phase === "coarse" || event.phase === "fine")).toBe(false);
       expect(result).toMatchObject({
         error: "Line alignment score too low",
         coarse: { offsetSec: 1 },
@@ -248,6 +254,35 @@ describe("AutoLyricsService", () => {
     expect((await service.start(params)).status).toBe("matched");
     expect(dependencies.sources.references).toHaveBeenCalledTimes(1);
     expect(dependencies.sources.audio).not.toHaveBeenCalledWith("BVsaved", reference.cid, expect.any(AbortSignal));
+  });
+
+  it("searches fresh references when a checked reference no longer fits this video", async () => {
+    const { service, dependencies } = setup();
+    dependencies.references.set(song.id, { ...reference, bvid: "BVsaved", checked: true });
+    const align = dependencies.align.getMockImplementation()!;
+    let calls = 0;
+    dependencies.align.mockImplementation(async (...args) => {
+      const aligned = await align(...args);
+      const score = calls++ === 0 ? 0.437 : 0.9;
+      return { ...aligned, lines: aligned.lines.map(line => ({ ...line, confidence: score, uncertain: false })) };
+    });
+    expect(await service.start(params)).toMatchObject({ status: "matched", reference: { bvid: reference.bvid } });
+    expect(dependencies.sources.references).toHaveBeenCalledTimes(1);
+    expect(dependencies.align).toHaveBeenCalledTimes(2);
+    expect(dependencies.cache.set).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a rejected cached alignment rejected if fresh reference search fails", async () => {
+    const { service, dependencies } = setup();
+    dependencies.references.set(song.id, { ...reference, bvid: "BVsaved", checked: true });
+    dependencies.sources.references.mockRejectedValue(new Error("search unavailable"));
+    const align = dependencies.align.getMockImplementation()!;
+    dependencies.align.mockImplementation(async (...args) => {
+      const aligned = await align(...args);
+      return { ...aligned, lines: aligned.lines.map(line => ({ ...line, confidence: 0.437, uncertain: false })) };
+    });
+    expect(await service.start(params)).toMatchObject({ status: "no-reference", verifyScore: expect.closeTo(0.437) });
+    expect(dependencies.cache.set).not.toHaveBeenCalled();
   });
 
   it("returns a valid automatic cache without fetching", async () => {
@@ -459,15 +494,22 @@ describe("AutoLyricsService", () => {
   });
 
   it("prefers the release without an unmentioned note when alignment ties (影色舞 over 影色舞(中文版))", async () => {
-    const { service, dependencies, cover } = arbitration({ 42: 0.88, 43: 0.9 });
+    const { service, dependencies, cover } = arbitration({ 42: 0.88, 43: 0.9 }, true);
     dependencies.sources.search.mockResolvedValue([song, { ...cover, name: `${song.name} (中文版)` }]);
     const result = await service.start(params);
     expect(result.status).toBe("matched");
     expect(result.song?.id).toBe(42);
-    const mentioned = arbitration({ 42: 0.88, 43: 0.9 });
+    const mentioned = arbitration({ 42: 0.88, 43: 0.9 }, true);
     mentioned.dependencies.sources.search.mockResolvedValue([song, { ...cover, name: `${song.name} (中文版)` }]);
     const named = await mentioned.service.start({ ...params, title: `${params.title} 中文版` });
     expect([named.status, named.song?.id]).toEqual(["matched", 43]);
+  });
+
+  it("does not merge tied versions with different lyrics just because one has no version note", async () => {
+    const { service, dependencies, cover } = arbitration({ 42: 0.88, 43: 0.9 });
+    dependencies.sources.search.mockResolvedValue([song, { ...cover, name: `${song.name} (中文版)` }]);
+    expect((await service.start(params)).status).toBe("unidentified");
+    expect(dependencies.cache.set).not.toHaveBeenCalled();
   });
 
   it("tries another release by the same artist when the chosen one has no reference", async () => {
@@ -480,6 +522,48 @@ describe("AutoLyricsService", () => {
     const result = await service.start(params);
     expect(result.status).toBe("matched");
     expect(result.song?.id).toBe(studio.id);
+  });
+
+  it("tries later releases after low-scoring versions without trusting the upload itself", async () => {
+    const { service, dependencies } = setup();
+    const releases = [song, { ...song, id: 50 }, { ...song, id: 51 }];
+    dependencies.sources.search.mockResolvedValue(releases);
+    const align = dependencies.align.getMockImplementation()!;
+    const scores = [0.437, 0.287, 0.9];
+    dependencies.align.mockImplementation(async (...args) => {
+      const aligned = await align(...args);
+      const score = scores.shift()!;
+      return { ...aligned, lines: aligned.lines.map(line => ({ ...line, confidence: score, uncertain: false })) };
+    });
+    const events: AutoLyricsProgress[] = [];
+    service.onProgress(event => events.push(event));
+    const result = await service.start(params);
+    expect(result).toMatchObject({ status: "matched", song: { id: 51 } });
+    expect(dependencies.align).toHaveBeenCalledTimes(3);
+    expect(dependencies.cache.set).toHaveBeenCalledTimes(1);
+    expect(events.filter(event => event.phase === "coarse")).toHaveLength(0);
+  });
+
+  it("does not bypass rejected alignment with the duration/onset self-reference heuristic", async () => {
+    const { service, dependencies } = setup();
+    const align = dependencies.align.getMockImplementation()!;
+    dependencies.align.mockImplementation(async (...args) => {
+      const aligned = await align(...args);
+      return { ...aligned, lines: aligned.lines.map(line => ({ ...line, confidence: 0.437, uncertain: false })) };
+    });
+    expect(await service.start(params)).toMatchObject({ status: "no-reference", verifyScore: expect.closeTo(0.437) });
+    expect(dependencies.cache.set).not.toHaveBeenCalled();
+    expect(dependencies.references.set).not.toHaveBeenCalled();
+  });
+
+  it("leaves TV-size arbitration unidentified when every contender scores below 0.4", async () => {
+    const { service, dependencies, events } = arbitration({ 42: 0.39, 43: 0.38 });
+    const result = await service.start({ ...params, title: "DECORATOR TV size" });
+    expect(result.status).toBe("unidentified");
+    expect(result.lyrics).toBeUndefined();
+    expect(dependencies.cache.set).not.toHaveBeenCalled();
+    expect(dependencies.references.set).not.toHaveBeenCalled();
+    expect(events.some(event => event.phase === "coarse" || event.phase === "fine")).toBe(false);
   });
 
   it("uses a studio upload as its own reference when no reference exists", async () => {

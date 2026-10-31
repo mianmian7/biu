@@ -1,3 +1,5 @@
+> 历史记录：以下结果不代表当前提交。2026-10-30 的阈值、版本降级和评测有效性复核见 [最新复核](docs/auto-lyrics-review-2026-10-30.md)。
+
 # Auto lyrics：识别错配修复（GIRLS / The Kid LAROI）
 
 提交：`d095ae9`，分支 `feat/auto-lyrics-p1`，**未 push**。
