@@ -110,12 +110,43 @@ describe("play-list store", () => {
     audio.onratechange!.call(audio, new Event("ratechange"));
     expect(usePlaybackAnchor.getState()).toMatchObject({ rate: 1.5, running: false, seq: seq + 3 });
     audio.onseeked!.call(audio, new Event("seeked"));
-    expect(usePlaybackAnchor.getState()).toMatchObject({ running: !audio.paused, seq: seq + 4 });
+    expect(usePlaybackAnchor.getState()).toMatchObject({
+      running: !audio.paused && audio.readyState >= 3,
+      seq: seq + 4,
+    });
     audio.onpause!.call(audio, new Event("pause"));
     expect(usePlaybackAnchor.getState()).toMatchObject({ running: false, seq: seq + 5 });
     audio.onloadstart!.call(audio, new Event("loadstart"));
     expect(usePlaybackAnchor.getState()).toMatchObject({ mediaMs: 0, running: false, seq: seq + 6 });
     audio.playbackRate = 1;
+  });
+
+  test.each([
+    { paused: false, readyState: 0, running: false },
+    { paused: false, readyState: 2, running: false },
+    { paused: false, readyState: 3, running: true },
+    { paused: false, readyState: 4, running: true },
+    { paused: true, readyState: 3, running: false },
+  ])("seeked anchors paused=$paused readyState=$readyState as running=$running", async state => {
+    const s = usePlayList.getState();
+    await s.init();
+    const audio = s.getAudio();
+    const paused = Object.getOwnPropertyDescriptor(audio, "paused");
+    const readyState = Object.getOwnPropertyDescriptor(audio, "readyState");
+    try {
+      Object.defineProperties(audio, {
+        paused: { configurable: true, value: state.paused },
+        readyState: { configurable: true, value: state.readyState },
+      });
+      const seq = usePlaybackAnchor.getState().seq;
+      audio.onseeked!.call(audio, new Event("seeked"));
+      expect(usePlaybackAnchor.getState()).toMatchObject({ running: state.running, seq: seq + 1 });
+    } finally {
+      if (paused) Object.defineProperty(audio, "paused", paused);
+      else Reflect.deleteProperty(audio, "paused");
+      if (readyState) Object.defineProperty(audio, "readyState", readyState);
+      else Reflect.deleteProperty(audio, "readyState");
+    }
   });
 
   test("setVolume, setRate, setPlayMode", async () => {

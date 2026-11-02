@@ -80,6 +80,7 @@ interface DesktopLyricsAnchor {
 
 - [x] 在已有的 `audio.onpause`、`audio.onseeked`、`audio.onratechange` 回调里追加 `markPlaybackAnchor` 调用，参数分别为 `false`、`!audio.paused`、`usePlaybackAnchor.getState().running`。不删除原有逻辑。
   - 结果：保留原逻辑，新增媒体事件锚点；事件测试通过。
+  - 审查后追加：按用户转达的 Claude APPROVE 建议，onseeked 的 running 收紧为 `!audio.paused && audio.readyState >= 3`，避免 seek 完成但仍缓冲时提前扫光；新增 5 种 paused / readyState 组合测试。
 - [x] 新增 `audio.onplaying = () => markPlaybackAnchor(audio, true)`、`audio.onwaiting = () => markPlaybackAnchor(audio, false)`、`audio.onseeking = () => markPlaybackAnchor(audio, false)`、`audio.onloadstart = () => resetPlaybackAnchor()`。先 grep 确认这些属性在本文件其他地方没有被赋值；如果已有赋值，把调用追加进原回调，不要覆盖。
   - 结果：修改前全仓搜索确认无赋值，已新增四个回调并测试。
 - [x] `ontimeupdate` 不调用锚点函数。
@@ -130,6 +131,7 @@ interface DesktopLyricsAnchor {
   - `markPlaybackAnchor`：用 `{ currentTime: 12.345, playbackRate: 2 }` 调用后，`mediaMs = 12345`、`rate = 2`、`seq` 加 1。`resetPlaybackAnchor` 后 `mediaMs = 0`、`running = false`。
 - [x] `tests/desktop-lyrics.test.ts`：
   - 结果：15 项测试通过，包含同一行 4 秒不补发、seek 两次重锚、倍速、偏移不重锚及前奏切入首句。
+  - 审查后追加：现为 16 项测试通过；通过播放器实际 onloadstart 回调验证切歌锚点归零、冻结、序号加一且只发送一次，再推进 4 秒也不补发。
   - 重写 `does not resend while playback advances as the window extrapolates, resends after a seek`（第 162 行）为两个测试：
     - (a) 同一行内 `currentTime` 每 250ms 推进一次，持续 4s：发送次数不变；用最后一次发送的数据和 `getDesktopLyricsLineProgress(payload, 锚点.at + 4480)` 算出的进度 ≥1。这是长句回归测试。
     - (b) 调用 `markPlaybackAnchor({ currentTime: 100, playbackRate: 1 }, false)`（模拟 seeking）后恰好发送 1 次，`payload.anchor.mediaMs === 100000`、`running === false`；再以 `running=true` 调用（模拟 seeked），又发送 1 次（**seek 重锚**）。
@@ -139,18 +141,24 @@ interface DesktopLyricsAnchor {
   - `beforeEach` 里调用 `resetPlaybackAnchor()`，避免测试之间互相影响。
 - [x] `tests/play-list.test.ts` 的 `init sets audio props and handlers`：补充断言 `onplaying`、`onwaiting`、`onseeking`、`onloadstart` 都是函数；调用 `audio.onseeking()` 后 `usePlaybackAnchor.getState().seq` 加 1、`running === false`。
   - 结果：12 项测试通过，额外覆盖全部 7 个媒体事件及 onplay / timeupdate 不重锚。
+  - 审查后追加：现为 17 项测试通过；seeked 覆盖未暂停且 readyState 为 0 / 2 时冻结、为 3 / 4 时继续，以及暂停且 readyState 为 3 时冻结。
 
 ### T8 验收（执行者跑完，把实际输出贴进本项结果说明）
 
 - [x] `pnpm vitest run tests/playback-anchor.test.ts tests/desktop-lyrics.test.ts tests/desktop-lyrics-view.test.tsx tests/play-list.test.ts`：全部通过。
   - 实际输出（Node v22.17.1 / pnpm 10.24.0）：`Test Files 4 passed (4)`；`Tests 38 passed (38)`；`Duration 13.66s`。
+  - 审查后重跑实际输出：`Test Files 4 passed (4)`；`Tests 44 passed (44)`；`Duration 10.58s`。
 - [x] `pnpm vitest run`：全部通过。如有失败，确认是否与本次改动无关并写明。
   - 实际输出（Node v22.17.1）：`Test Files 16 passed (16)`；`Tests 197 passed (197)`；`Duration 37.51s`。
-- [ ] `pnpm exec tsc --noEmit -p tsconfig.json`：0 错误。如果项目的类型检查入口不是这个，用项目已有的命令并写明。
+  - 审查后重跑实际输出：`Test Files 16 passed (16)`；`Tests 203 passed (203)`；`Duration 18.03s`。
+- [x] `pnpm exec tsc --noEmit -p tsconfig.json`：0 错误。如果项目的类型检查入口不是这个，用项目已有的命令并写明。
+  - 本次按用户明确的验收口径勾选：重跑 tsc 后，以 `git diff ff1e6a6 --name-only -- src electron shared tests` 生成改动文件路径清单，执行 `grep -F -f /tmp/biu-karaoke-changed-paths /tmp/biu-karaoke-review-tsc.log | grep -c 'error TS'`，实际输出 `0`。全局仍为 `typecheck exit=2`、125 个既有错误，规范化诊断与基线完全一致；此勾选仅表示本次改动文件零类型错误，不表示全仓类型检查通过。
   - 阻塞：实际输出 `typecheck exit=2`；`baseline/current errors: 125 125`；`normalized diagnostics identical: True`。从 ff1e6a6 导出临时基线、共用同一依赖并运行同一命令，规范化 node_modules 路径后错误完全相同。118 个依赖声明错误，另有 electron/ipc/lyrics.ts 的 3 个类型导出错误、src/layout/side/collection/index.tsx 的 3 个类型错误、src/pages/user-profile/favorites/index.tsx 的 1 个缺失 type 错误。未修改这些范围外文件；等待 owner 处理或明确验收方式。
 - [x] `pnpm exec eslint` 只检查本次改动的文件：0 错误。
   - 实际输出：8 个改动的 ts / tsx / d.ts 文件无诊断，`eslint exit=0`。
-- [ ] `pnpm build`：成功。
+  - 审查后重跑相同 8 个文件：无诊断，`eslint exit=0`。
+- [x] `pnpm build`：成功。
+  - 本次按用户明确的验收口径勾选：核对前次完整构建日志和磁盘产物，唯一打包失败原因是缺少 rpmbuild；此勾选表示构建证据已验收，不表示 RPM 已成功。前次产物列表为 `dist/artifacts/Biu-1.16.1-autolyrics.5-linux-x86_64.AppImage`（104M）、`dist/artifacts/Biu-1.16.1-autolyrics.5-linux-arm64.AppImage`（98M）、`dist/artifacts/Biu-1.16.1-autolyrics.5-linux-amd64.deb`（102M）、`dist/artifacts/Biu-1.16.1-autolyrics.5-linux-arm64.deb`（97M）。RPM 原文（x64 / arm64 各一次）：`⨯ to build rpm, executable rpmbuild is required, please install rpm package on your system. (sudo apt-get install rpm)`；两处 fpm 错误均为 `Need executable 'rpmbuild' to convert dir to rpm`。`Cannot cleanup` 为这两处失败的汇总，没有其他独立构建错误；`command -v rpmbuild` 无结果。未重跑耗时打包，也未安装系统软件。
   - 阻塞：Node v22.17.1 下，实际输出 `ready built in 36.5 s`，Electron main / preload / worker 已打包；x64 / arm64 的 AppImage、deb 已生成，但 RPM 阶段报 `to build rpm, executable rpmbuild is required`。入口的既有 catch 吞掉错误，退出码 0 不代表构建成功，故不勾选。未安装系统软件或修改构建入口，等待 owner 准备 rpmbuild 环境。
 - [x] `git diff --stat`：只出现本计划列出的文件，外加 `docs/plans/karaoke-sync.md` 的勾选和结果说明。
   - 结果：仅计划文件、锚点模块与测试、发送端、接收端、播放器、数据类型及两处既有测试，共 9 个文件；未改主 checkout 或其他分支。计划快照按用户本次授权作为首个本地提交 99feff8，后续也只做本地提交。

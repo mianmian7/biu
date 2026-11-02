@@ -207,6 +207,31 @@ describe("desktop lyrics sync", () => {
     }
   });
 
+  test("loadstart resets the track anchor and sends exactly once", async () => {
+    // 只初始化事件处理器，不让 init 为测试歌曲请求音频地址。
+    usePlayList.setState({ playId: undefined });
+    await usePlayList.getState().init();
+    usePlayList.setState({ playId: item.id });
+    const audio = usePlayList.getState().getAudio();
+    const previousTime = audio.currentTime;
+    audio.currentTime = 100;
+    audio.onplaying!.call(audio, new Event("playing"));
+    const stop = startDesktopLyricsSync();
+    try {
+      const sent = syncMock().mock.calls.length;
+      const seq = usePlaybackAnchor.getState().seq;
+      audio.onloadstart!.call(audio, new Event("loadstart"));
+      expect(usePlaybackAnchor.getState()).toMatchObject({ mediaMs: 0, running: false, seq: seq + 1 });
+      expect(syncMock().mock.calls.length).toBe(sent + 1);
+      expect(syncMock().mock.lastCall?.[0].anchor).toMatchObject({ mediaMs: 0, running: false, seq: seq + 1 });
+      vi.advanceTimersByTime(4000);
+      expect(syncMock().mock.calls.length).toBe(sent + 1);
+    } finally {
+      stop();
+      audio.currentTime = previousTime;
+    }
+  });
+
   test("sends a changed rate once and extrapolates at that rate", () => {
     useLyricsStore.getState().applyLyrics("[04:15.77]打ち砕いて欲しいから この空虚");
     usePlayProgress.setState({ currentTime: 255.77 });

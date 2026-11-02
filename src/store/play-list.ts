@@ -404,7 +404,7 @@ export const usePlayList = create<State & Action>()(
 
             audio.onseeked = () => {
               updatePositionState();
-              markPlaybackAnchor(audio, !audio.paused);
+              markPlaybackAnchor(audio, !audio.paused && audio.readyState >= 3);
             };
 
             audio.onratechange = () => {
