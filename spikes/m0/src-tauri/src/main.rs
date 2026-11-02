@@ -4,12 +4,34 @@ use sha2::Digest;
 use std::{
     fs::{self, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Instant,
 };
 use tauri::{Emitter, Manager};
 
 static LOG_LOCK: Mutex<()> = Mutex::new(());
+fn app_origin() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "http://tauri.localhost"
+    } else {
+        "tauri://localhost"
+    }
+}
+fn fixture_enabled() -> bool {
+    std::env::var("BIU_SPIKE_FIXTURES").as_deref() == Ok("1")
+}
+fn fixture_upstream_allowed(u: &url::Url, enabled: bool) -> bool {
+    enabled
+        && u.scheme() == "http"
+        && u.host_str() == Some("127.0.0.1")
+        && u.port() == Some(18765)
+        && u.username().is_empty()
+        && u.password().is_none()
+        && ["/aac.m4a", "/tone.flac", "/expired"].contains(&u.path())
+}
 fn record(value: Value) {
     let _guard = LOG_LOCK.lock().unwrap();
     let path = std::env::var("BIU_LOG").unwrap_or_else(|_| "spike.jsonl".into());
@@ -18,6 +40,11 @@ fn record(value: Value) {
     }
 }
 fn fixture(name: &str) -> Result<std::path::PathBuf, String> {
+    if !fixture_enabled() {
+        return Err(
+            "spike fixture mode disabled; set BIU_SPIKE_FIXTURES=1 for M0 tests only".into(),
+        );
+    }
     if ![
         "aac.m4a",
         "tone.flac",
@@ -99,17 +126,9 @@ async fn media(
     } else {
         let remote = q.get("u").ok_or("missing u")?;
         let u = url::Url::parse(remote).map_err(|e| e.to_string())?;
-        let h = u.host_str().ok_or("missing host")?;
-        let fixture_server = h == "127.0.0.1" && u.port() == Some(18765);
-        let cdn = [
-            "bilivideo.com",
-            "bilivideo.cn",
-            "akamaized.net",
-            "hdslb.com",
-        ]
-        .iter()
-        .any(|suffix| h.ends_with(&format!(".{suffix}")));
-        if !(fixture_server || (u.scheme() == "https" && cdn)) {
+        let fixture_server = fixture_upstream_allowed(&u, fixture_enabled());
+        // No suffix-based CDN allowlist in the spike. M2 must pin hosts returned by playurl.
+        if !fixture_server {
             return Err("remote denied".into());
         }
         let r = client
@@ -154,7 +173,7 @@ async fn media(
     }
     response
         .headers_mut()
-        .insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+        .insert("Access-Control-Allow-Origin", app_origin().parse().unwrap());
     response.headers_mut().insert(
         "Access-Control-Expose-Headers",
         "Content-Range,Accept-Ranges".parse().unwrap(),
@@ -169,11 +188,62 @@ struct MediaBase(String);
 fn media_base(state: tauri::State<MediaBase>) -> String {
     state.0.clone()
 }
+fn parse_http_request(
+    text: &str,
+    token: &str,
+    expected_host: &str,
+) -> Result<tauri::http::Request<Vec<u8>>, u16> {
+    let mut lines = text.lines();
+    let words: Vec<_> = lines.next().unwrap_or("").split_whitespace().collect();
+    if words.len() != 3 || words[0] != "GET" || words[2] != "HTTP/1.1" {
+        return Err(400);
+    }
+    let mut host = None;
+    let mut origin = None;
+    let mut builder = tauri::http::Request::builder();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let (k, v) = line.split_once(':').ok_or(400u16)?;
+        let v = v.trim();
+        if k.eq_ignore_ascii_case("host") {
+            if host.replace(v).is_some() {
+                return Err(400);
+            }
+        } else if k.eq_ignore_ascii_case("origin") {
+            if origin.replace(v).is_some() {
+                return Err(400);
+            }
+        } else if k.eq_ignore_ascii_case("range") {
+            builder = builder.header("Range", v);
+        }
+    }
+    if host != Some(expected_host) {
+        return Err(403);
+    }
+    // Native media backends may omit Origin. Explicit foreign origins are refused;
+    // every response advertises only the app origin, never '*' or an echoed origin.
+    if origin.is_some_and(|o| o != app_origin()) {
+        return Err(403);
+    }
+    let prefix = format!("/{token}/");
+    let path = words[1].strip_prefix(&prefix).ok_or(403u16)?;
+    builder
+        .uri(format!("biu-media://{path}"))
+        .body(vec![])
+        .map_err(|_| 400)
+}
 async fn serve_http(listener: tokio::net::TcpListener, token: String, client: reqwest::Client) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let expected_host = match listener.local_addr() {
+        Ok(a) => a.to_string(),
+        Err(_) => return,
+    };
     while let Ok((mut socket, _)) = listener.accept().await {
         let token = token.clone();
         let client = client.clone();
+        let expected_host = expected_host.clone();
         tauri::async_runtime::spawn(async move {
             let mut data = vec![];
             loop {
@@ -199,29 +269,14 @@ async fn serve_http(listener: tokio::net::TcpListener, token: String, client: re
                 }
             }
             let text = String::from_utf8_lossy(&data);
-            let mut lines = text.lines();
-            let words: Vec<_> = lines.next().unwrap_or("").split_whitespace().collect();
-            if words.len() != 3 || words[0] != "GET" {
-                return;
-            }
-            let prefix = format!("/{token}/");
-            let Some(path) = words[1].strip_prefix(&prefix) else {
-                let _ = socket
-                    .write_all(
-                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    )
-                    .await;
-                return;
-            };
-            let mut builder = tauri::http::Request::builder().uri(format!("biu-media://{path}"));
-            for line in lines {
-                if let Some((k, v)) = line.split_once(':') {
-                    if k.eq_ignore_ascii_case("range") {
-                        builder = builder.header("Range", v.trim());
-                    }
+            let req = match parse_http_request(&text, &token, &expected_host) {
+                Ok(r) => r,
+                Err(status) => {
+                    let _ = socket.write_all(format!("HTTP/1.1 {status} Rejected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await;
+                    record(json!({"event":"http_rejected","status":status}));
+                    return;
                 }
-            }
-            let req = builder.body(vec![]).unwrap();
+            };
             if let Err(e) = http_media(&mut socket, req, client).await {
                 record(json!({"event":"http_error","message":e}));
             }
@@ -239,6 +294,8 @@ async fn http_media(
     let u = url::Url::parse(&req.uri().to_string()).map_err(|e| e.to_string())?;
     let q: std::collections::HashMap<_, _> = u.query_pairs().into_owned().collect();
     let now = Instant::now();
+    let round = q.get("round").and_then(|s| s.parse::<u64>().ok());
+    let origin = app_origin();
     let mut transferred = 0u64;
     if u.host_str() == Some("local") {
         let p = fixture(q.get("name").map(|s| s.as_str()).unwrap_or("aac.m4a"))?;
@@ -270,7 +327,7 @@ async fn http_media(
         } else {
             String::new()
         };
-        socket.write_all(format!("HTTP/1.1 {status} OK\r\nContent-Type: {content_type}\r\nContent-Length: {count}\r\n{cr}Accept-Ranges: bytes\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n").as_bytes()).await.map_err(|e|e.to_string())?;
+        socket.write_all(format!("HTTP/1.1 {status} OK\r\nContent-Type: {content_type}\r\nContent-Length: {count}\r\n{cr}Accept-Ranges: bytes\r\nAccess-Control-Allow-Origin: {origin}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").as_bytes()).await.map_err(|e|e.to_string())?;
         f.seek(SeekFrom::Start(start))
             .await
             .map_err(|e| e.to_string())?;
@@ -279,14 +336,14 @@ async fn http_media(
             transferred = n;
         }
         record(
-            json!({"event":"http_range","range":range,"status":status,"bytes":transferred,"ms":now.elapsed().as_secs_f64()*1000.0}),
+            json!({"event":"http_range","round":round,"range":range,"status":status,"bytes":transferred,"ms":now.elapsed().as_secs_f64()*1000.0}),
         );
     } else {
         let remote = q.get("u").ok_or("missing url")?;
         let parsed = url::Url::parse(remote).map_err(|e| e.to_string())?;
         // This executable's HTTP fallback deliberately supports only the loopback fixture origin.
         // Production CDN policy is not implemented here.
-        if parsed.host_str() != Some("127.0.0.1") || parsed.port() != Some(18765) {
+        if !fixture_upstream_allowed(&parsed, fixture_enabled()) {
             return Err("spike HTTP upstream denied".into());
         }
         let mut request = client
@@ -296,7 +353,7 @@ async fn http_media(
             request = request.header("Range", r);
         }
         let mut response = request.send().await.map_err(|e| e.to_string())?;
-        if response.status().as_u16() == 403 {
+        if fixture_enabled() && response.status().as_u16() == 403 {
             record(json!({"event":"url_refresh","range":range}));
             let mut request = client
                 .get("http://127.0.0.1:18765/aac.m4a")
@@ -308,7 +365,7 @@ async fn http_media(
         }
         let status = response.status().as_u16();
         let mut header = format!(
-            "HTTP/1.1 {status} OK\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n"
+            "HTTP/1.1 {status} OK\r\nConnection: close\r\nAccess-Control-Allow-Origin: {origin}\r\nCache-Control: no-store\r\n"
         );
         for key in [
             "content-length",
@@ -333,7 +390,7 @@ async fn http_media(
             transferred += bytes.len() as u64;
         }
         record(
-            json!({"event":"http_range","range":range,"status":status,"bytes":transferred,"ms":now.elapsed().as_secs_f64()*1000.0}),
+            json!({"event":"http_range","round":round,"range":range,"status":status,"bytes":transferred,"ms":now.elapsed().as_secs_f64()*1000.0}),
         );
     }
     Ok(())
@@ -366,9 +423,22 @@ fn lyrics(app: tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     w.set_ignore_cursor_events(true)
         .map_err(|e| e.to_string())?;
+    let alive = Arc::new(AtomicBool::new(true));
+    let destroyed = alive.clone();
+    w.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            destroyed.store(false, Ordering::Relaxed);
+        }
+    });
     std::thread::spawn(move || {
-        let until = Instant::now();
-        while until.elapsed().as_secs() < 65 {
+        let started = Instant::now();
+        let mut last_heartbeat = 0;
+        while alive.load(Ordering::Relaxed) {
+            let seconds = started.elapsed().as_secs();
+            if seconds >= last_heartbeat + 60 {
+                record(json!({"event":"lyrics_poll_alive","seconds":seconds}));
+                last_heartbeat = seconds;
+            }
             if let (Ok(cursor), Ok(pos)) = (w.cursor_position(), w.outer_position()) {
                 let hit = cursor.x >= pos.x as f64
                     && cursor.x < pos.x as f64 + 100.
@@ -681,6 +751,94 @@ mod tests {
             &bytes[split + 4..],
             &fs::read(fixture("aac.m4a").unwrap()).unwrap()[100..200]
         );
+    }
+    #[test]
+    fn http_host_origin_and_uri_validation() {
+        let host = "127.0.0.1:12345";
+        let good=format!("GET /test/local?name=aac.m4a HTTP/1.1\r\nHost: {host}\r\nOrigin: {}\r\nRange: bytes=0-99\r\n\r\n", app_origin());
+        assert!(parse_http_request(&good, "test", host).is_ok());
+        assert_eq!(
+            parse_http_request(&good.replace(host, "attacker.invalid"), "test", host).unwrap_err(),
+            403
+        );
+        assert_eq!(
+            parse_http_request(
+                &good.replace(app_origin(), "https://attacker.invalid"),
+                "test",
+                host
+            )
+            .unwrap_err(),
+            403
+        );
+        assert_eq!(parse_http_request(&good, "wrong", host).unwrap_err(), 403);
+        let malformed = format!("GET /test/[ HTTP/1.1\r\nHost: {host}\r\n\r\n");
+        assert_eq!(
+            parse_http_request(&malformed, "test", host).unwrap_err(),
+            400
+        );
+        let duplicate = format!("GET /test/local HTTP/1.1\r\nHost: {host}\r\nHost: {host}\r\n\r\n");
+        assert_eq!(
+            parse_http_request(&duplicate, "test", host).unwrap_err(),
+            400
+        );
+    }
+    #[test]
+    fn fixture_rules_are_opt_in_and_exact() {
+        let u = url::Url::parse("http://127.0.0.1:18765/aac.m4a?round=1").unwrap();
+        assert!(!fixture_upstream_allowed(&u, false));
+        assert!(fixture_upstream_allowed(&u, true));
+        for u in [
+            "https://other.akamaized.net/aac.m4a",
+            "http://localhost:18765/aac.m4a",
+            "http://127.0.0.1:18765/not-a-fixture",
+            "http://user:pass@127.0.0.1:18765/aac.m4a",
+        ] {
+            assert!(!fixture_upstream_allowed(
+                &url::Url::parse(u).unwrap(),
+                true
+            ));
+        }
+    }
+    #[tokio::test]
+    async fn http_wire_rejects_bad_input_and_stays_alive() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve_http(listener, "test".into(), reqwest::Client::new()));
+        for (path, host, origin, status) in [
+            (
+                "local?name=aac.m4a",
+                "wrong.invalid".to_string(),
+                app_origin(),
+                403,
+            ),
+            ("[", addr.to_string(), app_origin(), 400),
+            (
+                "local?name=aac.m4a",
+                addr.to_string(),
+                "https://attacker.invalid",
+                403,
+            ),
+            ("local?name=aac.m4a", addr.to_string(), app_origin(), 206),
+        ] {
+            let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+            socket.write_all(format!("GET /test/{path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nRange: bytes=100-199\r\n\r\n").as_bytes()).await.unwrap();
+            let mut data = vec![];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                socket.read_to_end(&mut data),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(String::from_utf8_lossy(&data).starts_with(&format!("HTTP/1.1 {status}")));
+            if status == 206 {
+                let h = String::from_utf8_lossy(&data);
+                assert!(h.contains(&format!("Access-Control-Allow-Origin: {}", app_origin())));
+                assert!(!h.contains("Access-Control-Allow-Origin: *"));
+            }
+        }
+        server.abort();
     }
     #[test]
     fn byte_ranges() {

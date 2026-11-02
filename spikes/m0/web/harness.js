@@ -3,7 +3,8 @@ const invoke = window.__TAURI__.core.invoke;
 const audio = document.querySelector('audio');
 const output = document.querySelector('#output');
 async function report(event) {
-  output.textContent += JSON.stringify(event) + '\n';
+  // Bound the UI transcript so harness DOM growth does not dominate the memory experiment.
+  output.textContent = (output.textContent + JSON.stringify(event) + '\n').slice(-16384);
   await invoke('report', {event});
 }
 const sleep = ms => new Promise(r=>setTimeout(r, ms));
@@ -96,12 +97,25 @@ async function run(config) {
   await waveform();
   await load(scheme('local',{name:'tone.flac'}));await sleep(2000);
   await report({event:'flac_playing',duration:audio.duration,time:audio.currentTime});
-  await load(scheme('remote',{u:'http://127.0.0.1:18765/aac.m4a'}));
-  audio.loop=true;
-  await report({event:'soak_start',seconds:config.seconds});
+  audio.loop=false;
+  await report({event:'soak_start',seconds:config.seconds,kind:'reload-and-range',round_seconds:30,wall_time_ms:Date.now()});
   const until=performance.now()+config.seconds*1000;
-  while(performance.now()<until) { await sleep(Math.min(10000,until-performance.now())); await report({event:'soak',time:audio.currentTime,paused:audio.paused,error:audio.error?.code||null}); }
-  await report({event:'complete'});await invoke('finish');
+  let round=0;
+  while(performance.now()<until) {
+    round++;
+    const roundStart=performance.now();
+    audio.pause();audio.removeAttribute('src');audio.load();
+    await load(scheme('remote',{u:`http://127.0.0.1:18765/aac.m4a?round=${round}`,round}));
+    const target=170+(round*31)%100,start=performance.now(),done=eventOnce(audio,'seeked');audio.currentTime=target;await done;
+    const position=audio.currentTime;
+    if(Math.abs(position-target)>2)throw Error('soak seek target mismatch');
+    while(audio.currentTime<=position+0.03){if(performance.now()-start>8000)throw Error('soak seek stalled');await sleep(10);}
+    await report({event:'soak_reload',round,target,ms:performance.now()-start,time:audio.currentTime,wall_time_ms:Date.now()});
+    const roundUntil=Math.min(until,roundStart+30000);
+    while(performance.now()<roundUntil){await sleep(Math.min(10000,roundUntil-performance.now()));await report({event:'soak',round,time:audio.currentTime,paused:audio.paused,error:audio.error?.code||null,wall_time_ms:Date.now()});}
+  }
+  audio.pause();audio.removeAttribute('src');audio.load();await sleep(500);
+  await report({event:'complete',rounds:round});await invoke('finish');
 }
 document.querySelector('#sample-run').onclick=async()=>{
   const name=document.querySelector('#sample').value;

@@ -4,7 +4,7 @@ import argparse, json, os, subprocess, time, shutil
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--mode',default='full');p.add_argument('--seconds',type=int,default=1800);p.add_argument('--name',default='linux');p.add_argument('--reuse-server',action='store_true');p.add_argument('--binary',type=Path);args=p.parse_args()
 root=args.root.resolve();out=root/'evidence';out.mkdir(exist_ok=True)
-env=os.environ|{'BIU_MODE':args.mode,'BIU_SOAK_SECONDS':str(args.seconds),'BIU_FIXTURES':str(root/'m0/fixtures'),'BIU_LOG':str(out/f'{args.name}.jsonl'),'WEBKIT_DISABLE_COMPOSITING_MODE':'1','G_MESSAGES_DEBUG':''}
+env=os.environ|{'BIU_SPIKE_FIXTURES':'1','BIU_MODE':args.mode,'BIU_SOAK_SECONDS':str(args.seconds),'BIU_FIXTURES':str(root/'m0/fixtures'),'BIU_LOG':str(out/f'{args.name}.jsonl'),'WEBKIT_DISABLE_COMPOSITING_MODE':'1','G_MESSAGES_DEBUG':''}
 Path(env['BIU_LOG']).write_text('')
 if args.binary:env['APPIMAGE_EXTRACT_AND_RUN']='1'
 serverlog=(out/f'{args.name}-server.jsonl').open('w');serverlog.close()
@@ -46,7 +46,7 @@ try:
                             if method.endswith('GetAll'):command+=['string:org.mpris.MediaPlayer2.Player']
                             result=subprocess.run(command,capture_output=True,text=True,timeout=5);dbuslog.write(result.stdout+result.stderr);time.sleep(1)
                     native_tested=True
-                samples.write(json.dumps({'seconds':elapsed,'rss_bytes':rss,'cpu_ticks':cpu,'pids':len(pids),'mpris':names})+'\n');samples.flush();last=elapsed
+                samples.write(json.dumps({'seconds':elapsed,'rss_bytes':rss,'cpu_ticks':cpu,'pids':len(pids),'mpris':names,'unix_seconds':time.time()})+'\n');samples.flush();last=elapsed
             time.sleep(1)
         if app.poll() is None:app.terminate();app.wait(timeout=10)
     print(json.dumps({'exit':app.returncode,'elapsed_seconds':time.monotonic()-start,'name':args.name}))

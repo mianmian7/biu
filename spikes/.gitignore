@@ -27,6 +27,7 @@
 **/*.zip
 **/*.bundle
 **/*.jsonl
+!/evidence/soak-60min-rss.jsonl
 **/*.log
 /evidence/*.html
 /evidence/*.sh
