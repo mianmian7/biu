@@ -63,6 +63,8 @@ export async function buildElectron() {
         entitlements: "plugins/mac/entitlements.mac.plist",
         entitlementsInherit: "plugins/mac/entitlements.mac.plist",
         notarize: false,
+        // zip + maximum 会让 7-Zip 用 Deflate 压 15 遍，单个 zip 要 12 分钟以上，体积几乎不变
+        compression: "normal",
         artifactName: "${productName}-${version}-mac-${arch}.${ext}",
         extraResources: [{ from: "electron/ffmpeg/ffmpeg-mac-${arch}", to: "electron/ffmpeg/ffmpeg-mac-${arch}" }],
       },
