@@ -1,0 +1,14 @@
+$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/review-smoke.jsonl
+PASS playback: seeks=10 max=867.0 ms; Range/206=12; waveform=0.800177; soak=70 s
+$ python3 spikes/scripts/check_evidence.py missing spikes/evidence/review-no-libav.jsonl
+PASS missing libav: detected in 147.0 ms; error=4
+$ python3 spikes/scripts/check_evidence.py update spikes/evidence/update.jsonl
+PASS updater: signature verified, 0.0.1 -> 0.0.2 installed, restart and settings/login-fixture preserved
+$ python3 spikes/scripts/check_evidence.py controls spikes/evidence/review-controls.jsonl
+PASS MPRIS fallback: D-Bus Pause/Play controlled HTMLAudio; hdslb image loaded
+$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/review-appimage.jsonl
+PASS playback: seeks=10 max=868.0 ms; Range/206=8; waveform=0.800177; soak=5 s
+
+Rust cargo test --release: 6 passed; 0 failed.
+These are playback/decoder/updater/control assertions, NOT memory acceptance.
+Memory: pending >=3600 s reload-and-Range soak and post-warmup slope analysis.

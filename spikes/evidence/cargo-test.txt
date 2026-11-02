@@ -1,13 +1,27 @@
-   Compiling cookie_store v0.21.1
-   Compiling reqwest_cookie_store v0.8.2
+   Compiling tauri v2.12.5
+   Compiling wry v0.57.1
+   Compiling tauri-runtime-wry v2.12.3
+   Compiling tauri-plugin-fs v2.7.1
+   Compiling tauri-plugin-opener v2.7.2
+   Compiling tauri-plugin-updater v2.14.1
+   Compiling tauri-plugin-process v2.4.0
+   Compiling tauri-plugin-window-state v2.5.0
+   Compiling tauri-plugin-dialog v2.8.4
+   Compiling tauri-plugin-global-shortcut v2.4.1
+   Compiling tauri-plugin-store v2.5.0
+   Compiling tauri-plugin-log v2.10.1
    Compiling biu-m0 v0.0.1 (<worktree>/spikes/m0/src-tauri)
-    Finished `release` profile [optimized] target(s) in 36.10s
-     Running unittests src/main.rs (target/release/deps/biu_m0-66692c3dfa99f43f)
+   Compiling tauri-plugin-single-instance v2.5.5
+    Finished `release` profile [optimized] target(s) in 47.19s
+     Running unittests src/main.rs (target/release/deps/biu_m0-057ce2dd4dad2ae4)
 
-running 3 tests
+running 6 tests
 test tests::byte_ranges ... ok
+test tests::fixture_rules_are_opt_in_and_exact ... ok
+test tests::http_host_origin_and_uri_validation ... ok
 test tests::local_protocol_bytes_and_416 ... ok
+test tests::http_wire_rejects_bad_input_and_stays_alive ... ok
 test tests::http_fallback_bytes ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 

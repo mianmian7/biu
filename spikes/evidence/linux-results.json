@@ -1,91 +1,93 @@
 {
-  "author_source_commit": "c08d3735f45828f008c82f69d9d1183a9cd59de7",
-  "recorded_utc": "2026-11-02T17:54:02.900969+00:00",
+  "author_source_commit": "1f8d919",
+  "recorded_utc": "2026-11-02T18:41:14.497946+00:00",
   "unit": "MB = 1000000 bytes",
   "scope": "Linux aarch64 headless spike only; cross-platform M0 acceptance pending",
   "S1": {
     "status": "pending mac arm64"
   },
   "S2": {
-    "status": "custom scheme failed; HTTP fixture playback/seek passed; memory 待定; mac/pc/wsl WebKitGTK/Linux x64 pending",
+    "status": "自定义协议不通过；HTTP夹具播放/seek通过；内存待定；mac/pc/wsl WebKitGTK/Linux x64待测",
     "aac_seconds": 300.023333333,
     "seek_seed": 2401,
     "seeks": [
       {
         "event": "seek",
-        "ms": 868,
+        "ms": 867,
         "target": 56,
-        "time": 56.03147247
+        "time": 56.031862105
       },
       {
         "event": "seek",
-        "ms": 33,
+        "ms": 33.000000000000455,
         "target": 26,
-        "time": 26.03125287
+        "time": 26.032950786
       },
       {
         "event": "seek",
-        "ms": 91.99999999999956,
+        "ms": 92,
         "target": 235,
-        "time": 235.032646952
+        "time": 235.032920426
       },
       {
         "event": "seek",
         "ms": 91,
         "target": 162,
-        "time": 162.031891831
+        "time": 162.031824545
       },
       {
         "event": "seek",
-        "ms": 34,
+        "ms": 176,
         "target": 169,
-        "time": 169.032450912
+        "time": 169.036672268
       },
       {
         "event": "seek",
         "ms": 405,
         "target": 255,
-        "time": 255.03143007
+        "time": 255.031458385
       },
       {
         "event": "seek",
-        "ms": 470.99999999999955,
+        "ms": 469.0000000000009,
         "target": 83,
-        "time": 83.032721351
+        "time": 83.032857226
       },
       {
         "event": "seek",
         "ms": 293,
         "target": 100,
-        "time": 100.03137531
+        "time": 100.031496664
       },
       {
         "event": "seek",
-        "ms": 341,
+        "ms": 342,
         "target": 271,
-        "time": 271.032006111
+        "time": 271.033121026
       },
       {
         "event": "seek",
-        "ms": 89,
+        "ms": 88,
         "target": 154,
-        "time": 154.03135959
+        "time": 154.031294944
       }
     ],
-    "range_206_transfers": 6,
-    "soak_seconds": 1800,
-    "completed": true,
-    "soak_samples": 180,
-    "errors_or_paused": 0,
-    "rss_after_60_seconds_bytes": 630906880,
-    "rss_peak_after_warmup_bytes": 676425728,
-    "rss_last_bytes": 650854400,
-    "rss_last_5min_min_bytes": 646524928,
-    "rss_last_5min_max_bytes": 676425728,
+    "short_reload_smoke_seconds": 70,
+    "short_smoke_completed": true,
     "memory_status": "待定",
-    "prior_soak_scope": "Historical 1800 s cached-file loop; no proxy/Range traffic during soak; not valid for memory acceptance.",
-    "rss_interpretation": "待定。Warmup后存在正斜率，不能用末段GC回落判通过。重测>=3600 s，每30 s重新加载并强制Range；warmup=600 s后全段及最后30 min OLS均<=0 MB/min才可通过；提交原始RSS序列。",
-    "production_CDN_refresh": "not tested; synthetic 403 -> new fixture URL only"
+    "rss_interpretation": "原30 min缓存循环不能验证代理内存。>=3600 s fresh-load/Range实验正在运行；排除600 s warmup后全段及最后30 min OLS斜率均<=0才可记本轮通过，否则仍待定。",
+    "historical_cached_soak": {
+      "soak_seconds": 1800,
+      "soak_samples": 180,
+      "rss_after_60_seconds_bytes": 630906880,
+      "rss_peak_after_warmup_bytes": 676425728,
+      "rss_last_bytes": 650854400,
+      "source_commit": "c08d373",
+      "usable_for_memory_acceptance": false,
+      "reason": "Cached-file loop with no proxy traffic; positive post-warmup slope was not judged correctly"
+    },
+    "production_CDN_refresh": "not tested; fixed fixture refresh only when BIU_SPIKE_FIXTURES=1; M2 must allow only exact playurl hosts",
+    "http_security": "Host == bound 127.0.0.1:<port>; ACAO app origin only; explicit foreign Origin denied; one random token per app process"
   },
   "S3": {
     "status": "arm64 smoke passed; clean x64 VM dependency matrix pending",
@@ -93,7 +95,7 @@
       "detected": true,
       "error": 4,
       "event": "missing_decoder",
-      "ms": 146,
+      "ms": 147.00000000000006,
       "updates": 0
     },
     "system_packages_removed": false
@@ -105,25 +107,25 @@
         "artifact": "biu-m0",
         "bytes": 10659672,
         "MB": 10.659672,
-        "sha256": "0a3428da252412ea188199301af2431e7c8f544d7c1e8b063e7623e854de0d97"
+        "sha256": "7e19afb8a27640b8771dfdd78c3750eb915de4803687cb76a2e55a5081024edc"
       },
       {
         "artifact": "Biu M0_0.0.1_arm64.deb",
-        "bytes": 5082256,
-        "MB": 5.082256,
-        "sha256": "445b6ad7cb68aced1936c10683fcbc93036bfcdc6dbff1289981c735760e756e"
+        "bytes": 5084262,
+        "MB": 5.084262,
+        "sha256": "81bc84ec1e5b312ecb915c4853f1a25d7198f92cb934dc65c43885c58b82541e"
       },
       {
         "artifact": "Biu M0-0.0.1-1.aarch64.rpm",
-        "bytes": 5087712,
-        "MB": 5.087712,
-        "sha256": "aeb4e897e4b0f65596568b37355e4a8b09498d0b6707fa89a446840bf7524919"
+        "bytes": 5089701,
+        "MB": 5.089701,
+        "sha256": "c329b5a60f73269c171581943c8cb14c65c93e825ccce7a1f61c2105627cf372"
       },
       {
         "artifact": "Biu M0_0.0.1_aarch64.AppImage",
-        "bytes": 145107464,
-        "MB": 145.107464,
-        "sha256": "89bb5c5653486f36ae1cfb883e318d4a57889e4e2d18c28a0c880bdb8e0e5049"
+        "bytes": 145115656,
+        "MB": 145.115656,
+        "sha256": "2e8e0251a84309cb323eec7f2c2ead3d3b9665b2d59aacccfc296e57d2b4ee91"
       }
     ],
     "appimage_media_framework": true,
@@ -149,7 +151,8 @@
     "proxy_probe": {
       "event": "proxy_image",
       "loaded": true
-    }
+    },
+    "product_policy_decision": "§7 D6 pending user decision; M0 uses Rust-only proxy fallback; macOS proxy requires 14+ and macos-proxy feature"
   },
   "S7": {
     "status": "local signed AppImage update/restart passed; production exit lifecycle and real cookie migration pending",
@@ -194,5 +197,5 @@
     ],
     "physical_media_keys": "not tested"
   },
-  "independent_review": "user arranged separately; original review canceled/not used"
+  "independent_review": "User-provided Claude review adopted; no new review started; final approval not claimed"
 }

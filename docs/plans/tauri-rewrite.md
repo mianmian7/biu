@@ -73,7 +73,7 @@ owner = Claude（osa-a1）
 | `bili/request.rs` | `bili_request` command：method/url/params/body/headers → status/headers/body；URL 白名单（`*.bilibili.com`、`*.hdslb.com`、`*.biliapi.net` 等） | — | axios 在 Electron 下的直接请求 |
 | `bili/wbi.rs`、`bili/ticket.rs` | WBI 签名、`bili_ticket` | `md5`、`hmac`、`sha2` | `ipc/api/wbi.ts`、`network/web-bili-ticket.ts` |
 | `bili/api.rs` | 下载和自动歌词要用的 playurl、audio-stream-url、web-interface/view | `serde` | `ipc/api/*.ts` |
-| `media/protocol.rs` | `biu-media://remote?u=<url>`：转发 Range，带 Referer/UA/cookie，返回 206 + `Content-Range` + `Accept-Ranges` + 正确 `Content-Type`，流式输出；`biu-media://local?p=<path>`：本地文件同样支持 Range；远程 host 白名单（`*.bilivideo.com`、`*.bilivideo.cn`、`*.akamaized.net`、`*.hdslb.com`） | `tauri` 异步 URI scheme、`http-range` | `<audio>` 直连 CDN、本地音乐的 `file://` |
+| `media/protocol.rs` | `biu-media://remote?u=<url>`：转发 Range，带 Referer/UA/cookie，返回 206 + `Content-Range` + `Accept-Ranges` + 正确 `Content-Type`，流式输出；`biu-media://local?p=<path>`：本地文件同样支持 Range；远程host仅放行playurl返回的具体host（不得使用`*.akamaized.net`等通配后缀；M0夹具及写死刷新不进入M2） | `tauri` 异步 URI scheme、`http-range` | `<audio>` 直连 CDN、本地音乐的 `file://` |
 | `download/` | `queue.rs`（tokio 信号量，并发数沿用设置）、`core.rs`（分块 Range 下载、暂停/续传/重试，URL 过期时重新取）、`persist.rs`（任务存 `media-downloads` store）、`mux.rs`（见 D2）、`events.rs`（`download:sync`） | `tokio`、`futures` | `ipc/download/*` |
 | `lyrics/` | netease 搜索/歌词、lrclib 搜索 | — | `ipc/api/netease-lyric.ts`、`lrclib-lyric.ts`、`ipc/lyrics.ts` |
 | `autolyrics/` | `sources.rs`（网易云候选、参考音频下载）、`decode.rs`（symphonia：isomp4 + aac + flac → 混成单声道 → 重采样到 22050 Hz → `tauri::ipc::Response` 返回原始 f32 字节） | `symphonia`、`rubato` | `auto-lyrics/decode.ts`、`ffmpeg-resolve.ts`、`sources.ts`、`worker-*.ts` |
@@ -265,7 +265,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 ### M0 — Spike（见 §2）
 - [x] 最小 Tauri 工程：一个窗口、`biu-media://`、播放页、歌词窗口原型
   - 结果：**通过（osa-a1，Ubuntu 24.04.5 LTS / aarch64，4 核，Rust 1.99.1，WebKitGTK 2.52.6）**。复现工程在 `spikes/m0/`；正式代码未改。官方插件全部注册，计划内 Linux crate 已纳入，依赖探针实际执行 MP4 读取、标签、字体枚举、FLAC 解码、重采样、加密/摘要等入口；cookie jar 接到 reqwest client，避免只声明依赖而被完全裁掉。
-  - 验证：`cargo test --release` **3 passed / 0 failed**（Range/416、协议字节一致性、HTTP 退路字节一致性）；Node 语法检查、Python 编译检查、`cargo fmt --check` 通过。现有 `dist/web` 快照内嵌为体积负载，文件合计 **2,481,561 字节（2.481561 MB）**，并未声称已完成正式 React 适配。
+  - 验证：`cargo test --release` **6 passed / 0 failed**（Range/416、字节一致性、Host/Origin限制、测试开关/精确夹具范围、畸形URI返回400且服务继续响应）；Node 语法检查、Python 编译检查、`cargo fmt --check` 通过。现有 `dist/web` 快照内嵌为体积负载，文件合计 **2,481,561 字节（2.481561 MB）**，并未声称已完成正式 React 适配。
   - 证据与边界：`spikes/evidence/` 的环境/前端哈希清单、测试输出；`spikes/README.md` 是复现入口。原始大日志、音频、产物和私钥均忽略提交。音频由 GStreamer 生成原创 440 Hz 正弦波，没有提交或下载版权歌曲。用户另行安排 Claude 审查；本执行线程取消原审查，不声明独立审查通过。全平台 M0 尚未验收，不进入 M1。
 - [ ] S1 Mac FLAC / ec-3
   - 结果：**待在 mac（MateBook，arm64）上运行**，未编造样本或测量。Linux `canPlayType` 在 libav 存在时对 AAC、fMP4 FLAC（flac/fLaC）及 ec-3 返回 `probably`，原生 FLAC 返回 `maybe`；这些仅是 Linux 能力声明，不能替代 Mac 的三首/格式实播。
@@ -278,15 +278,15 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - URL 过期：夹具注入403，Rust刷新测试地址并继续同一Range。**真实 B 站 CDN / 登录态 / 地址续签没有实测**；HTTP 退路目前只放行夹具上游，生产白名单和续签逻辑不在此原型里。原`*.akamaized.net`等后缀白名单已从spike代码移除；夹具放行及写死403刷新仅在显式`BIU_SPIKE_FIXTURES=1`时启用。**这些规则不得带入M2；M2只能放行playurl返回的具体host，不能沿用Akamai公共后缀白名单**。HTTP退路ACAO只允许app源，Host必须等于实际绑定的`127.0.0.1:<port>`；每次启动一个随机token，进程内共用，并非每请求一次性。Mac/Windows、wsl WebKitGTK、真实CDN、Linux x64实机/VM和物理音频输出均待验证。
 - [ ] S3 Linux gst-libav
   - 结果：**osa-a1 arm64 构建/解码冒烟通过；Ubuntu/Fedora/Arch 干净 x64 VM 矩阵待运行**。独立插件目录链接系统插件但排除 `libgstlibav.so`，同时设置 `GST_PLUGIN_SYSTEM_PATH_1_0`、空 `GST_PLUGIN_PATH_1_0` 和独立 `GST_REGISTRY`；未卸载系统包。仅设置 PLUGIN_PATH 无法隔离系统插件，复现说明已避免此做法。
-  - 实测：缺 libav 时 AAC `canPlayType` 为空，**146 ms** 内收到 `MEDIA_ERR_SRC_NOT_SUPPORTED`（code 4），没有 `timeupdate`，页面显示 `sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good`。正常插件环境中 AAC/FLAC 可播放，AAC 波形最大幅值约 **0.800177**。
+  - 实测：缺 libav 时 AAC `canPlayType` 为空，**147 ms** 内收到 `MEDIA_ERR_SRC_NOT_SUPPORTED`（code 4），没有 `timeupdate`，页面显示 `sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good`。正常插件环境中 AAC/FLAC 可播放，AAC 波形最大幅值约 **0.800177**。
   - 打包：已读取 deb 实际 control，其 Depends 包含 `gstreamer1.0-libav` 和 good；`apt-get -s install ./...deb` 解析通过。本机 libav 已安装，**不能据此声称已实测干净 VM 自动下载依赖**。rpm 实际 requires 包含 `gstreamer1-plugin-libav`、`gstreamer1-plugins-good`、WebKitGTK；Fedora 是否需要 RPM Fusion、依赖能否解析仍待 VM，Arch 同待。
   - 退路：若干净 VM 验证确实不通过且不能由依赖解决，按计划另请用户批准 symphonia + cpal 原生播放里程碑；本次未擅自增加原生后端。
 - [ ] S4 二进制体积
   - 结果：**Linux aarch64 deb/rpm 通过；Mac 和 Windows 待 CI 或对应机器**。本次完整计划依赖/插件（加 Linux S8 souvlaki 退路）及当前 dist/web 的实测，release profile 为 `opt-level="s"`、`lto=true`、`codegen-units=1`、`strip=true`、`panic="abort"`；MB 统一为1,000,000字节。原型仍不是完整产品代码，后续功能会增加体积。
-  - 交付体积：**deb 5,082,256 字节（5.082256 MB）**；**rpm 5,087,712 字节（5.087712 MB）**；**strip 后二进制 10,659,672 字节（10.659672 MB）**；**含媒体插件 AppImage 145,107,464 字节（145.107464 MB）**。deb低于8 MB目标，deb/rpm低于10 MB下载包硬上限；裸二进制不适用压缩下载包门槛。AppImage按D1例外，不受10 MB限制。
+  - 交付体积：**deb 5,084,262 字节（5.084262 MB）**；**rpm 5,089,701 字节（5.089701 MB）**；**strip 后二进制 10,659,672 字节（10.659672 MB）**；**含媒体插件 AppImage 145,115,656 字节（145.115656 MB）**。deb低于8 MB目标，deb/rpm低于10 MB下载包硬上限；裸二进制不适用压缩下载包门槛。AppImage按D1例外，不受10 MB限制。
   - AppImage处理：默认未打媒体插件的版本解码检测失败；启用 `bundle.linux.appimage.bundleMediaFramework=true` 后成功打包并通过 AAC、FLAC、10次拖动、波形冒烟。linuxdeploy 需要 patchelf，本次只用 `apt-get download` + `dpkg-deb -x` 解包到 worktree，不以sudo安装它。辅助AppImage较预算大，D1仍优先deb/rpm。
   - `cargo bloat --release --crates -n 15`：前几名 **zbus 896.5 KiB、std 866.1 KiB、tauri 819.8 KiB、lofty 432.3 KiB、tokio 382.4 KiB、rustfft 333.6 KiB、rustls 244.5 KiB**；前15名完整输出在 `spikes/evidence/cargo-bloat.txt`。LTO归属是工具估算；bloat重建的未strip分析副本约16.4 MiB，不能当成发布二进制实测值。
-  - 证据：`sizes.json`（字节/MB/SHA256）、`frontend-manifest.json`、deb/rpm元数据。Mac dmg与Windows NSIS没有本机实测值，未用预算冒充实测。
+  - 证据：`sizes.json`（字节/MB/SHA256）、`frontend-manifest.json`、deb/rpm元数据；以上体积已在审查修复后重测，`acceptance-review.txt`记录非内存断言。Mac dmg与Windows NSIS没有本机实测值，未用预算冒充实测。
 - [ ] S5 桌面歌词窗口
   - 结果：**未验证（仅 API 调用无报错）**；完整交互/真实合成器、mac / pc / X11视觉 / Wayland GNOME/KDE仍待验证。创建透明、无边框、置顶窗口并成功调用鼠标穿透；D3每100 ms检查光标，进入左上100×60区域临时取消穿透。悬停轮询已去掉65 s截止，持续到窗口Destroyed事件；这仅修复原型生命周期，不代表完整D3交互已通过。
   - 实测：xvfb下60 s扫光记录 **3903帧 / 60004 ms ≈65.046 fps**。该数字是requestAnimationFrame吞吐，**不能证明真实显示器稳定60 fps**。无物理显示器、无真实合成器，libEGL访问/dev/dri被拒，未提升权限，软件渲染继续测试。
