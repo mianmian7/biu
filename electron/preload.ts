@@ -168,17 +168,8 @@ const api: ElectronAPI = {
     ipcRenderer.on(channel.app.onUpdateAvailable, handler);
     return () => ipcRenderer.removeListener(channel.app.onUpdateAvailable, handler);
   },
-  // 检查是否支持自动更新
-  isSupportAutoUpdate: () => {
-    const platform = process.platform;
-    if (platform === "darwin") return false;
-    if (platform === "win32") {
-      const isPortable = Boolean(process.env.PORTABLE_EXECUTABLE_DIR || process.env.PORTABLE_EXECUTABLE_FILE);
-      return !isPortable;
-    }
-    const isAppImage = Boolean(process.env.APPIMAGE);
-    return isAppImage;
-  },
+  // 获取主进程检测的更新模式
+  getUpdateMode: () => ipcRenderer.invoke(channel.app.getUpdateMode),
   // 下载应用更新
   downloadAppUpdate: () => ipcRenderer.invoke(channel.app.downloadUpdate),
   // 监听应用更新进度事件

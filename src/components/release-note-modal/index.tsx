@@ -1,5 +1,3 @@
-import { useEffect, useState } from "react";
-
 import { addToast, Button, Modal, ModalBody, ModalContent, ModalFooter, ModalHeader, Progress } from "@heroui/react";
 import { RiInformationLine } from "@remixicon/react";
 import { filesize } from "filesize";
@@ -17,19 +15,32 @@ const ReleaseNoteModal = () => {
       onReleaseNoteModalOpenChange: state.onReleaseNoteModalOpenChange,
     })),
   );
-  const releaseNotes = useAppUpdateStore(state => state.releaseNotes);
-  const [status, setStatus] = useState<DownloadAppUpdateStatus>();
-  const [downloadProgress, setDownloadProgress] = useState<DownloadAppProgressInfo>();
-  const [downloadInfo, setDownloadInfo] = useState<DownloadInfo>();
-  const [error, setError] = useState<string>();
+  const {
+    releaseNotes,
+    mode,
+    downloadStatus: status,
+    downloadProgress,
+    downloadInfo,
+    downloadError: error,
+    setDownload,
+  } = useAppUpdateStore(
+    useShallow(state => ({
+      releaseNotes: state.releaseNotes,
+      mode: state.mode,
+      downloadStatus: state.downloadStatus,
+      downloadProgress: state.downloadProgress,
+      downloadInfo: state.downloadInfo,
+      downloadError: state.downloadError,
+      setDownload: state.setDownload,
+    })),
+  );
 
   const startDownload = async () => {
-    setStatus("downloading");
+    setDownload({ status: "downloading" });
     try {
       await window.electron.downloadAppUpdate();
     } catch (e) {
-      setStatus("error");
-      setError(e instanceof Error ? e.message : String(e));
+      setDownload({ status: "error", error: e instanceof Error ? e.message : String(e) });
     }
   };
 
@@ -53,27 +64,6 @@ const ReleaseNoteModal = () => {
     }
   };
 
-  useEffect(() => {
-    const removeListener = window.electron.onDownloadAppProgress(info => {
-      setStatus(info.status);
-      switch (info.status) {
-        case "downloading":
-          setDownloadProgress(info.processInfo);
-          break;
-        case "downloaded":
-          setDownloadInfo(info.downloadInfo);
-          break;
-        case "error":
-          setError(info.error);
-          break;
-      }
-    });
-
-    return () => {
-      removeListener();
-    };
-  }, []);
-
   return (
     <>
       <Modal
@@ -96,7 +86,7 @@ const ReleaseNoteModal = () => {
               <div className="text-center text-sm text-zinc-500 dark:text-zinc-400">暂无更新日志</div>
             )}
           </ModalBody>
-          {status === "downloading" && Boolean(downloadProgress?.percent) && (
+          {status === "downloading" && (
             <Progress radius="none" className="w-full" color="primary" value={downloadProgress?.percent} />
           )}
           <ModalFooter className="items-center justify-between">
@@ -110,11 +100,18 @@ const ReleaseNoteModal = () => {
               <div className="inline-flex items-center space-x-2">
                 <span className="inline-flex items-center space-x-1">
                   <RiInformationLine size={16} />
-                  <span className="text-sm text-zinc-500 dark:text-zinc-400">安装包已下载完成</span>
+                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                    {mode === "auto" ? "也可以稍后，退出时自动安装" : "安装包已下载完成"}
+                  </span>
                 </span>
-                {window.electron.isSupportAutoUpdate() ? (
-                  <Button color="primary" onPress={window.electron.quitAndInstall}>
-                    退出并安装更新
+                {mode === "auto" ? (
+                  <Button
+                    color="primary"
+                    onPress={() => {
+                      void window.electron.quitAndInstall();
+                    }}
+                  >
+                    立即重启更新
                   </Button>
                 ) : (
                   <Button color="primary" onPress={handleOpenInstaller}>
@@ -131,16 +128,15 @@ const ReleaseNoteModal = () => {
                   </span>
                 )}
 
-                <Button
-                  color="primary"
-                  isLoading={status === "downloading"}
-                  onPress={startDownload}
-                  startContent={
-                    Boolean(downloadProgress?.percent) && <span>{downloadProgress?.percent.toFixed(2)}%</span>
-                  }
-                >
-                  {status === "downloading" ? "正在下载" : "下载更新"}
-                </Button>
+                {mode === "manual" ? (
+                  <Button color="primary" isLoading={status === "downloading"} onPress={startDownload}>
+                    {status === "downloading" ? "正在下载" : "下载更新"}
+                  </Button>
+                ) : status === "downloading" ? (
+                  <span>正在下载 {downloadProgress?.percent.toFixed(2) ?? "0"}%</span>
+                ) : mode === "auto" && status === "idle" ? (
+                  <span>正在后台准备更新</span>
+                ) : null}
               </div>
             )}
           </ModalFooter>

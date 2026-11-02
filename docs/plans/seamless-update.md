@@ -134,12 +134,14 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
 
 ### 3. 预加载与渲染进程
 
-- [ ] 3.1 `electron/preload.ts`：删除同步的 `isSupportAutoUpdate`，改为 `getUpdateMode: () => ipcRenderer.invoke(channel.app.getUpdateMode)`。同步修改 `shared/types/renderer.d.ts`；在 `shared/types/app-update.d.ts` 里给 `CheckAppUpdateResult` 加 `notice?: string`，给 `DownloadAppMessage` 加 `mode?`。
-- [ ] 3.2 `src/store/app-update.ts`：增加 `mode`、`downloadStatus`（`idle | downloading | downloaded | error`）和 `downloadProgress`。`src/app.tsx` 启动时读取 mode，并全局订阅 `onDownloadAppProgress`，这样弹窗关闭后状态也不会丢。auto 模式下载完成时弹一次 toast：「新版本已下载，退出时自动安装」，附带「立即重启」按钮。
-- [ ] 3.3 `src/components/release-note-modal/index.tsx`：从 store 读取状态。
+- [x] 3.1 `electron/preload.ts`：删除同步的 `isSupportAutoUpdate`，改为 `getUpdateMode: () => ipcRenderer.invoke(channel.app.getUpdateMode)`。同步修改 `shared/types/renderer.d.ts`；在 `shared/types/app-update.d.ts` 里给 `CheckAppUpdateResult` 加 `notice?: string`，给 `DownloadAppMessage` 加 `mode?`。
+- [x] 3.2 `src/store/app-update.ts`：增加 `mode`、`downloadStatus`（`idle | downloading | downloaded | error`）和 `downloadProgress`。`src/app.tsx` 启动时读取 mode，并全局订阅 `onDownloadAppProgress`，这样弹窗关闭后状态也不会丢。auto 模式下载完成时弹一次 toast：「新版本已下载，退出时自动安装」，附带「立即重启」按钮。
+- [x] 3.3 `src/components/release-note-modal/index.tsx`：从 store 读取状态。
   - auto 模式：不显示「下载更新」按钮；下载中显示进度；下载完成显示「立即重启更新」，同时提示「也可以稍后，退出时自动安装」。
   - manual 模式：保持现在的行为（「下载更新」和「打开安装包文件夹」）。
-- [ ] 3.4 `src/components/update-check-button/index.tsx`：结果带 `notice` 时，显示 `color: "warning"` 的 toast。
+- [x] 3.4 `src/components/update-check-button/index.tsx`：结果带 `notice` 时，显示 `color: "warning"` 的 toast。
+
+执行结果（3.1–3.4）：模式改为异步 IPC；App 全局订阅下载事件，store 保留弹窗关闭期间的状态；auto 下载完成提示与重启按钮、manual 文件夹入口及发布窗口 warning toast 已实现。
 
 ### 4. 构建配置
 

@@ -18,7 +18,9 @@ const UpdateCheckButton = () => {
 
     const res = await window.electron.checkAppUpdate();
 
-    if (res?.error) {
+    if (res?.notice) {
+      addToast({ title: res.notice, color: "warning" });
+    } else if (res?.error) {
       addToast({
         title: "检查更新失败",
         description: res.error,
