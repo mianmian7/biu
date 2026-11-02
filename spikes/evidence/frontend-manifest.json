@@ -1,0 +1,80 @@
+{
+  "files": [
+    {
+      "path": "index.html",
+      "bytes": 807,
+      "sha256": "b7c73c7475b445e541a3c4b8b3685a922ef1ee7b58af5cdd4742fe97e5024212"
+    },
+    {
+      "path": "static/css/273.6539ae1a.css",
+      "bytes": 18818,
+      "sha256": "01af92d0d681a4be869f1dac0d88b876f078af0363346fa9ecdc4741d4aa2f6b"
+    },
+    {
+      "path": "static/css/index.51f096de.css",
+      "bytes": 267161,
+      "sha256": "cd2f185d96380f52db56ec73d5bf1d717272c7e1b827724530559afb838d82b3"
+    },
+    {
+      "path": "static/js/273.669f4c77.js",
+      "bytes": 1527823,
+      "sha256": "cf44a2ea3100ea884d2b44e8c30f1122e232d4d15f26e63543cbc31c74bbdebe"
+    },
+    {
+      "path": "static/js/273.669f4c77.js.LICENSE.txt",
+      "bytes": 1782,
+      "sha256": "64cefc25114200a22cb73dbd77ea1bb66ba3d4823069f343d0acb6bc24299605"
+    },
+    {
+      "path": "static/js/async/496.7574d32e.js",
+      "bytes": 143,
+      "sha256": "49101527585b9a62e18d495ab03f91a6c900f3743cf8b2e70a14496ba171270f"
+    },
+    {
+      "path": "static/js/async/539.668e1f9d.js",
+      "bytes": 143,
+      "sha256": "b0bf8321596dfdfb4c2aba5a88771486922006b2285e43705928f4dcea7227ca"
+    },
+    {
+      "path": "static/js/async/91.00b3f9cb.js",
+      "bytes": 404,
+      "sha256": "2097224dec11b692296fc87ad675347e2b569d57e4968747bfe577d80dfa33d8"
+    },
+    {
+      "path": "static/js/async/951.3955b348.js",
+      "bytes": 184,
+      "sha256": "64859602e0ce2d1940f77844823284fa89ac2bd2645d52947c088a008b77b767"
+    },
+    {
+      "path": "static/js/index.30c38437.js",
+      "bytes": 414438,
+      "sha256": "945c0f6de54ee5e2695d7231fa76b2ea8910da1d7ccadccfa57bbe2521186fde"
+    },
+    {
+      "path": "static/js/lib-axios.cc40b848.js",
+      "bytes": 34879,
+      "sha256": "35d92357a8ae54d106e5ed3316d83004a57c084c039e91720fb681ab9452202e"
+    },
+    {
+      "path": "static/js/lib-react.42ad53a1.js",
+      "bytes": 181962,
+      "sha256": "3f96cddd61c1c5d419f131c2228bcf2f5f839c8e1b53cd8fe324125ab6c19290"
+    },
+    {
+      "path": "static/js/lib-react.42ad53a1.js.LICENSE.txt",
+      "bytes": 1209,
+      "sha256": "e47a413b62a5bf023d2b81a25d0ef4213ff1bb756df7f3c31ba57f88334e1e0f"
+    },
+    {
+      "path": "static/js/lib-router.4573de30.js",
+      "bytes": 31587,
+      "sha256": "c37b037dec0f498bf9854887969c33ae2ce7cec7fcaec44cf5cb0a0d25675c5f"
+    },
+    {
+      "path": "static/js/lib-router.4573de30.js.LICENSE.txt",
+      "bytes": 221,
+      "sha256": "416d6837debc29dfeb04fea91f92fddf65b2d54a301bb7f5980be758611e1565"
+    }
+  ],
+  "total_file_bytes": 2481561
+}

@@ -1,0 +1,31 @@
+{
+  "unit": "MB = 1000000 bytes",
+  "architecture": "aarch64",
+  "artifacts": [
+    {
+      "artifact": "biu-m0",
+      "bytes": 10659672,
+      "MB": 10.659672,
+      "sha256": "0a3428da252412ea188199301af2431e7c8f544d7c1e8b063e7623e854de0d97"
+    },
+    {
+      "artifact": "Biu M0_0.0.1_arm64.deb",
+      "bytes": 5082256,
+      "MB": 5.082256,
+      "sha256": "445b6ad7cb68aced1936c10683fcbc93036bfcdc6dbff1289981c735760e756e"
+    },
+    {
+      "artifact": "Biu M0-0.0.1-1.aarch64.rpm",
+      "bytes": 5087712,
+      "MB": 5.087712,
+      "sha256": "aeb4e897e4b0f65596568b37355e4a8b09498d0b6707fa89a446840bf7524919"
+    },
+    {
+      "artifact": "Biu M0_0.0.1_aarch64.AppImage",
+      "bytes": 145107464,
+      "MB": 145.107464,
+      "sha256": "89bb5c5653486f36ae1cfb883e318d4a57889e4e2d18c28a0c880bdb8e0e5049"
+    }
+  ],
+  "binary_note": "standalone stripped cargo build --release, restored after bloat; per-bundle metadata patching may change the executable SHA256 without changing length"
+}

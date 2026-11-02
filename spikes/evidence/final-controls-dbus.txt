@@ -1,0 +1,80 @@
+method return time=1793640250.403922 sender=:1.12 -> destination=:1.16 serial=9 reply_serial=2
+   array [
+      dict entry(
+         string "CanGoPrevious"
+         variant             boolean true
+      )
+      dict entry(
+         string "CanControl"
+         variant             boolean true
+      )
+      dict entry(
+         string "Metadata"
+         variant             array [
+               dict entry(
+                  string "xesam:title"
+                  variant                      string "Biu M0 native fixture"
+               )
+               dict entry(
+                  string "xesam:artist"
+                  variant                      array [
+                        string "Synthetic test"
+                     ]
+               )
+               dict entry(
+                  string "mpris:length"
+                  variant                      int64 300000000
+               )
+               dict entry(
+                  string "mpris:artUrl"
+                  variant                      string "http://127.0.0.1:18765/art.svg"
+               )
+               dict entry(
+                  string "mpris:trackid"
+                  variant                      object path "/"
+               )
+            ]
+      )
+      dict entry(
+         string "Volume"
+         variant             double 1
+      )
+      dict entry(
+         string "Position"
+         variant             int64 0
+      )
+      dict entry(
+         string "MinimumRate"
+         variant             double 1
+      )
+      dict entry(
+         string "CanPause"
+         variant             boolean true
+      )
+      dict entry(
+         string "CanGoNext"
+         variant             boolean true
+      )
+      dict entry(
+         string "PlaybackStatus"
+         variant             string "Playing"
+      )
+      dict entry(
+         string "CanSeek"
+         variant             boolean true
+      )
+      dict entry(
+         string "CanPlay"
+         variant             boolean true
+      )
+      dict entry(
+         string "MaximumRate"
+         variant             double 1
+      )
+      dict entry(
+         string "Rate"
+         variant             double 1
+      )
+   ]
+method return time=1793640251.407101 sender=:1.12 -> destination=:1.17 serial=10 reply_serial=2
+method return time=1793640252.410404 sender=:1.12 -> destination=:1.18 serial=11 reply_serial=2

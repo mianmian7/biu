@@ -1,0 +1,23 @@
+{
+  "package": [
+    "biu-m0"
+  ],
+  "version": [
+    "0.0.1"
+  ],
+  "arch": [
+    "aarch64"
+  ],
+  "requires": [
+    "gstreamer1-plugin-libav",
+    "gstreamer1-plugins-good",
+    "libayatana-appindicator3.so.1()(64bit)",
+    "libgtk-3.so.0()(64bit)",
+    "libwebkit2gtk-4.1.so.0()(64bit)",
+    "rpmlib(CompressedFileNames)",
+    "rpmlib(FileDigests)",
+    "rpmlib(PayloadFilesHavePrefix)",
+    "webkit2gtk4.1"
+  ],
+  "dependency_resolution_on_Fedora": "not tested; libav may require RPM Fusion"
+}

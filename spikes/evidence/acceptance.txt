@@ -1,0 +1,13 @@
+$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/final-soak.jsonl
+PASS playback: seeks=10 max=868.0 ms; Range/206=6; waveform=0.800177; soak=1800 s
+$ python3 spikes/scripts/check_evidence.py missing spikes/evidence/final-no-libav.jsonl
+PASS missing libav: detected in 146.0 ms; error=4
+$ python3 spikes/scripts/check_evidence.py update spikes/evidence/update.jsonl
+PASS updater: signature verified, 0.0.1 -> 0.0.2 installed, restart and settings/login-fixture preserved
+$ python3 spikes/scripts/check_evidence.py controls spikes/evidence/final-controls.jsonl
+PASS MPRIS fallback: D-Bus Pause/Play controlled HTMLAudio; hdslb image loaded
+$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/final-appimage.jsonl
+PASS playback: seeks=10 max=868.0 ms; Range/206=6; waveform=0.800177; soak=5 s
+
+Rust tests: cargo test --release: 3 passed; see cargo-test.txt.
+No independent review or cross-platform acceptance is claimed.

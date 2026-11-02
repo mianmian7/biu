@@ -1,0 +1,13 @@
+   Compiling cookie_store v0.21.1
+   Compiling reqwest_cookie_store v0.8.2
+   Compiling biu-m0 v0.0.1 (<worktree>/spikes/m0/src-tauri)
+    Finished `release` profile [optimized] target(s) in 36.10s
+     Running unittests src/main.rs (target/release/deps/biu_m0-66692c3dfa99f43f)
+
+running 3 tests
+test tests::byte_ranges ... ok
+test tests::local_protocol_bytes_and_416 ... ok
+test tests::http_fallback_bytes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

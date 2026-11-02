@@ -1,0 +1,196 @@
+{
+  "author_source_commit": "c08d3735f45828f008c82f69d9d1183a9cd59de7",
+  "recorded_utc": "2026-11-02T17:54:02.900969+00:00",
+  "unit": "MB = 1000000 bytes",
+  "scope": "Linux aarch64 headless spike only; cross-platform M0 acceptance pending",
+  "S1": {
+    "status": "pending mac arm64"
+  },
+  "S2": {
+    "status": "custom scheme failed; approved HTTP fixture fallback passed",
+    "aac_seconds": 300.023333333,
+    "seek_seed": 2401,
+    "seeks": [
+      {
+        "event": "seek",
+        "ms": 868,
+        "target": 56,
+        "time": 56.03147247
+      },
+      {
+        "event": "seek",
+        "ms": 33,
+        "target": 26,
+        "time": 26.03125287
+      },
+      {
+        "event": "seek",
+        "ms": 91.99999999999956,
+        "target": 235,
+        "time": 235.032646952
+      },
+      {
+        "event": "seek",
+        "ms": 91,
+        "target": 162,
+        "time": 162.031891831
+      },
+      {
+        "event": "seek",
+        "ms": 34,
+        "target": 169,
+        "time": 169.032450912
+      },
+      {
+        "event": "seek",
+        "ms": 405,
+        "target": 255,
+        "time": 255.03143007
+      },
+      {
+        "event": "seek",
+        "ms": 470.99999999999955,
+        "target": 83,
+        "time": 83.032721351
+      },
+      {
+        "event": "seek",
+        "ms": 293,
+        "target": 100,
+        "time": 100.03137531
+      },
+      {
+        "event": "seek",
+        "ms": 341,
+        "target": 271,
+        "time": 271.032006111
+      },
+      {
+        "event": "seek",
+        "ms": 89,
+        "target": 154,
+        "time": 154.03135959
+      }
+    ],
+    "range_206_transfers": 6,
+    "soak_seconds": 1800,
+    "completed": true,
+    "soak_samples": 180,
+    "errors_or_paused": 0,
+    "rss_after_60_seconds_bytes": 630906880,
+    "rss_peak_after_warmup_bytes": 676425728,
+    "rss_last_bytes": 650854400,
+    "rss_last_5min_min_bytes": 646524928,
+    "rss_last_5min_max_bytes": 676425728,
+    "rss_interpretation": "RSS rose during warmup then dropped before end; no unbounded monotonic growth established in this 30-min run. Longer leakage not ruled out.",
+    "production_CDN_refresh": "not tested; synthetic 403 -> new fixture URL only"
+  },
+  "S3": {
+    "status": "arm64 smoke passed; clean x64 VM dependency matrix pending",
+    "missing_decoder": {
+      "detected": true,
+      "error": 4,
+      "event": "missing_decoder",
+      "ms": 146,
+      "updates": 0
+    },
+    "system_packages_removed": false
+  },
+  "S4": {
+    "status": "Linux deb/rpm passed; mac/win pending",
+    "artifacts": [
+      {
+        "artifact": "biu-m0",
+        "bytes": 10659672,
+        "MB": 10.659672,
+        "sha256": "0a3428da252412ea188199301af2431e7c8f544d7c1e8b063e7623e854de0d97"
+      },
+      {
+        "artifact": "Biu M0_0.0.1_arm64.deb",
+        "bytes": 5082256,
+        "MB": 5.082256,
+        "sha256": "445b6ad7cb68aced1936c10683fcbc93036bfcdc6dbff1289981c735760e756e"
+      },
+      {
+        "artifact": "Biu M0-0.0.1-1.aarch64.rpm",
+        "bytes": 5087712,
+        "MB": 5.087712,
+        "sha256": "aeb4e897e4b0f65596568b37355e4a8b09498d0b6707fa89a446840bf7524919"
+      },
+      {
+        "artifact": "Biu M0_0.0.1_aarch64.AppImage",
+        "bytes": 145107464,
+        "MB": 145.107464,
+        "sha256": "89bb5c5653486f36ae1cfb883e318d4a57889e4e2d18c28a0c880bdb8e0e5049"
+      }
+    ],
+    "appimage_media_framework": true,
+    "appimage_smoke_completed": true
+  },
+  "S5": {
+    "status": "prototype API/rAF smoke only; visual/full interaction/compositor/CPU pending",
+    "rAF": {
+      "event": "lyrics_frames",
+      "fps": 65.04566362242518,
+      "frames": 3903,
+      "ms": 60004
+    },
+    "hover_unlock_full_UI": "not implemented"
+  },
+  "S6": {
+    "status": "hdslb image passed; proxy synthetic probe passed with shared-context loopback conflict; QR/geetest pending",
+    "image": {
+      "event": "hdslb_image",
+      "loaded": true,
+      "width": 180
+    },
+    "proxy_probe": {
+      "event": "proxy_image",
+      "loaded": true
+    }
+  },
+  "S7": {
+    "status": "local signed AppImage update/restart passed; production exit lifecycle and real cookie migration pending",
+    "events": [
+      {
+        "event": "startup",
+        "version": "0.0.1"
+      },
+      {
+        "event": "update_verified",
+        "version": "0.0.2"
+      },
+      {
+        "event": "update_installed"
+      },
+      {
+        "event": "startup",
+        "version": "0.0.2"
+      },
+      {
+        "event": "update_restart_verified",
+        "login_fixture_preserved": true,
+        "settings_preserved": true,
+        "version": "0.0.2"
+      }
+    ]
+  },
+  "S8": {
+    "status": "mediaSession did not register MPRIS; Linux souvlaki D-Bus fallback passed",
+    "browser_mpris_seen": false,
+    "frontend_actions": [
+      {
+        "action": "Pause",
+        "event": "native_frontend_action",
+        "paused": true
+      },
+      {
+        "action": "Play",
+        "event": "native_frontend_action",
+        "paused": false
+      }
+    ],
+    "physical_media_keys": "not tested"
+  },
+  "independent_review": "user arranged separately; original review canceled/not used"
+}

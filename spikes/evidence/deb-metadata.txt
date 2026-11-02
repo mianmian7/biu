@@ -1,0 +1,4 @@
+Package: biu-m0
+Version: 0.0.1
+Architecture: arm64
+Depends: gstreamer1.0-libav, gstreamer1.0-plugins-good, libwebkit2gtk-4.1-0, libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0
