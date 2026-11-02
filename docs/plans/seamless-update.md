@@ -145,11 +145,13 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
 
 ### 4. 构建配置
 
-- [ ] 4.1 `plugins/electron-build.ts`：
+- [x] 4.1 `plugins/electron-build.ts`：
   - 设置了 `BIU_UPDATE_FEED_URL` 时，`publish` 改用 `{ provider: "generic", url }`，只用于本地 E2E；
   - 末尾的 `.catch(error => logger.error(error))` 改成写日志后重新抛出（或设置 `process.exitCode = 1`）。现在构建失败也会让 CI 显示成功；
   - 如果步骤 1.7 需要 `timestamp: "none"` 或 `hardenedRuntime: false`，在这里加上。
-- [ ] 4.2 `electron/updater/dev-app-update.yml` 不改。
+- [x] 4.2 `electron/updater/dev-app-update.yml` 不改。
+
+执行结果（4.1–4.2）：generic feed 环境变量覆盖已实现，构建失败记录后重新抛出；dev feed、平台打包目标、签名配置与版本号均未改动。timestamp / hardenedRuntime 等待 Mac spike 结果。
 
 ### 5. CI（`.github/workflows/release.yml`，只改 build job）
 
