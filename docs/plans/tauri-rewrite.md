@@ -263,15 +263,46 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 每个里程碑结束时：CI 三平台构建通过；本里程碑的单元/集成测试通过；手动验收清单逐条打勾（写明机器和结果）；代码已由非作者模型审查。M0 的结果需要用户确认后才进入 M1。
 
 ### M0 — Spike（见 §2）
-- [ ] 最小 Tauri 工程：一个窗口、`biu-media://`、播放页、歌词窗口原型
+- [x] 最小 Tauri 工程：一个窗口、`biu-media://`、播放页、歌词窗口原型
+  - 结果：**通过（osa-a1，Ubuntu 24.04.5 LTS / aarch64，4 核，Rust 1.99.1，WebKitGTK 2.52.6）**。复现工程在 `spikes/m0/`；正式代码未改。官方插件全部注册，计划内 Linux crate 已纳入，依赖探针实际执行 MP4 读取、标签、字体枚举、FLAC 解码、重采样、加密/摘要等入口；cookie jar 接到 reqwest client，避免只声明依赖而被完全裁掉。
+  - 验证：`cargo test --release` **3 passed / 0 failed**（Range/416、协议字节一致性、HTTP 退路字节一致性）；Node 语法检查、Python 编译检查、`cargo fmt --check` 通过。现有 `dist/web` 快照内嵌为体积负载，文件合计 **2,481,561 字节（2.481561 MB）**，并未声称已完成正式 React 适配。
+  - 证据与边界：`spikes/evidence/` 的环境/前端哈希清单、测试输出；`spikes/README.md` 是复现入口。原始大日志、音频、产物和私钥均忽略提交。音频由 GStreamer 生成原创 440 Hz 正弦波，没有提交或下载版权歌曲。用户另行安排 Claude 审查；本执行线程取消原审查，不声明独立审查通过。全平台 M0 尚未验收，不进入 M1。
 - [ ] S1 Mac FLAC / ec-3
+  - 结果：**待在 mac（MateBook，arm64）上运行**，未编造样本或测量。Linux `canPlayType` 在 libav 存在时对 AAC、fMP4 FLAC（flac/fLaC）及 ec-3 返回 `probably`，原生 FLAC 返回 `maybe`；这些仅是 Linux 能力声明，不能替代 Mac 的三首/格式实播。
+  - 复现：`spikes/m0/` 测试页提供六个用户自备 fMP4 样本入口；每首自动记录连续 60 s、5 次 seek 和波形。文件必须来自用户有权使用的音频，留在忽略的 `fixtures/`，不加入传输包或 Git。
+  - 退路：Mac FLAC 不通过则最高码率 AAC 并标注音质降级；ec-3 按 `canPlayType` 跳过。README 的 Mac S1 节给出直接操作步骤及回传字段；Mac x64 仍待有条件补测。
 - [ ] S2 三平台拖动进度
+  - 结果：**Linux 自定义协议不通过；计划退路 A 的无头播放检查通过。mac / pc / Linux x64 待运行**。WebKitGTK 日志明确为 `biu-media (allowed: no)`；系统 GStreamer 可独立解码同一 AAC，故没有把协议失败误记为 codec 缺失。
+  - 退路实测：Rust 随机 loopback 端口 + 每次启动随机临时 token，初始响应 200、实际 Range 响应 206、流式转发；测试上游只允许 `127.0.0.1:18765`。AAC 长度 **300.023333 s**；seed=2401 的 10 次随机 seek，本轮恢复 **33–868 ms**，均 ≤1500 ms；非缓存的 6 次 Range 传输均为 206，没有把每次 seek 改成整文件重拉。缓存命中不产生网络请求，已单独说明。
+  - 连续播放：本轮 **1800 s** 完整结束，**180次采样、0次暂停/解码错误**。进程树 RSS 在60 s时 **630,906,880字节（630.906880 MB）**，峰值 **676,425,728字节（676.425728 MB）**，末次 **650,854,400字节（650.854400 MB）**；末段出现回落，没有贯穿30 min的单调增长。该观察不能排除长期泄漏。完整摘要和断言输出在 `spikes/evidence/linux-results.json`、`acceptance.txt`。
+  - URL 过期：夹具注入403，Rust刷新测试地址并继续同一Range。**真实 B 站 CDN / 登录态 / 地址续签没有实测**；HTTP 退路目前只放行夹具上游，生产白名单和续签逻辑不在此原型里。Mac/Windows、真实 CDN、Linux x64 和物理音频输出均待验证。
 - [ ] S3 Linux gst-libav
+  - 结果：**osa-a1 arm64 构建/解码冒烟通过；Ubuntu/Fedora/Arch 干净 x64 VM 矩阵待运行**。独立插件目录链接系统插件但排除 `libgstlibav.so`，同时设置 `GST_PLUGIN_SYSTEM_PATH_1_0`、空 `GST_PLUGIN_PATH_1_0` 和独立 `GST_REGISTRY`；未卸载系统包。仅设置 PLUGIN_PATH 无法隔离系统插件，复现说明已避免此做法。
+  - 实测：缺 libav 时 AAC `canPlayType` 为空，**146 ms** 内收到 `MEDIA_ERR_SRC_NOT_SUPPORTED`（code 4），没有 `timeupdate`，页面显示 `sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good`。正常插件环境中 AAC/FLAC 可播放，AAC 波形最大幅值约 **0.800177**。
+  - 打包：已读取 deb 实际 control，其 Depends 包含 `gstreamer1.0-libav` 和 good；`apt-get -s install ./...deb` 解析通过。本机 libav 已安装，**不能据此声称已实测干净 VM 自动下载依赖**。rpm 实际 requires 包含 `gstreamer1-plugin-libav`、`gstreamer1-plugins-good`、WebKitGTK；Fedora 是否需要 RPM Fusion、依赖能否解析仍待 VM，Arch 同待。
+  - 退路：若干净 VM 验证确实不通过且不能由依赖解决，按计划另请用户批准 symphonia + cpal 原生播放里程碑；本次未擅自增加原生后端。
 - [ ] S4 二进制体积
+  - 结果：**Linux aarch64 deb/rpm 通过；Mac 和 Windows 待 CI 或对应机器**。本次完整计划依赖/插件（加 Linux S8 souvlaki 退路）及当前 dist/web 的实测，release profile 为 `opt-level="s"`、`lto=true`、`codegen-units=1`、`strip=true`、`panic="abort"`；MB 统一为1,000,000字节。原型仍不是完整产品代码，后续功能会增加体积。
+  - 交付体积：**deb 5,082,256 字节（5.082256 MB）**；**rpm 5,087,712 字节（5.087712 MB）**；**strip 后二进制 10,659,672 字节（10.659672 MB）**；**含媒体插件 AppImage 145,107,464 字节（145.107464 MB）**。deb低于8 MB目标，deb/rpm低于10 MB下载包硬上限；裸二进制不适用压缩下载包门槛。AppImage按D1例外，不受10 MB限制。
+  - AppImage处理：默认未打媒体插件的版本解码检测失败；启用 `bundle.linux.appimage.bundleMediaFramework=true` 后成功打包并通过 AAC、FLAC、10次拖动、波形冒烟。linuxdeploy 需要 patchelf，本次只用 `apt-get download` + `dpkg-deb -x` 解包到 worktree，不以sudo安装它。辅助AppImage较预算大，D1仍优先deb/rpm。
+  - `cargo bloat --release --crates -n 15`：前几名 **zbus 896.5 KiB、std 866.1 KiB、tauri 819.8 KiB、lofty 432.3 KiB、tokio 382.4 KiB、rustfft 333.6 KiB、rustls 244.5 KiB**；前15名完整输出在 `spikes/evidence/cargo-bloat.txt`。LTO归属是工具估算；bloat重建的未strip分析副本约16.4 MiB，不能当成发布二进制实测值。
+  - 证据：`sizes.json`（字节/MB/SHA256）、`frontend-manifest.json`、deb/rpm元数据。Mac dmg与Windows NSIS没有本机实测值，未用预算冒充实测。
 - [ ] S5 桌面歌词窗口
+  - 结果：**Linux 原型 API 冒烟通过；完整交互/真实合成器、mac / pc / X11视觉 / Wayland GNOME/KDE 待验证**。创建透明、无边框、置顶窗口并成功调用鼠标穿透；D3每100 ms检查光标，进入左上100×60区域临时取消穿透。
+  - 实测：xvfb下60 s扫光记录 **3903帧 / 60004 ms ≈65.046 fps**。该数字是requestAnimationFrame吞吐，**不能证明真实显示器稳定60 fps**。无物理显示器、无真实合成器，libEGL访问/dev/dri被拒，未提升权限，软件渲染继续测试。
+  - 缺口：当前解锁按钮为常显原型，完整锁定/悬停显示状态机未实现；不能宣称“1 s内出现解锁按钮”通过。透明无黑边、实体点击穿透、全屏app上方置顶、Mac/Windows CPU<10%均未验证。Wayland限制按原计划记录；Mac/Windows失败仍需报告用户。
 - [ ] S6 图片 / 登录 / 极验 / webview 代理
+  - 结果：**Linux 图片和合成HTTP代理探针通过；二维码完整登录/极验、mac / pc 待验证**。no-referrer页面实载hdslb默认头像，**naturalWidth=180 px**；`WebviewWindowBuilder::proxy_url`探针图片加载成功，上游记录代理请求且Referer为空。
+  - 发现：Linux上代理窗口会影响共享WebKit context，连主窗口loopback媒体请求也进入测试代理，从而播放失败。原型不宣称webview代理与loopback组合可用；按计划退路，正式实现可先只代理Rust流量并在设置明示，或另行验证排除loopback的办法。
+  - 缺口：当前独立播放器原型没有二维码/极验最小页面，内嵌正式dist不等于已适配正式登录。未发起扫码授权、未自动点击验证码、未使用真实cookie。README明确此格不能靠外部浏览器或占位页验收，需要补最小登录复现页并由用户操作。
 - [ ] S7 更新端到端
+  - 结果：**Linux AppImage 本地测试更新链通过；mac / pc 待运行**。`python3 -m http.server`仅监听127.0.0.1；Tauri updater后台下载并验签，本地测试AppImage **0.0.1→0.0.2** 安装后退出，再次启动确为0.0.2；测试设置和虚拟登录夹具均保留（两个preserved字段为true）。本轮使用补齐媒体插件后的AppImage重跑成功。
+  - 安全：只有spike目录的临时签名钥匙，private目录和所有key忽略Git，命令输出重定向到private日志；未打印钥匙，未建远端仓库/release，未改secrets。Linux更新入口检查APPIMAGE落在private，XDG store/cache也放private；未调用系统apt/rpm安装器。
+  - 边界：模拟“退出并安装”命令已经跑通，**正式关闭窗口/退出生命周期尚未接入**；登录保留指虚拟store，不代表B站cookie迁移完成。Mac /Applications、~/Applications、dmg/translocation及Windows NSIS需要对应机器实测，README给出本地签名/HTTP测试步骤；任何GUI授权或权限弹窗由执行者停下报告，不代用户确认。
 - [ ] S8 系统媒体控制
+  - 结果：**Linux mediaSession未注册MPRIS；计划souvlaki退路的D-Bus自动化检查通过。mac / pc / 实体媒体键待运行**。原生`navigator.mediaSession`存在，但30 min会话D-Bus记录没有MPRIS服务，不能据此声称媒体控制可用。
+  - 退路实测：souvlaki注册`org.mpris.MediaPlayer2.biu_m0`；D-Bus GetAll读到标题`Biu M0 native fixture`、艺术家、300 s时长和封面URL；发送Pause/Play，经Rust事件到前端，HTMLAudio分别记录`paused=true/false`。证据在`spikes/evidence/final-controls-dbus.txt`及摘要。
+  - 缺口：真实桌面封面展示、物理媒体键、Mac正在播放和Windows SMTC未验证。当前原型元数据/状态是固定夹具，不是完整player_state同步；Mac/Windows souvlaki接线尚未实现，不把Linux退路结果当成跨平台通过。
 - 产出：spike 结果汇总，D1–D4 按结果确认或调整。
 
 ### M1 — 工程骨架与 CI
