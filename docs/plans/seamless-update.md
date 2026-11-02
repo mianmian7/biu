@@ -176,7 +176,10 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
   - `parseCodesignOutput` 三种输出（用真实 `codesign` 输出片段作 fixture，可以取本机已安装的 ad-hoc Biu 的输出）；
   - `classifyUpdateError` 对各个 `ERR_UPDATER_*` code 和网络错误的分类。
   - 运行命令：`pnpm vitest run tests/updater`。
+  - 执行结果（Linux）：模式矩阵与错误分类已覆盖，另增加 updater 生命周期、IPC、store 和构建配置测试。`pnpm vitest run tests/updater`：6 files / 43 tests passed；全仓 `pnpm vitest run`：21 files / 227 tests passed。codesign 使用代表性 stderr 片段，尚未取得 Mac 真机输出 fixture，因此本项暂不勾选；请 Mac 执行者在步骤 1 时补录真实输出。
 - [ ] 6.2 静态检查：`pnpm exec tsc --noEmit -p tsconfig.json`，以及 `pnpm exec eslint electron/updater electron/ipc src/components/release-note-modal src/components/update-check-button src/store/app-update.ts`。
+  - 执行结果：指定 ESLint 与其余所有改动 TS/TSX 文件的 ESLint 均通过（0 errors / 0 warnings）。完整 typecheck 退出码 2，共 125 条既有诊断；对 `ff1e6a6` 的临时只读源码快照使用同一依赖运行并归一化 node_modules 路径后，诊断完全一致。涉及第三方声明、`electron/ipc/lyrics.ts`、collection 与 favorites 页面，未扩大范围修复。本项保持未勾选，等待 owner 处理基线检查阻塞。验收使用 Node 22.17.1（通过 npm exec 提供）；依赖使用 frozen lockfile 安装，未改 package.json / lockfile。
+  - 交接：执行在此停止；未执行步骤 1、5、6.3–6.6、7，未接触正式证书或 secret。owner 需安排 mac 上的执行者完成 1.1–1.8：生成临时 `Biu Test Signing`、构建 .90/.91/.92、本地 generic feed 更新、签名与退出安装/立即重启/manual 降级验证，并恢复备份及清理。owner 或 mac 当前用户必须现场确认钥匙串信任等系统授权框；Gatekeeper / App Management 弹窗不得绕过，若 spike 出现计划不允许的弹窗须记录并停下。spike 通过前不得开始 CI 改动；正式证书、备份与仓库 secret 仍只由 owner 按 O1–O4 操作。
 - [ ] 6.3 Mac E2E：在 mac 上按步骤 1 的流程，用正式代码再跑一遍，包括「退出时安装」「立即重启更新」「manual 降级」三项。
 - [ ] 6.4 Windows E2E：在 pc 上用同样的 generic feed 构建 A/B 安装版，验证：
   - 自动下载；
