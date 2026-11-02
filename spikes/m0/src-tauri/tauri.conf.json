@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Biu M0",
+  "version": "0.0.1",
+  "identifier": "com.biu.spike.m0",
+  "build": { "frontendDist": "../web" },
+  "app": {
+    "withGlobalTauri": true,
+    "macOSPrivateApi": true,
+    "windows": [{ "label": "main", "title": "Biu M0", "width": 900, "height": 650 }],
+    "security": { "csp": null }
+  },
+  "plugins": { "updater": { "pubkey": "", "endpoints": [], "dangerousInsecureTransportProtocol": true } },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "rpm", "appimage"],
+    "icon": ["icons/icon.png"],
+    "linux": {
+      "appimage": { "bundleMediaFramework": true },
+      "deb": { "depends": ["gstreamer1.0-libav", "gstreamer1.0-plugins-good", "libwebkit2gtk-4.1-0"] },
+      "rpm": { "depends": ["gstreamer1-plugin-libav", "gstreamer1-plugins-good", "webkit2gtk4.1"] }
+    },
+    "macOS": { "signingIdentity": "-" }
+  }
+}

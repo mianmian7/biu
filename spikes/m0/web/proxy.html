@@ -1,0 +1,4 @@
+<!doctype html><meta name="referrer" content="no-referrer"><h1>Proxy / no-referrer probe</h1><script>
+const image=new Image();image.src='http://m0.test/art.svg';image.onload=()=>window.__TAURI__.core.invoke('report',{event:{event:'proxy_image',loaded:true}});image.onerror=()=>window.__TAURI__.core.invoke('report',{event:{event:'proxy_image',loaded:false}});document.body.append(image);
+// A real hdslb URL can be supplied interactively without passing login credentials.
+</script>
