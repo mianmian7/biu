@@ -1,5 +1,6 @@
-$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/review-smoke.jsonl
-PASS playback: seeks=10 max=867.0 ms; Range/206=12; waveform=0.800177; soak=70 s
+Rust cargo test --release: 6 passed; 0 failed (full output in cargo-test.txt).
+$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/review-soak-60min.jsonl
+PASS playback: seeks=10 max=868.0 ms; Range/206=246; waveform=0.800177; soak=3600 s
 $ python3 spikes/scripts/check_evidence.py missing spikes/evidence/review-no-libav.jsonl
 PASS missing libav: detected in 147.0 ms; error=4
 $ python3 spikes/scripts/check_evidence.py update spikes/evidence/update.jsonl
@@ -9,6 +10,10 @@ PASS MPRIS fallback: D-Bus Pause/Play controlled HTMLAudio; hdslb image loaded
 $ python3 spikes/scripts/check_evidence.py playback spikes/evidence/review-appimage.jsonl
 PASS playback: seeks=10 max=868.0 ms; Range/206=8; waveform=0.800177; soak=5 s
 
-Rust cargo test --release: 6 passed; 0 failed.
-These are playback/decoder/updater/control assertions, NOT memory acceptance.
-Memory: pending >=3600 s reload-and-Range soak and post-warmup slope analysis.
+SOAK: observed 3600.008 s, 120 fresh loads, every round verified proxy/upstream Range.
+Post-600s OLS: -0.254942 MB/min; final30min OLS: -0.335103 MB/min.
+Verdict: 通过（仅本次测试）. Finite observation only; cross-platform M0 acceptance pending.
+
+Retained 0.0.1 AppImage rebuilt after updater output cleanup, same bytes; SHA256 refers to retained build.
+$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/review-appimage-retained.jsonl
+PASS playback: seeks=10 max=867.0 ms; Range/206=8; waveform=0.800177; soak=5 s

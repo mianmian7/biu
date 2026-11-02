@@ -1,81 +1,81 @@
 {
   "author_source_commit": "1f8d919",
-  "recorded_utc": "2026-11-02T18:41:14.497946+00:00",
+  "recorded_utc": "2026-11-02T19:27:29.566537+00:00",
   "unit": "MB = 1000000 bytes",
   "scope": "Linux aarch64 headless spike only; cross-platform M0 acceptance pending",
   "S1": {
     "status": "pending mac arm64"
   },
   "S2": {
-    "status": "自定义协议不通过；HTTP夹具播放/seek通过；内存待定；mac/pc/wsl WebKitGTK/Linux x64待测",
+    "status": "HTTP夹具播放/seek及60min内存重测满足本次预设条件；真实CDN/mac/pc/wsl WebKitGTK/Linux x64仍待测",
     "aac_seconds": 300.023333333,
     "seek_seed": 2401,
     "seeks": [
       {
         "event": "seek",
-        "ms": 867,
+        "ms": 868,
         "target": 56,
-        "time": 56.031862105
+        "time": 56.031569545
       },
       {
         "event": "seek",
-        "ms": 33.000000000000455,
+        "ms": 33,
         "target": 26,
-        "time": 26.032950786
+        "time": 26.031780385
       },
       {
         "event": "seek",
-        "ms": 92,
+        "ms": 93,
         "target": 235,
-        "time": 235.032920426
+        "time": 235.033187626
       },
       {
         "event": "seek",
-        "ms": 91,
+        "ms": 90,
         "target": 162,
-        "time": 162.031824545
+        "time": 162.031489624
       },
       {
         "event": "seek",
-        "ms": 176,
+        "ms": 34,
         "target": 169,
-        "time": 169.036672268
+        "time": 169.032763265
       },
       {
         "event": "seek",
         "ms": 405,
         "target": 255,
-        "time": 255.031458385
+        "time": 255.031563625
       },
       {
         "event": "seek",
-        "ms": 469.0000000000009,
+        "ms": 471,
         "target": 83,
-        "time": 83.032857226
+        "time": 83.032235425
       },
       {
         "event": "seek",
-        "ms": 293,
+        "ms": 294,
         "target": 100,
-        "time": 100.031496664
+        "time": 100.031294705
       },
       {
         "event": "seek",
-        "ms": 342,
+        "ms": 340,
         "target": 271,
-        "time": 271.033121026
+        "time": 271.031431544
       },
       {
         "event": "seek",
-        "ms": 88,
+        "ms": 89,
         "target": 154,
-        "time": 154.031294944
+        "time": 154.031673705
       }
     ],
     "short_reload_smoke_seconds": 70,
     "short_smoke_completed": true,
-    "memory_status": "待定",
-    "rss_interpretation": "原30 min缓存循环不能验证代理内存。>=3600 s fresh-load/Range实验正在运行；排除600 s warmup后全段及最后30 min OLS斜率均<=0才可记本轮通过，否则仍待定。",
+    "memory_status": "通过（仅本次测试）",
+    "rss_interpretation": "原30min缓存循环结论已撤回并记待定，不用GC回落判通过。本轮按预先提交的600s warmup后全段及最后30min OLS<=0条件判定；有限观测不能排除长期泄漏。",
     "historical_cached_soak": {
       "soak_seconds": 1800,
       "soak_samples": 180,
@@ -87,7 +87,30 @@
       "reason": "Cached-file loop with no proxy traffic; positive post-warmup slope was not judged correctly"
     },
     "production_CDN_refresh": "not tested; fixed fixture refresh only when BIU_SPIKE_FIXTURES=1; M2 must allow only exact playurl hosts",
-    "http_security": "Host == bound 127.0.0.1:<port>; ACAO app origin only; explicit foreign Origin denied; one random token per app process"
+    "http_security": "Host == bound 127.0.0.1:<port>; ACAO app origin only; explicit foreign Origin denied; one random token per app process",
+    "memory_retest": {
+      "status": "通过（仅本次测试）",
+      "workload": "fresh URL + no-store + forced Range seek every 30 s; no audio.loop",
+      "configured_soak_seconds": 3600,
+      "observed_soak_seconds": 3600.008,
+      "rounds": 120,
+      "rounds_with_verified_proxy_and_upstream_range": 120,
+      "warmup_seconds": 600,
+      "decision_rule": "both post-warmup and final-30-min OLS slopes <= 0 MB/min; otherwise pending",
+      "post_warmup_ols_MB_per_min": -0.25494169386842236,
+      "last_30min_ols_MB_per_min": -0.335102876957688,
+      "post_warmup_samples": 298,
+      "rss_samples": 359,
+      "rss_peak_bytes": 690782208,
+      "rss_last_bytes": 660664320,
+      "rss_sequence_file": "soak-60min-rss.jsonl",
+      "rss_sequence_sha256": "5b55c83273977fc354ba09d05b29a7c7fad4fda134d8a7a4c44b40dcf7815f30",
+      "per_round_traffic_file": "soak-60min-rounds.json",
+      "limitations": "Process-tree RSS includes WebKit. A finite run cannot rule out long-term leaks; positive slopes are not excused by GC drops."
+    },
+    "range_206_transfers": 246,
+    "completed": true,
+    "errors_or_paused": 0
   },
   "S3": {
     "status": "arm64 smoke passed; clean x64 VM dependency matrix pending",
@@ -125,11 +148,12 @@
         "artifact": "Biu M0_0.0.1_aarch64.AppImage",
         "bytes": 145115656,
         "MB": 145.115656,
-        "sha256": "2e8e0251a84309cb323eec7f2c2ead3d3b9665b2d59aacccfc296e57d2b4ee91"
+        "sha256": "cb10ca18cbf307004beed61e2e83277a2fc7634782a9322588e99ecb50d03d37"
       }
     ],
     "appimage_media_framework": true,
-    "appimage_smoke_completed": true
+    "appimage_smoke_completed": true,
+    "appimage_retained_rebuild_note": "SHA256 refers to the retained 0.0.1 rebuild after the 0.0.2 updater test cleaned the appimage output directory; measured bytes unchanged; playback assertions rerun."
   },
   "S5": {
     "status": "未验证（仅 API 调用无报错）",
@@ -139,7 +163,8 @@
       "frames": 3903,
       "ms": 60004
     },
-    "hover_unlock_full_UI": "not implemented"
+    "hover_unlock_full_UI": "not implemented",
+    "poll_observed_alive_seconds": 3600
   },
   "S6": {
     "status": "图片通过；Linux webview 代理不通过（与 S2 退路 A 冲突），采用『只代理 Rust 流量』；QR/geetest pending",
@@ -197,5 +222,6 @@
     ],
     "physical_media_keys": "not tested"
   },
-  "independent_review": "User-provided Claude review adopted; no new review started; final approval not claimed"
+  "independent_review": "User-provided Claude review adopted; no new review started; final approval not claimed",
+  "soak_workload_note": "This task bundled/regression-tested during the early portion. No build jobs from this task during final30min; cargo-bloat ran after soak exited. Other host workloads are not ruled out."
 }

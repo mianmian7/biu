@@ -25,7 +25,9 @@
       "artifact": "Biu M0_0.0.1_aarch64.AppImage",
       "bytes": 145115656,
       "MB": 145.115656,
-      "sha256": "2e8e0251a84309cb323eec7f2c2ead3d3b9665b2d59aacccfc296e57d2b4ee91"
+      "sha256": "cb10ca18cbf307004beed61e2e83277a2fc7634782a9322588e99ecb50d03d37"
     }
-  ]
+  ],
+  "binary_note": "restored standalone stripped cargo build --release after bloat; bundle type patching may change SHA256 without changing size",
+  "appimage_note": "SHA256 refers to the retained 0.0.1 rebuild after the 0.0.2 updater test cleaned the appimage output directory; measured bytes unchanged; playback assertions rerun."
 }

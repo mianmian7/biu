@@ -1,0 +1,20 @@
+{
+  "status": "通过（仅本次测试）",
+  "workload": "fresh URL + no-store + forced Range seek every 30 s; no audio.loop",
+  "configured_soak_seconds": 3600,
+  "observed_soak_seconds": 3600.008,
+  "rounds": 120,
+  "rounds_with_verified_proxy_and_upstream_range": 120,
+  "warmup_seconds": 600,
+  "decision_rule": "both post-warmup and final-30-min OLS slopes <= 0 MB/min; otherwise pending",
+  "post_warmup_ols_MB_per_min": -0.25494169386842236,
+  "last_30min_ols_MB_per_min": -0.335102876957688,
+  "post_warmup_samples": 298,
+  "rss_samples": 359,
+  "rss_peak_bytes": 690782208,
+  "rss_last_bytes": 660664320,
+  "rss_sequence_file": "soak-60min-rss.jsonl",
+  "rss_sequence_sha256": "5b55c83273977fc354ba09d05b29a7c7fad4fda134d8a7a4c44b40dcf7815f30",
+  "per_round_traffic_file": "soak-60min-rounds.json",
+  "limitations": "Process-tree RSS includes WebKit. A finite run cannot rule out long-term leaks; positive slopes are not excused by GC drops."
+}

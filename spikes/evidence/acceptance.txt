@@ -1,13 +1,19 @@
-$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/final-soak.jsonl
-PASS playback: seeks=10 max=868.0 ms; Range/206=6; waveform=0.800177; soak=1800 s
-$ python3 spikes/scripts/check_evidence.py missing spikes/evidence/final-no-libav.jsonl
-PASS missing libav: detected in 146.0 ms; error=4
+Rust cargo test --release: 6 passed; 0 failed (full output in cargo-test.txt).
+$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/review-soak-60min.jsonl
+PASS playback: seeks=10 max=868.0 ms; Range/206=246; waveform=0.800177; soak=3600 s
+$ python3 spikes/scripts/check_evidence.py missing spikes/evidence/review-no-libav.jsonl
+PASS missing libav: detected in 147.0 ms; error=4
 $ python3 spikes/scripts/check_evidence.py update spikes/evidence/update.jsonl
 PASS updater: signature verified, 0.0.1 -> 0.0.2 installed, restart and settings/login-fixture preserved
-$ python3 spikes/scripts/check_evidence.py controls spikes/evidence/final-controls.jsonl
+$ python3 spikes/scripts/check_evidence.py controls spikes/evidence/review-controls.jsonl
 PASS MPRIS fallback: D-Bus Pause/Play controlled HTMLAudio; hdslb image loaded
-$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/final-appimage.jsonl
-PASS playback: seeks=10 max=868.0 ms; Range/206=6; waveform=0.800177; soak=5 s
+$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/review-appimage.jsonl
+PASS playback: seeks=10 max=868.0 ms; Range/206=8; waveform=0.800177; soak=5 s
 
-Rust tests: cargo test --release: 3 passed; see cargo-test.txt.
-No independent review or cross-platform acceptance is claimed.
+SOAK: observed 3600.008 s, 120 fresh loads, every round verified proxy/upstream Range.
+Post-600s OLS: -0.254942 MB/min; final30min OLS: -0.335103 MB/min.
+Verdict: 通过（仅本次测试）. Finite observation only; cross-platform M0 acceptance pending.
+
+Retained 0.0.1 AppImage rebuilt after updater output cleanup, same bytes; SHA256 refers to retained build.
+$ python3 spikes/scripts/check_evidence.py playback spikes/evidence/review-appimage-retained.jsonl
+PASS playback: seeks=10 max=867.0 ms; Range/206=8; waveform=0.800177; soak=5 s

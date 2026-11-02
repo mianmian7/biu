@@ -10,6 +10,8 @@ def rows(p):return [json.loads(s) for s in p.read_text().splitlines() if s.strip
 events=rows(a.events);memory=rows(a.memory);upstream=rows(a.server)
 start=next(r for r in events if r['event']=='soak_start')
 assert start['kind']=='reload-and-range' and start['seconds']>=3600
+observed=(max(r['wall_time_ms'] for r in events if r['event']=='soak')-start['wall_time_ms'])/1000
+assert observed>=start['seconds'],f'only {observed} seconds of observed soak'
 assert events[-1]['event']=='complete' and not any(r['event']=='failure' for r in events)
 assert all(not r['paused'] and r['error'] is None for r in events if r['event']=='soak')
 reloads=[r for r in events if r['event']=='soak_reload'];assert len(reloads)>=120
@@ -35,6 +37,6 @@ s=slope(post);tail=slope(late);passing=s<=0 and tail<=0
 out=a.out;out.mkdir(parents=True,exist_ok=True)
 rss=out/'soak-60min-rss.jsonl';shutil.copyfile(a.memory,rss)
 (out/'soak-60min-rounds.json').write_text(json.dumps(traffic,indent=2)+'\n')
-result={'status':'通过（仅本次测试）' if passing else '待定（warmup后仍有正斜率，不能记通过）','workload':'fresh URL + no-store + forced Range seek every 30 s; no audio.loop','configured_soak_seconds':start['seconds'],'rounds':len(reloads),'rounds_with_verified_proxy_and_upstream_range':len(traffic),'warmup_seconds':600,'decision_rule':'both post-warmup and final-30-min OLS slopes <= 0 MB/min; otherwise pending','post_warmup_ols_MB_per_min':s,'last_30min_ols_MB_per_min':tail,'post_warmup_samples':len(post),'rss_samples':len(memory),'rss_peak_bytes':max(r['rss_bytes'] for r in samples),'rss_last_bytes':samples[-1]['rss_bytes'],'rss_sequence_file':rss.name,'rss_sequence_sha256':hashlib.sha256(rss.read_bytes()).hexdigest(),'per_round_traffic_file':'soak-60min-rounds.json','limitations':'Process-tree RSS includes WebKit. A finite run cannot rule out long-term leaks; positive slopes are not excused by GC drops.'}
+result={'status':'通过（仅本次测试）' if passing else '待定（warmup后仍有正斜率，不能记通过）','workload':'fresh URL + no-store + forced Range seek every 30 s; no audio.loop','configured_soak_seconds':start['seconds'],'observed_soak_seconds':observed,'rounds':len(reloads),'rounds_with_verified_proxy_and_upstream_range':len(traffic),'warmup_seconds':600,'decision_rule':'both post-warmup and final-30-min OLS slopes <= 0 MB/min; otherwise pending','post_warmup_ols_MB_per_min':s,'last_30min_ols_MB_per_min':tail,'post_warmup_samples':len(post),'rss_samples':len(memory),'rss_peak_bytes':max(r['rss_bytes'] for r in samples),'rss_last_bytes':samples[-1]['rss_bytes'],'rss_sequence_file':rss.name,'rss_sequence_sha256':hashlib.sha256(rss.read_bytes()).hexdigest(),'per_round_traffic_file':'soak-60min-rounds.json','limitations':'Process-tree RSS includes WebKit. A finite run cannot rule out long-term leaks; positive slopes are not excused by GC drops.'}
 (out/'soak-60min-summary.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')
 print(f"SOAK: {len(reloads)} fresh-load rounds, all with proxy/upstream Range; warmup=600 s; OLS={s:+.6f} MB/min; last30={tail:+.6f} MB/min; {result['status']}")

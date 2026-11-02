@@ -1,0 +1,3362 @@
+[
+  {
+    "round": 1,
+    "wall_time_ms": 1793643598414,
+    "target": 201,
+    "seek_ms": 68,
+    "upstream_requests": 6,
+    "upstream_range_requests": 4,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.1890710000001
+      },
+      {
+        "range": "bytes=3267285-",
+        "status": 206,
+        "bytes": 1585309,
+        "ms": 3018.951369
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2899968,
+        "ms": 5564.132286999999
+      }
+    ]
+  },
+  {
+    "round": 2,
+    "wall_time_ms": 1793643628424,
+    "target": 232,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1009.2707819999999
+      },
+      {
+        "range": "bytes=3763258-",
+        "status": 206,
+        "bytes": 1089336,
+        "ms": 2093.741614
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3391488,
+        "ms": 6506.841535
+      }
+    ]
+  },
+  {
+    "round": 3,
+    "wall_time_ms": 1793643658429,
+    "target": 263,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.9073199999999
+      },
+      {
+        "range": "bytes=4259173-",
+        "status": 206,
+        "bytes": 593421,
+        "ms": 1133.375068
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3883008,
+        "ms": 7450.66144
+      }
+    ]
+  },
+  {
+    "round": 4,
+    "wall_time_ms": 1793643688433,
+    "target": 194,
+    "seek_ms": 68.00000000001455,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.274618
+      },
+      {
+        "range": "bytes=3155107-",
+        "status": 206,
+        "bytes": 1697487,
+        "ms": 3245.964554
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2801664,
+        "ms": 5375.294868
+      }
+    ]
+  },
+  {
+    "round": 5,
+    "wall_time_ms": 1793643718440,
+    "target": 225,
+    "seek_ms": 68.00000000001455,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.8069999999999
+      },
+      {
+        "range": "bytes=3651063-",
+        "status": 206,
+        "bytes": 1201531,
+        "ms": 2296.376401
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3293184,
+        "ms": 6318.824532
+      }
+    ]
+  },
+  {
+    "round": 6,
+    "wall_time_ms": 1793643748449,
+    "target": 256,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.5495020000001
+      },
+      {
+        "range": "bytes=4147393-",
+        "status": 206,
+        "bytes": 705201,
+        "ms": 1353.884533
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3784704,
+        "ms": 7261.289408
+      }
+    ]
+  },
+  {
+    "round": 7,
+    "wall_time_ms": 1793643778453,
+    "target": 187,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.643205
+      },
+      {
+        "range": "bytes=3043279-",
+        "status": 206,
+        "bytes": 1809315,
+        "ms": 3458.452938
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2670592,
+        "ms": 5123.897263
+      }
+    ]
+  },
+  {
+    "round": 8,
+    "wall_time_ms": 1793643808462,
+    "target": 218,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.70035
+      },
+      {
+        "range": "bytes=3539220-",
+        "status": 206,
+        "bytes": 1313374,
+        "ms": 2515.5793270000004
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3194880,
+        "ms": 6129.785889
+      }
+    ]
+  },
+  {
+    "round": 9,
+    "wall_time_ms": 1793643838467,
+    "target": 249,
+    "seek_ms": 67.9999999999709,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.0021340000001
+      },
+      {
+        "range": "bytes=4035169-",
+        "status": 206,
+        "bytes": 817425,
+        "ms": 1542.441714
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3686400,
+        "ms": 7073.341622
+      }
+    ]
+  },
+  {
+    "round": 10,
+    "wall_time_ms": 1793643868488,
+    "target": 180,
+    "seek_ms": 78,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.16404
+      },
+      {
+        "range": "bytes=2931076-",
+        "status": 206,
+        "bytes": 1921518,
+        "ms": 3681.1790220000003
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2572288,
+        "ms": 4935.001475
+      }
+    ]
+  },
+  {
+    "round": 11,
+    "wall_time_ms": 1793643898482,
+    "target": 211,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.0306269999999
+      },
+      {
+        "range": "bytes=3427426-",
+        "status": 206,
+        "bytes": 1425168,
+        "ms": 2704.6141810000004
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3063808,
+        "ms": 5877.745887
+      }
+    ]
+  },
+  {
+    "round": 12,
+    "wall_time_ms": 1793643928494,
+    "target": 242,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.3565739999999
+      },
+      {
+        "range": "bytes=3923362-",
+        "status": 206,
+        "bytes": 929232,
+        "ms": 1762.116442
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3555328,
+        "ms": 6828.652288
+      }
+    ]
+  },
+  {
+    "round": 13,
+    "wall_time_ms": 1793643958507,
+    "target": 173,
+    "seek_ms": 74,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.9119230000001
+      },
+      {
+        "range": "bytes=2819251-",
+        "status": 206,
+        "bytes": 2033343,
+        "ms": 3909.7034000000003
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2473984,
+        "ms": 4760.066390999999
+      }
+    ]
+  },
+  {
+    "round": 14,
+    "wall_time_ms": 1793643988511,
+    "target": 204,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.941792
+      },
+      {
+        "range": "bytes=3315230-",
+        "status": 206,
+        "bytes": 1537364,
+        "ms": 2925.109231
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2965504,
+        "ms": 5690.2276489999995
+      }
+    ]
+  },
+  {
+    "round": 15,
+    "wall_time_ms": 1793644018519,
+    "target": 235,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.360581
+      },
+      {
+        "range": "bytes=3811178-",
+        "status": 206,
+        "bytes": 1041416,
+        "ms": 1982.6352869999998
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3457024,
+        "ms": 6632.407623
+      }
+    ]
+  },
+  {
+    "round": 16,
+    "wall_time_ms": 1793644048525,
+    "target": 266,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.9954900000001
+      },
+      {
+        "range": "bytes=4307132-",
+        "status": 206,
+        "bytes": 545462,
+        "ms": 1039.567002
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3948544,
+        "ms": 7578.645386
+      }
+    ]
+  },
+  {
+    "round": 17,
+    "wall_time_ms": 1793644078544,
+    "target": 197,
+    "seek_ms": 69.00000000005821,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 540672,
+        "ms": 1041.772955
+      },
+      {
+        "range": "bytes=3203374-",
+        "status": 206,
+        "bytes": 1649220,
+        "ms": 3144.158281
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2834432,
+        "ms": 5461.607615
+      }
+    ]
+  },
+  {
+    "round": 18,
+    "wall_time_ms": 1793644108543,
+    "target": 228,
+    "seek_ms": 68.00000000011642,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.3880720000001
+      },
+      {
+        "range": "bytes=3699353-",
+        "status": 206,
+        "bytes": 1153241,
+        "ms": 2202.426927
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3325952,
+        "ms": 6384.021075
+      }
+    ]
+  },
+  {
+    "round": 19,
+    "wall_time_ms": 1793644138556,
+    "target": 259,
+    "seek_ms": 70.99999999988358,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1009.205425
+      },
+      {
+        "range": "bytes=4195293-",
+        "status": 206,
+        "bytes": 657301,
+        "ms": 1260.64003
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3850240,
+        "ms": 7387.701361
+      }
+    ]
+  },
+  {
+    "round": 20,
+    "wall_time_ms": 1793644168564,
+    "target": 190,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.644737
+      },
+      {
+        "range": "bytes=3091176-",
+        "status": 206,
+        "bytes": 1761418,
+        "ms": 3365.133137
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2736128,
+        "ms": 5252.474598
+      }
+    ]
+  },
+  {
+    "round": 21,
+    "wall_time_ms": 1793644198576,
+    "target": 221,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.5032479999999
+      },
+      {
+        "range": "bytes=3587146-",
+        "status": 206,
+        "bytes": 1265448,
+        "ms": 2422.387088
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3227648,
+        "ms": 6193.683864
+      }
+    ]
+  },
+  {
+    "round": 22,
+    "wall_time_ms": 1793644228611,
+    "target": 252,
+    "seek_ms": 77,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1012.963966
+      },
+      {
+        "range": "bytes=4083113-",
+        "status": 206,
+        "bytes": 769481,
+        "ms": 1448.780022
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3719168,
+        "ms": 7146.32749
+      }
+    ]
+  },
+  {
+    "round": 23,
+    "wall_time_ms": 1793644258617,
+    "target": 183,
+    "seek_ms": 79,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1014.541321
+      },
+      {
+        "range": "bytes=2979373-",
+        "status": 206,
+        "bytes": 1873221,
+        "ms": 3609.678419
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2605056,
+        "ms": 5006.739377
+      }
+    ]
+  },
+  {
+    "round": 24,
+    "wall_time_ms": 1793644288607,
+    "target": 214,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.981709
+      },
+      {
+        "range": "bytes=3475333-",
+        "status": 206,
+        "bytes": 1377261,
+        "ms": 2642.6418869999998
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3129344,
+        "ms": 6005.266925
+      }
+    ]
+  },
+  {
+    "round": 25,
+    "wall_time_ms": 1793644318616,
+    "target": 245,
+    "seek_ms": 71,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 507904,
+        "ms": 1011.9261859999999
+      },
+      {
+        "range": "bytes=3971282-",
+        "status": 206,
+        "bytes": 881312,
+        "ms": 1668.4455200000002
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3620864,
+        "ms": 6947.6697730000005
+      }
+    ]
+  },
+  {
+    "round": 26,
+    "wall_time_ms": 1793644348626,
+    "target": 176,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1009.339939
+      },
+      {
+        "range": "bytes=2867191-",
+        "status": 206,
+        "bytes": 1985403,
+        "ms": 3805.2979769999997
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2506752,
+        "ms": 4810.833348
+      }
+    ]
+  },
+  {
+    "round": 27,
+    "wall_time_ms": 1793644378644,
+    "target": 207,
+    "seek_ms": 75,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1009.2864139999999
+      },
+      {
+        "range": "bytes=3363162-",
+        "status": 206,
+        "bytes": 1489432,
+        "ms": 2841.689427
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2998272,
+        "ms": 5793.536231
+      }
+    ]
+  },
+  {
+    "round": 28,
+    "wall_time_ms": 1793644408655,
+    "target": 238,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1011.03965
+      },
+      {
+        "range": "bytes=3859101-",
+        "status": 206,
+        "bytes": 993493,
+        "ms": 1889.669498
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3489792,
+        "ms": 6696.061153000001
+      }
+    ]
+  },
+  {
+    "round": 29,
+    "wall_time_ms": 1793644438660,
+    "target": 269,
+    "seek_ms": 71,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.3561629999999
+      },
+      {
+        "range": "bytes=4355005-",
+        "status": 206,
+        "bytes": 497589,
+        "ms": 945.6974660000001
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3981312,
+        "ms": 7638.436185
+      }
+    ]
+  },
+  {
+    "round": 30,
+    "wall_time_ms": 1793644468671,
+    "target": 200,
+    "seek_ms": 74,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1009.6145990000001
+      },
+      {
+        "range": "bytes=3251309-",
+        "status": 206,
+        "bytes": 1601285,
+        "ms": 3051.567379
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2899968,
+        "ms": 5570.85203
+      }
+    ]
+  },
+  {
+    "round": 31,
+    "wall_time_ms": 1793644498676,
+    "target": 231,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.979194
+      },
+      {
+        "range": "bytes=3747269-",
+        "status": 206,
+        "bytes": 1105325,
+        "ms": 2108.104232
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3391488,
+        "ms": 6512.40294
+      }
+    ]
+  },
+  {
+    "round": 32,
+    "wall_time_ms": 1793644528687,
+    "target": 262,
+    "seek_ms": 69.00000000011642,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.74359
+      },
+      {
+        "range": "bytes=4243232-",
+        "status": 206,
+        "bytes": 609362,
+        "ms": 1165.889293
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3883008,
+        "ms": 7452.324084
+      }
+    ]
+  },
+  {
+    "round": 33,
+    "wall_time_ms": 1793644558700,
+    "target": 193,
+    "seek_ms": 69.99999999988358,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1009.3684279999999
+      },
+      {
+        "range": "bytes=3139117-",
+        "status": 206,
+        "bytes": 1713477,
+        "ms": 3272.439022
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2768896,
+        "ms": 5313.055534
+      }
+    ]
+  },
+  {
+    "round": 34,
+    "wall_time_ms": 1793644588707,
+    "target": 224,
+    "seek_ms": 68.00000000011642,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.707903
+      },
+      {
+        "range": "bytes=3635070-",
+        "status": 206,
+        "bytes": 1217524,
+        "ms": 2327.785645
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3260416,
+        "ms": 6255.23676
+      }
+    ]
+  },
+  {
+    "round": 35,
+    "wall_time_ms": 1793644618716,
+    "target": 255,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.550499
+      },
+      {
+        "range": "bytes=4131027-",
+        "status": 206,
+        "bytes": 721567,
+        "ms": 1385.011876
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3784704,
+        "ms": 7260.012556000001
+      }
+    ]
+  },
+  {
+    "round": 36,
+    "wall_time_ms": 1793644648725,
+    "target": 186,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.576416
+      },
+      {
+        "range": "bytes=3027321-",
+        "status": 206,
+        "bytes": 1825273,
+        "ms": 3489.911104
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2670592,
+        "ms": 5124.158355
+      }
+    ]
+  },
+  {
+    "round": 37,
+    "wall_time_ms": 1793644678737,
+    "target": 217,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.4779730000001
+      },
+      {
+        "range": "bytes=3523272-",
+        "status": 206,
+        "bytes": 1329322,
+        "ms": 2547.628619
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3162112,
+        "ms": 6067.248097000001
+      }
+    ]
+  },
+  {
+    "round": 38,
+    "wall_time_ms": 1793644708747,
+    "target": 248,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.636691
+      },
+      {
+        "range": "bytes=4019180-",
+        "status": 206,
+        "bytes": 833414,
+        "ms": 1573.16495
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3653632,
+        "ms": 7009.1331119999995
+      }
+    ]
+  },
+  {
+    "round": 39,
+    "wall_time_ms": 1793644738759,
+    "target": 179,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.622728
+      },
+      {
+        "range": "bytes=2915112-",
+        "status": 206,
+        "bytes": 1937482,
+        "ms": 3709.4929089999996
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2539520,
+        "ms": 4873.971412999999
+      }
+    ]
+  },
+  {
+    "round": 40,
+    "wall_time_ms": 1793644768767,
+    "target": 210,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.211646
+      },
+      {
+        "range": "bytes=3411060-",
+        "status": 206,
+        "bytes": 1441534,
+        "ms": 2735.629604
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3063808,
+        "ms": 5877.7196030000005
+      }
+    ]
+  },
+  {
+    "round": 41,
+    "wall_time_ms": 1793644798776,
+    "target": 241,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.6432040000001
+      },
+      {
+        "range": "bytes=3907393-",
+        "status": 206,
+        "bytes": 945201,
+        "ms": 1792.8998510000001
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3555328,
+        "ms": 6820.302536
+      }
+    ]
+  },
+  {
+    "round": 42,
+    "wall_time_ms": 1793644828788,
+    "target": 172,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.0915210000001
+      },
+      {
+        "range": "bytes=2803261-",
+        "status": 206,
+        "bytes": 2049333,
+        "ms": 3930.082836
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2441216,
+        "ms": 4682.947693
+      }
+    ]
+  },
+  {
+    "round": 43,
+    "wall_time_ms": 1793644858796,
+    "target": 203,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.7432799999999
+      },
+      {
+        "range": "bytes=3299200-",
+        "status": 206,
+        "bytes": 1553394,
+        "ms": 2962.671185
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2932736,
+        "ms": 5630.75807
+      }
+    ]
+  },
+  {
+    "round": 44,
+    "wall_time_ms": 1793644888814,
+    "target": 234,
+    "seek_ms": 72,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 491520,
+        "ms": 1036.692863
+      },
+      {
+        "range": "bytes=3795208-",
+        "status": 206,
+        "bytes": 1057386,
+        "ms": 2013.0687919999998
+      },
+      {
+        "range": "bytes=458752-",
+        "status": 206,
+        "bytes": 3457024,
+        "ms": 6631.09789
+      }
+    ]
+  },
+  {
+    "round": 45,
+    "wall_time_ms": 1793644918813,
+    "target": 265,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.471595
+      },
+      {
+        "range": "bytes=4291140-",
+        "status": 206,
+        "bytes": 561454,
+        "ms": 1070.57861
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3915776,
+        "ms": 7511.862523999999
+      }
+    ]
+  },
+  {
+    "round": 46,
+    "wall_time_ms": 1793644948821,
+    "target": 196,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.4171540000001
+      },
+      {
+        "range": "bytes=3187418-",
+        "status": 206,
+        "bytes": 1665176,
+        "ms": 3175.146153
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2834432,
+        "ms": 5437.298473
+      }
+    ]
+  },
+  {
+    "round": 47,
+    "wall_time_ms": 1793644978831,
+    "target": 227,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.359232
+      },
+      {
+        "range": "bytes=3683365-",
+        "status": 206,
+        "bytes": 1169229,
+        "ms": 2233.201093
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3325952,
+        "ms": 6380.98664
+      }
+    ]
+  },
+  {
+    "round": 48,
+    "wall_time_ms": 1793645008839,
+    "target": 258,
+    "seek_ms": 68.00000000023283,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.5093100000001
+      },
+      {
+        "range": "bytes=4179299-",
+        "status": 206,
+        "bytes": 673295,
+        "ms": 1290.653835
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3817472,
+        "ms": 7323.302124999999
+      }
+    ]
+  },
+  {
+    "round": 49,
+    "wall_time_ms": 1793645038848,
+    "target": 189,
+    "seek_ms": 68.00000000023283,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.3282690000001
+      },
+      {
+        "range": "bytes=3075249-",
+        "status": 206,
+        "bytes": 1777345,
+        "ms": 3399.192251
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2703360,
+        "ms": 5186.098952
+      }
+    ]
+  },
+  {
+    "round": 50,
+    "wall_time_ms": 1793645068858,
+    "target": 220,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.588068
+      },
+      {
+        "range": "bytes=3571179-",
+        "status": 206,
+        "bytes": 1281415,
+        "ms": 2453.202913
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3194880,
+        "ms": 6129.523637
+      }
+    ]
+  },
+  {
+    "round": 51,
+    "wall_time_ms": 1793645098864,
+    "target": 251,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.5710659999999
+      },
+      {
+        "range": "bytes=4067121-",
+        "status": 206,
+        "bytes": 785473,
+        "ms": 1479.043271
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3719168,
+        "ms": 7136.243295
+      }
+    ]
+  },
+  {
+    "round": 52,
+    "wall_time_ms": 1793645128878,
+    "target": 182,
+    "seek_ms": 68.99999999976717,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1011.016549
+      },
+      {
+        "range": "bytes=2963376-",
+        "status": 206,
+        "bytes": 1889218,
+        "ms": 3615.579904
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2605056,
+        "ms": 4998.728291
+      }
+    ]
+  },
+  {
+    "round": 53,
+    "wall_time_ms": 1793645158902,
+    "target": 213,
+    "seek_ms": 86,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1009.908786
+      },
+      {
+        "range": "bytes=3459354-",
+        "status": 206,
+        "bytes": 1393240,
+        "ms": 2673.5294120000003
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3096576,
+        "ms": 5942.999695
+      }
+    ]
+  },
+  {
+    "round": 54,
+    "wall_time_ms": 1793645188894,
+    "target": 244,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.783303
+      },
+      {
+        "range": "bytes=3955327-",
+        "status": 206,
+        "bytes": 897267,
+        "ms": 1699.4050550000002
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3588096,
+        "ms": 6883.2073740000005
+      }
+    ]
+  },
+  {
+    "round": 55,
+    "wall_time_ms": 1793645218913,
+    "target": 175,
+    "seek_ms": 77,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.373822
+      },
+      {
+        "range": "bytes=2851197-",
+        "status": 206,
+        "bytes": 2001397,
+        "ms": 3837.367762
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2506752,
+        "ms": 4817.83364
+      }
+    ]
+  },
+  {
+    "round": 56,
+    "wall_time_ms": 1793645248912,
+    "target": 206,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.8550610000001
+      },
+      {
+        "range": "bytes=3347173-",
+        "status": 206,
+        "bytes": 1505421,
+        "ms": 2861.310085
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2998272,
+        "ms": 5768.402768
+      }
+    ]
+  },
+  {
+    "round": 57,
+    "wall_time_ms": 1793645278923,
+    "target": 237,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.516701
+      },
+      {
+        "range": "bytes=3843111-",
+        "status": 206,
+        "bytes": 1009483,
+        "ms": 1918.763598
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3489792,
+        "ms": 6695.8240749999995
+      }
+    ]
+  },
+  {
+    "round": 58,
+    "wall_time_ms": 1793645308929,
+    "target": 268,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.786459
+      },
+      {
+        "range": "bytes=4339101-",
+        "status": 206,
+        "bytes": 513493,
+        "ms": 976.355993
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3981312,
+        "ms": 7639.153793
+      }
+    ]
+  },
+  {
+    "round": 59,
+    "wall_time_ms": 1793645338941,
+    "target": 199,
+    "seek_ms": 71,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.325339
+      },
+      {
+        "range": "bytes=3235365-",
+        "status": 206,
+        "bytes": 1617229,
+        "ms": 3081.914705
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2867200,
+        "ms": 5500.788646
+      }
+    ]
+  },
+  {
+    "round": 60,
+    "wall_time_ms": 1793645368949,
+    "target": 230,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.109178
+      },
+      {
+        "range": "bytes=3731265-",
+        "status": 206,
+        "bytes": 1121329,
+        "ms": 2138.872701
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3358720,
+        "ms": 6443.625083999999
+      }
+    ]
+  },
+  {
+    "round": 61,
+    "wall_time_ms": 1793645398956,
+    "target": 261,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.9200979999999
+      },
+      {
+        "range": "bytes=4227222-",
+        "status": 206,
+        "bytes": 625372,
+        "ms": 1218.976197
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3883008,
+        "ms": 7448.706494999999
+      }
+    ]
+  },
+  {
+    "round": 62,
+    "wall_time_ms": 1793645428969,
+    "target": 192,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1009.217058
+      },
+      {
+        "range": "bytes=3123149-",
+        "status": 206,
+        "bytes": 1729445,
+        "ms": 3301.676006
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2768896,
+        "ms": 5312.530793999999
+      }
+    ]
+  },
+  {
+    "round": 63,
+    "wall_time_ms": 1793645459005,
+    "target": 223,
+    "seek_ms": 99,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.291255
+      },
+      {
+        "range": "bytes=3619095-",
+        "status": 206,
+        "bytes": 1233499,
+        "ms": 2359.272084
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3260416,
+        "ms": 6256.448353
+      }
+    ]
+  },
+  {
+    "round": 64,
+    "wall_time_ms": 1793645488985,
+    "target": 254,
+    "seek_ms": 71,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.731816
+      },
+      {
+        "range": "bytes=4115051-",
+        "status": 206,
+        "bytes": 737543,
+        "ms": 1417.843083
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3751936,
+        "ms": 7198.159148000001
+      }
+    ]
+  },
+  {
+    "round": 65,
+    "wall_time_ms": 1793645518990,
+    "target": 185,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.8790150000001
+      },
+      {
+        "range": "bytes=3011327-",
+        "status": 206,
+        "bytes": 1841267,
+        "ms": 3521.256346
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2637824,
+        "ms": 5061.455292
+      }
+    ]
+  },
+  {
+    "round": 66,
+    "wall_time_ms": 1793645548999,
+    "target": 216,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.4966540000001
+      },
+      {
+        "range": "bytes=3507285-",
+        "status": 206,
+        "bytes": 1345309,
+        "ms": 2577.781785
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3162112,
+        "ms": 6066.453382
+      }
+    ]
+  },
+  {
+    "round": 67,
+    "wall_time_ms": 1793645579008,
+    "target": 247,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.6783330000001
+      },
+      {
+        "range": "bytes=4003234-",
+        "status": 206,
+        "bytes": 849360,
+        "ms": 1604.543799
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3653632,
+        "ms": 7014.2421810000005
+      }
+    ]
+  },
+  {
+    "round": 68,
+    "wall_time_ms": 1793645609019,
+    "target": 178,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.436334
+      },
+      {
+        "range": "bytes=2899094-",
+        "status": 206,
+        "bytes": 1953500,
+        "ms": 3741.0836870000003
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2539520,
+        "ms": 4872.019523999999
+      }
+    ]
+  },
+  {
+    "round": 69,
+    "wall_time_ms": 1793645639026,
+    "target": 209,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.0009329999999
+      },
+      {
+        "range": "bytes=3395080-",
+        "status": 206,
+        "bytes": 1457514,
+        "ms": 2767.347581
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3031040,
+        "ms": 5816.179201
+      }
+    ]
+  },
+  {
+    "round": 70,
+    "wall_time_ms": 1793645669034,
+    "target": 240,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.870365
+      },
+      {
+        "range": "bytes=3891063-",
+        "status": 206,
+        "bytes": 961531,
+        "ms": 1824.231752
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3522560,
+        "ms": 6758.128748
+      }
+    ]
+  },
+  {
+    "round": 71,
+    "wall_time_ms": 1793645699043,
+    "target": 171,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.6252510000002
+      },
+      {
+        "range": "bytes=2787347-",
+        "status": 206,
+        "bytes": 2065247,
+        "ms": 3960.478914
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2441216,
+        "ms": 4682.523562
+      }
+    ]
+  },
+  {
+    "round": 72,
+    "wall_time_ms": 1793645729055,
+    "target": 202,
+    "seek_ms": 71,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.1705370000001
+      },
+      {
+        "range": "bytes=3283262-",
+        "status": 206,
+        "bytes": 1569332,
+        "ms": 2987.046985
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2932736,
+        "ms": 5627.803001
+      }
+    ]
+  },
+  {
+    "round": 73,
+    "wall_time_ms": 1793645759066,
+    "target": 233,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.4247429999999
+      },
+      {
+        "range": "bytes=3779196-",
+        "status": 206,
+        "bytes": 1073398,
+        "ms": 2045.2951060000003
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3424256,
+        "ms": 6569.702163999999
+      }
+    ]
+  },
+  {
+    "round": 74,
+    "wall_time_ms": 1793645789070,
+    "target": 264,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.897507
+      },
+      {
+        "range": "bytes=4275194-",
+        "status": 206,
+        "bytes": 577400,
+        "ms": 1101.6946970000001
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3915776,
+        "ms": 7511.301495
+      }
+    ]
+  },
+  {
+    "round": 75,
+    "wall_time_ms": 1793645819083,
+    "target": 195,
+    "seek_ms": 71.00000000046566,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.443112
+      },
+      {
+        "range": "bytes=3171090-",
+        "status": 206,
+        "bytes": 1681504,
+        "ms": 3206.8517540000003
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2801664,
+        "ms": 5374.761775999999
+      }
+    ]
+  },
+  {
+    "round": 76,
+    "wall_time_ms": 1793645849087,
+    "target": 226,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.8073169999999
+      },
+      {
+        "range": "bytes=3667416-",
+        "status": 206,
+        "bytes": 1185178,
+        "ms": 2264.019061
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3293184,
+        "ms": 6317.421868
+      }
+    ]
+  },
+  {
+    "round": 77,
+    "wall_time_ms": 1793645879096,
+    "target": 257,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.4768409999999
+      },
+      {
+        "range": "bytes=4163348-",
+        "status": 206,
+        "bytes": 689246,
+        "ms": 1322.015559
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3817472,
+        "ms": 7322.915894000001
+      }
+    ]
+  },
+  {
+    "round": 78,
+    "wall_time_ms": 1793645909104,
+    "target": 188,
+    "seek_ms": 67.99999999953434,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.5394449999999
+      },
+      {
+        "range": "bytes=3059230-",
+        "status": 206,
+        "bytes": 1793364,
+        "ms": 3427.385483
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2703360,
+        "ms": 5187.880742
+      }
+    ]
+  },
+  {
+    "round": 79,
+    "wall_time_ms": 1793645939114,
+    "target": 219,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.392489
+      },
+      {
+        "range": "bytes=3555199-",
+        "status": 206,
+        "bytes": 1297395,
+        "ms": 2484.766056
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3194880,
+        "ms": 6128.86316
+      }
+    ]
+  },
+  {
+    "round": 80,
+    "wall_time_ms": 1793645969120,
+    "target": 250,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.826853
+      },
+      {
+        "range": "bytes=4051186-",
+        "status": 206,
+        "bytes": 801408,
+        "ms": 1509.9947980000002
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3686400,
+        "ms": 7072.296424
+      }
+    ]
+  },
+  {
+    "round": 81,
+    "wall_time_ms": 1793645999129,
+    "target": 181,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.444776
+      },
+      {
+        "range": "bytes=2947438-",
+        "status": 206,
+        "bytes": 1905156,
+        "ms": 3647.540008
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2572288,
+        "ms": 4936.018602
+      }
+    ]
+  },
+  {
+    "round": 82,
+    "wall_time_ms": 1793646029150,
+    "target": 212,
+    "seek_ms": 70.00000000046566,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1012.745983
+      },
+      {
+        "range": "bytes=3443381-",
+        "status": 206,
+        "bytes": 1409213,
+        "ms": 2704.26817
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3096576,
+        "ms": 5941.676316
+      }
+    ]
+  },
+  {
+    "round": 83,
+    "wall_time_ms": 1793646059156,
+    "target": 243,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1013.1209859999999
+      },
+      {
+        "range": "bytes=3939301-",
+        "status": 206,
+        "bytes": 913293,
+        "ms": 1732.639864
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3588096,
+        "ms": 6884.655626
+      }
+    ]
+  },
+  {
+    "round": 84,
+    "wall_time_ms": 1793646089154,
+    "target": 174,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.7523450000001
+      },
+      {
+        "range": "bytes=2835235-",
+        "status": 206,
+        "bytes": 2017359,
+        "ms": 3866.662852
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2473984,
+        "ms": 4745.9896180000005
+      }
+    ]
+  },
+  {
+    "round": 85,
+    "wall_time_ms": 1793646119163,
+    "target": 205,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.0638280000001
+      },
+      {
+        "range": "bytes=3331180-",
+        "status": 206,
+        "bytes": 1521414,
+        "ms": 2892.674301
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2965504,
+        "ms": 5689.713089
+      }
+    ]
+  },
+  {
+    "round": 86,
+    "wall_time_ms": 1793646149173,
+    "target": 236,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.99283
+      },
+      {
+        "range": "bytes=3827133-",
+        "status": 206,
+        "bytes": 1025461,
+        "ms": 1950.374169
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3457024,
+        "ms": 6631.5255210000005
+      }
+    ]
+  },
+  {
+    "round": 87,
+    "wall_time_ms": 1793646179183,
+    "target": 267,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.8485919999999
+      },
+      {
+        "range": "bytes=4323087-",
+        "status": 206,
+        "bytes": 529507,
+        "ms": 1008.8435129999999
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3948544,
+        "ms": 7580.154162999999
+      }
+    ]
+  },
+  {
+    "round": 88,
+    "wall_time_ms": 1793646209189,
+    "target": 198,
+    "seek_ms": 68.00000000046566,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.7455550000001
+      },
+      {
+        "range": "bytes=3219381-",
+        "status": 206,
+        "bytes": 1633213,
+        "ms": 3112.577375
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2867200,
+        "ms": 5501.512101
+      }
+    ]
+  },
+  {
+    "round": 89,
+    "wall_time_ms": 1793646239198,
+    "target": 229,
+    "seek_ms": 69.00000000046566,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.3721969999999
+      },
+      {
+        "range": "bytes=3715330-",
+        "status": 206,
+        "bytes": 1137264,
+        "ms": 2169.306115
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3358720,
+        "ms": 6443.512777000001
+      }
+    ]
+  },
+  {
+    "round": 90,
+    "wall_time_ms": 1793646269206,
+    "target": 260,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.5224380000001
+      },
+      {
+        "range": "bytes=4211298-",
+        "status": 206,
+        "bytes": 641296,
+        "ms": 1227.1838930000001
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3850240,
+        "ms": 7385.738695999999
+      }
+    ]
+  },
+  {
+    "round": 91,
+    "wall_time_ms": 1793646299214,
+    "target": 191,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.6422410000001
+      },
+      {
+        "range": "bytes=3107166-",
+        "status": 206,
+        "bytes": 1745428,
+        "ms": 3332.661208
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2736128,
+        "ms": 5251.373573000001
+      }
+    ]
+  },
+  {
+    "round": 92,
+    "wall_time_ms": 1793646329227,
+    "target": 222,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.324602
+      },
+      {
+        "range": "bytes=3603140-",
+        "status": 206,
+        "bytes": 1249454,
+        "ms": 2389.6174229999997
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3227648,
+        "ms": 6192.422812
+      }
+    ]
+  },
+  {
+    "round": 93,
+    "wall_time_ms": 1793646359239,
+    "target": 253,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1010.118525
+      },
+      {
+        "range": "bytes=4099091-",
+        "status": 206,
+        "bytes": 753503,
+        "ms": 1416.98525
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3751936,
+        "ms": 7198.369585
+      }
+    ]
+  },
+  {
+    "round": 94,
+    "wall_time_ms": 1793646389244,
+    "target": 184,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.1278060000001
+      },
+      {
+        "range": "bytes=2995357-",
+        "status": 206,
+        "bytes": 1857237,
+        "ms": 3552.981241
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2637824,
+        "ms": 5061.764248
+      }
+    ]
+  },
+  {
+    "round": 95,
+    "wall_time_ms": 1793646419252,
+    "target": 215,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.696167
+      },
+      {
+        "range": "bytes=3491283-",
+        "status": 206,
+        "bytes": 1361311,
+        "ms": 2610.171651
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3129344,
+        "ms": 6004.448050999999
+      }
+    ]
+  },
+  {
+    "round": 96,
+    "wall_time_ms": 1793646449260,
+    "target": 246,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.7111679999999
+      },
+      {
+        "range": "bytes=3987277-",
+        "status": 206,
+        "bytes": 865317,
+        "ms": 1636.3190730000001
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3620864,
+        "ms": 6946.260654
+      }
+    ]
+  },
+  {
+    "round": 97,
+    "wall_time_ms": 1793646479270,
+    "target": 177,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.62269
+      },
+      {
+        "range": "bytes=2883182-",
+        "status": 206,
+        "bytes": 1969412,
+        "ms": 3773.643753
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2506752,
+        "ms": 4811.389428
+      }
+    ]
+  },
+  {
+    "round": 98,
+    "wall_time_ms": 1793646509278,
+    "target": 208,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.624651
+      },
+      {
+        "range": "bytes=3379090-",
+        "status": 206,
+        "bytes": 1473504,
+        "ms": 2798.7844929999997
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3031040,
+        "ms": 5816.252802
+      }
+    ]
+  },
+  {
+    "round": 99,
+    "wall_time_ms": 1793646539289,
+    "target": 239,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.291453
+      },
+      {
+        "range": "bytes=3875049-",
+        "status": 206,
+        "bytes": 977545,
+        "ms": 1856.014056
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3522560,
+        "ms": 6757.621288
+      }
+    ]
+  },
+  {
+    "round": 100,
+    "wall_time_ms": 1793646569295,
+    "target": 170,
+    "seek_ms": 67.99999999953434,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1006.974533
+      },
+      {
+        "range": "bytes=2771318-",
+        "status": 206,
+        "bytes": 2081276,
+        "ms": 3992.669743
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2408448,
+        "ms": 4621.427011
+      }
+    ]
+  },
+  {
+    "round": 101,
+    "wall_time_ms": 1793646599306,
+    "target": 201,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.3505339999999
+      },
+      {
+        "range": "bytes=3267285-",
+        "status": 206,
+        "bytes": 1585309,
+        "ms": 3018.144519
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2899968,
+        "ms": 5562.1543759999995
+      }
+    ]
+  },
+  {
+    "round": 102,
+    "wall_time_ms": 1793646629319,
+    "target": 232,
+    "seek_ms": 72,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.301696
+      },
+      {
+        "range": "bytes=3763258-",
+        "status": 206,
+        "bytes": 1089336,
+        "ms": 2075.82616
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3391488,
+        "ms": 6508.521067000001
+      }
+    ]
+  },
+  {
+    "round": 103,
+    "wall_time_ms": 1793646659334,
+    "target": 263,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1014.367462
+      },
+      {
+        "range": "bytes=4259173-",
+        "status": 206,
+        "bytes": 593421,
+        "ms": 1133.875919
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3883008,
+        "ms": 7449.100315
+      }
+    ]
+  },
+  {
+    "round": 104,
+    "wall_time_ms": 1793646689331,
+    "target": 194,
+    "seek_ms": 69,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.7207370000001
+      },
+      {
+        "range": "bytes=3155107-",
+        "status": 206,
+        "bytes": 1697487,
+        "ms": 3238.903587
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2801664,
+        "ms": 5375.499559999999
+      }
+    ]
+  },
+  {
+    "round": 105,
+    "wall_time_ms": 1793646719342,
+    "target": 225,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.779658
+      },
+      {
+        "range": "bytes=3651063-",
+        "status": 206,
+        "bytes": 1201531,
+        "ms": 2296.659624
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3293184,
+        "ms": 6317.356529
+      }
+    ]
+  },
+  {
+    "round": 106,
+    "wall_time_ms": 1793646749351,
+    "target": 256,
+    "seek_ms": 67.99999999953434,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.576299
+      },
+      {
+        "range": "bytes=4147393-",
+        "status": 206,
+        "bytes": 705201,
+        "ms": 1352.89414
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3784704,
+        "ms": 7260.340661
+      }
+    ]
+  },
+  {
+    "round": 107,
+    "wall_time_ms": 1793646779360,
+    "target": 187,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.1415390000001
+      },
+      {
+        "range": "bytes=3043279-",
+        "status": 206,
+        "bytes": 1809315,
+        "ms": 3459.756814
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2670592,
+        "ms": 5124.176807999999
+      }
+    ]
+  },
+  {
+    "round": 108,
+    "wall_time_ms": 1793646809367,
+    "target": 218,
+    "seek_ms": 67,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.88474
+      },
+      {
+        "range": "bytes=3539220-",
+        "status": 206,
+        "bytes": 1313374,
+        "ms": 2516.951168
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3194880,
+        "ms": 6130.621311
+      }
+    ]
+  },
+  {
+    "round": 109,
+    "wall_time_ms": 1793646839377,
+    "target": 249,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.8803409999999
+      },
+      {
+        "range": "bytes=4035169-",
+        "status": 206,
+        "bytes": 817425,
+        "ms": 1541.782496
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3686400,
+        "ms": 7071.405681
+      }
+    ]
+  },
+  {
+    "round": 110,
+    "wall_time_ms": 1793646869385,
+    "target": 180,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.066181
+      },
+      {
+        "range": "bytes=2931076-",
+        "status": 206,
+        "bytes": 1921518,
+        "ms": 3678.819839
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2572288,
+        "ms": 4935.3334239999995
+      }
+    ]
+  },
+  {
+    "round": 111,
+    "wall_time_ms": 1793646899392,
+    "target": 211,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.7311819999999
+      },
+      {
+        "range": "bytes=3427426-",
+        "status": 206,
+        "bytes": 1425168,
+        "ms": 2704.421526
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3063808,
+        "ms": 5877.795076
+      }
+    ]
+  },
+  {
+    "round": 112,
+    "wall_time_ms": 1793646929405,
+    "target": 242,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.9876630000001
+      },
+      {
+        "range": "bytes=3923362-",
+        "status": 206,
+        "bytes": 929232,
+        "ms": 1762.362159
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3555328,
+        "ms": 6821.226329
+      }
+    ]
+  },
+  {
+    "round": 113,
+    "wall_time_ms": 1793646959418,
+    "target": 173,
+    "seek_ms": 70,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.911384
+      },
+      {
+        "range": "bytes=2819251-",
+        "status": 206,
+        "bytes": 2033343,
+        "ms": 3898.316705
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2473984,
+        "ms": 4747.996397999999
+      }
+    ]
+  },
+  {
+    "round": 114,
+    "wall_time_ms": 1793646989423,
+    "target": 204,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.999544
+      },
+      {
+        "range": "bytes=3315230-",
+        "status": 206,
+        "bytes": 1537364,
+        "ms": 2924.29167
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2965504,
+        "ms": 5690.544051
+      }
+    ]
+  },
+  {
+    "round": 115,
+    "wall_time_ms": 1793647019431,
+    "target": 235,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.569583
+      },
+      {
+        "range": "bytes=3811178-",
+        "status": 206,
+        "bytes": 1041416,
+        "ms": 1981.65198
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3457024,
+        "ms": 6632.765625
+      }
+    ]
+  },
+  {
+    "round": 116,
+    "wall_time_ms": 1793647049439,
+    "target": 266,
+    "seek_ms": 67.99999999953434,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.1608650000001
+      },
+      {
+        "range": "bytes=4307132-",
+        "status": 206,
+        "bytes": 545462,
+        "ms": 1039.1766499999999
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3948544,
+        "ms": 7575.738679
+      }
+    ]
+  },
+  {
+    "round": 117,
+    "wall_time_ms": 1793647079447,
+    "target": 197,
+    "seek_ms": 66.99999999953434,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.0914649999999
+      },
+      {
+        "range": "bytes=3203374-",
+        "status": 206,
+        "bytes": 1649220,
+        "ms": 3144.666374
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2834432,
+        "ms": 5439.067493
+      }
+    ]
+  },
+  {
+    "round": 118,
+    "wall_time_ms": 1793647109457,
+    "target": 228,
+    "seek_ms": 68,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.067306
+      },
+      {
+        "range": "bytes=3699353-",
+        "status": 206,
+        "bytes": 1153241,
+        "ms": 2202.235124
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3325952,
+        "ms": 6381.758467
+      }
+    ]
+  },
+  {
+    "round": 119,
+    "wall_time_ms": 1793647139466,
+    "target": 259,
+    "seek_ms": 69.00000000046566,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1008.3672660000001
+      },
+      {
+        "range": "bytes=4195293-",
+        "status": 206,
+        "bytes": 657301,
+        "ms": 1259.280032
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 3850240,
+        "ms": 7386.941573
+      }
+    ]
+  },
+  {
+    "round": 120,
+    "wall_time_ms": 1793647169475,
+    "target": 190,
+    "seek_ms": 69.00000000046566,
+    "upstream_requests": 3,
+    "upstream_range_requests": 2,
+    "transfers": [
+      {
+        "range": null,
+        "status": 200,
+        "bytes": 524288,
+        "ms": 1007.919826
+      },
+      {
+        "range": "bytes=3091176-",
+        "status": 206,
+        "bytes": 1761418,
+        "ms": 3365.442879
+      },
+      {
+        "range": "bytes=491520-",
+        "status": 206,
+        "bytes": 2736128,
+        "ms": 5250.057903
+      }
+    ]
+  }
+]

@@ -2,6 +2,8 @@
 
 状态：osa-a1（Ubuntu 24.04 / aarch64）执行已记录在 `../docs/plans/tauri-rewrite.md` 的 M0 项下。Mac 和 Windows **尚未执行**。本目录不进入正式产品。M0 尚未完成三平台验收，不能据此进入 M1。
 
+审查修复后的Linux复测：`cargo test --release` 为 **6 passed / 0 failed**。实际soak **3600.008 s / 120轮重新加载**，全部轮次核对代理和上游Range；排除600 s warmup后OLS为 **−0.254942 MB/min**，最后30 min为 **−0.335103 MB/min**，仅本轮满足预设条件，不宣称长期无泄漏。359点原始RSS、逐轮流量和判定已提交到下列evidence文件。
+
 ## 边界与证据
 
 - 只在 `spike/tauri-m0` 本地提交。没有 push、tag、release、远端资源或 secrets 变更。

@@ -272,9 +272,9 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - 复现：`spikes/m0/` 测试页提供六个用户自备 fMP4 样本入口；每首自动记录连续 60 s、5 次 seek 和波形。文件必须来自用户有权使用的音频，留在忽略的 `fixtures/`，不加入传输包或 Git。
   - 退路：Mac FLAC 不通过则最高码率 AAC 并标注音质降级；ec-3 按 `canPlayType` 跳过。README 的 Mac S1 节给出直接操作步骤及回传字段；Mac x64 仍待有条件补测。
 - [ ] S2 三平台拖动进度
-  - 结果：**Linux 自定义协议不通过；HTTP 退路的播放/seek 检查通过；内存待定。mac / pc / wsl 的 WebKitGTK / Linux x64 实机或 VM 待运行**。WebKitGTK 日志明确为 `biu-media (allowed: no)`；系统 GStreamer 可独立解码同一 AAC，故没有把协议失败误记为 codec 缺失。
+  - 结果：**Linux 自定义协议不通过；HTTP退路的播放/seek检查通过；60min内存重测满足本次预设条件（不代表长期无泄漏）。mac / pc / wsl 的 WebKitGTK / Linux x64 实机或 VM 待运行**。WebKitGTK 日志明确为 `biu-media (allowed: no)`；系统 GStreamer 可独立解码同一 AAC，故没有把协议失败误记为 codec 缺失。
   - 退路实测：Rust 随机 loopback 端口 + 每次启动随机临时 token，初始响应 200、实际 Range 响应 206、流式转发；测试上游只允许 `127.0.0.1:18765`。AAC 长度 **300.023333 s**；seed=2401 的 10 次随机 seek，本轮恢复 **33–868 ms**，均 ≤1500 ms；非缓存的 6 次 Range 传输均为 206，没有把每次 seek 改成整文件重拉。缓存命中不产生网络请求，已单独说明。
-  - 内存：**待定**。原1800 s测试仅循环已整体缓存的文件，soak期间没有代理/Range流量；warmup后曾近线性增长，不能用末段GC回落记为通过。原RSS数字仅保留为历史，不用于内存验收。重测方法已先提交：每30 s用新URL重新加载、强制seek并核对每轮代理和上游Range/206，运行≥3600 s；排除前600 s warmup后，对全部RSS样本及最后30 min分别求OLS斜率（MB/min），两者均≤0才可将本轮内存记通过，否则仍待定。原始RSS序列和逐轮流量证据须提交到evidence。
+  - 内存：原1800 s缓存文件循环的结论已撤回并改记**待定**，不再用末段GC回落判通过。按事先提交的方法重测，实际soak **3600.008 s**，**120轮**均使用新URL重新加载并核对代理及上游Range，合计**246次206传输**（含初始seek检查）。排除前**600 s**后，全部样本OLS斜率 **−0.254942 MB/min**，最后30 min **−0.335103 MB/min**，均满足预设≤0条件，故**仅本轮重测通过**。RSS峰值 **690,782,208字节（690.782208 MB）**，末次 **660,664,320字节（660.664320 MB）**；不能据此排除长期泄漏。**359点原始RSS序列**已提交`spikes/evidence/soak-60min-rss.jsonl`；逐轮请求/字节证据在`soak-60min-rounds.json`，方法、斜率和判定在`soak-60min-summary.json`，通过`analyze_soak.py`可复算。
   - URL 过期：夹具注入403，Rust刷新测试地址并继续同一Range。**真实 B 站 CDN / 登录态 / 地址续签没有实测**；HTTP 退路目前只放行夹具上游，生产白名单和续签逻辑不在此原型里。原`*.akamaized.net`等后缀白名单已从spike代码移除；夹具放行及写死403刷新仅在显式`BIU_SPIKE_FIXTURES=1`时启用。**这些规则不得带入M2；M2只能放行playurl返回的具体host，不能沿用Akamai公共后缀白名单**。HTTP退路ACAO只允许app源，Host必须等于实际绑定的`127.0.0.1:<port>`；每次启动一个随机token，进程内共用，并非每请求一次性。Mac/Windows、wsl WebKitGTK、真实CDN、Linux x64实机/VM和物理音频输出均待验证。
 - [ ] S3 Linux gst-libav
   - 结果：**osa-a1 arm64 构建/解码冒烟通过；Ubuntu/Fedora/Arch 干净 x64 VM 矩阵待运行**。独立插件目录链接系统插件但排除 `libgstlibav.so`，同时设置 `GST_PLUGIN_SYSTEM_PATH_1_0`、空 `GST_PLUGIN_PATH_1_0` 和独立 `GST_REGISTRY`；未卸载系统包。仅设置 PLUGIN_PATH 无法隔离系统插件，复现说明已避免此做法。
@@ -285,10 +285,10 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - 结果：**Linux aarch64 deb/rpm 通过；Mac 和 Windows 待 CI 或对应机器**。本次完整计划依赖/插件（加 Linux S8 souvlaki 退路）及当前 dist/web 的实测，release profile 为 `opt-level="s"`、`lto=true`、`codegen-units=1`、`strip=true`、`panic="abort"`；MB 统一为1,000,000字节。原型仍不是完整产品代码，后续功能会增加体积。
   - 交付体积：**deb 5,084,262 字节（5.084262 MB）**；**rpm 5,089,701 字节（5.089701 MB）**；**strip 后二进制 10,659,672 字节（10.659672 MB）**；**含媒体插件 AppImage 145,115,656 字节（145.115656 MB）**。deb低于8 MB目标，deb/rpm低于10 MB下载包硬上限；裸二进制不适用压缩下载包门槛。AppImage按D1例外，不受10 MB限制。
   - AppImage处理：默认未打媒体插件的版本解码检测失败；启用 `bundle.linux.appimage.bundleMediaFramework=true` 后成功打包并通过 AAC、FLAC、10次拖动、波形冒烟。linuxdeploy 需要 patchelf，本次只用 `apt-get download` + `dpkg-deb -x` 解包到 worktree，不以sudo安装它。辅助AppImage较预算大，D1仍优先deb/rpm。
-  - `cargo bloat --release --crates -n 15`：前几名 **zbus 896.5 KiB、std 866.1 KiB、tauri 819.8 KiB、lofty 432.3 KiB、tokio 382.4 KiB、rustfft 333.6 KiB、rustls 244.5 KiB**；前15名完整输出在 `spikes/evidence/cargo-bloat.txt`。LTO归属是工具估算；bloat重建的未strip分析副本约16.4 MiB，不能当成发布二进制实测值。
+  - `cargo bloat --release --crates -n 15`：前几名 **zbus 896.5 KiB、std 866.7 KiB、tauri 820.2 KiB、lofty 432.2 KiB、tokio 382.4 KiB、rustfft 333.6 KiB、rustls 244.5 KiB**；前15名完整输出在 `spikes/evidence/cargo-bloat.txt`。LTO归属是工具估算；bloat重建的未strip分析副本约16.4 MiB，不能当成发布二进制实测值。
   - 证据：`sizes.json`（字节/MB/SHA256）、`frontend-manifest.json`、deb/rpm元数据；以上体积已在审查修复后重测，`acceptance-review.txt`记录非内存断言。Mac dmg与Windows NSIS没有本机实测值，未用预算冒充实测。
 - [ ] S5 桌面歌词窗口
-  - 结果：**未验证（仅 API 调用无报错）**；完整交互/真实合成器、mac / pc / X11视觉 / Wayland GNOME/KDE仍待验证。创建透明、无边框、置顶窗口并成功调用鼠标穿透；D3每100 ms检查光标，进入左上100×60区域临时取消穿透。悬停轮询已去掉65 s截止，持续到窗口Destroyed事件；这仅修复原型生命周期，不代表完整D3交互已通过。
+  - 结果：**未验证（仅 API 调用无报错）**；完整交互/真实合成器、mac / pc / X11视觉 / Wayland GNOME/KDE仍待验证。创建透明、无边框、置顶窗口并成功调用鼠标穿透；D3每100 ms检查光标，进入左上100×60区域临时取消穿透。悬停轮询已去掉65 s截止，持续到窗口Destroyed事件；本轮日志记录轮询在3600 s仍运行，验证已超过原65 s截止；这仅修复原型生命周期，不代表完整D3交互已通过。
   - 实测：xvfb下60 s扫光记录 **3903帧 / 60004 ms ≈65.046 fps**。该数字是requestAnimationFrame吞吐，**不能证明真实显示器稳定60 fps**。无物理显示器、无真实合成器，libEGL访问/dev/dri被拒，未提升权限，软件渲染继续测试。
   - 缺口：当前解锁按钮为常显原型，完整锁定/悬停显示状态机未实现；不能宣称“1 s内出现解锁按钮”通过。透明无黑边、实体点击穿透、全屏app上方置顶、Mac/Windows CPU<10%均未验证。Wayland限制按原计划记录；Mac/Windows失败仍需报告用户。
 - [ ] S6 图片 / 登录 / 极验 / webview 代理
@@ -301,7 +301,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - 边界：模拟“退出并安装”命令已经跑通，**正式关闭窗口/退出生命周期尚未接入**；登录保留指虚拟store，不代表B站cookie迁移完成。Mac /Applications、~/Applications、dmg/translocation及Windows NSIS需要对应机器实测，README给出本地签名/HTTP测试步骤；任何GUI授权或权限弹窗由执行者停下报告，不代用户确认。
 - [ ] S8 系统媒体控制
   - 结果：**Linux mediaSession未注册MPRIS；计划souvlaki退路的D-Bus自动化检查通过。mac / pc / 实体媒体键待运行**。原生`navigator.mediaSession`存在，但30 min会话D-Bus记录没有MPRIS服务，不能据此声称媒体控制可用。
-  - 退路实测：souvlaki注册`org.mpris.MediaPlayer2.biu_m0`；D-Bus GetAll读到标题`Biu M0 native fixture`、艺术家、300 s时长和封面URL；发送Pause/Play，经Rust事件到前端，HTMLAudio分别记录`paused=true/false`。证据在`spikes/evidence/final-controls-dbus.txt`及摘要。
+  - 退路实测：souvlaki注册`org.mpris.MediaPlayer2.biu_m0`；D-Bus GetAll读到标题`Biu M0 native fixture`、艺术家、300 s时长和封面URL；发送Pause/Play，经Rust事件到前端，HTMLAudio分别记录`paused=true/false`。证据在`spikes/evidence/review-controls-dbus.txt`及摘要。
   - 缺口：真实桌面封面展示、物理媒体键、Mac正在播放和Windows SMTC未验证。当前原型元数据/状态是固定夹具，不是完整player_state同步；Mac/Windows souvlaki接线尚未实现，不把Linux退路结果当成跨平台通过。
 - 产出：spike 结果汇总，D1–D4 按结果确认或调整。
 
