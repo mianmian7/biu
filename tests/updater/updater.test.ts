@@ -12,7 +12,12 @@ vi.mock("electron-updater", () => ({
     },
   },
 }));
-vi.mock("../../electron/updater/update-mode", () => ({ detectUpdateMode: async () => mocks.mode }));
+vi.mock("../../electron/updater/update-mode", () => ({
+  detectUpdateMode: async () => mocks.mode,
+  disableAutoUpdate: () => {
+    mocks.mode = "manual";
+  },
+}));
 
 function makeUpdater() {
   return Object.assign(new EventEmitter(), {
@@ -37,6 +42,37 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("updater lifecycle", () => {
+  it("skips hourly checks after downloading", async () => {
+    const { setupAutoUpdater, stopCheckForUpdates } = await import("../../electron/updater");
+    await setupAutoUpdater({ getMainWindow: () => null });
+    updater.emit("update-downloaded", { downloadedFile: "/tmp/Biu.zip" });
+    await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1000);
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
+    stopCheckForUpdates();
+  });
+
+  it.each([
+    new Error("Code signature at URL file:///Applications/Biu.app did not pass validation"),
+    new Error("update does not satisfy code requirement"),
+    Object.assign(new Error("invalid update"), { code: "ERR_UPDATER_INVALID_SIGNATURE" }),
+  ])("downgrades late signature failures to manual and blocks installation: %s", async error => {
+    const send = vi.fn();
+    const { setupAutoUpdater, quitAndInstall, stopCheckForUpdates } = await import("../../electron/updater");
+    await setupAutoUpdater({ getMainWindow: () => ({ webContents: { send } }) as never });
+    updater.emit("update-downloaded", { downloadedFile: "/tmp/Biu.zip" });
+    updater.emit("error", error);
+    expect(send).toHaveBeenLastCalledWith(
+      "app:update-message",
+      expect.objectContaining({ status: "error", mode: "manual" }),
+    );
+    expect(updater.autoDownload).toBe(false);
+    expect(updater.autoInstallOnAppQuit).toBe(false);
+    expect(await quitAndInstall()).toBe(false);
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(mocks.mode).toBe("manual");
+    stopCheckForUpdates();
+  });
+
   it.each(["auto", "manual"])("configures %s and gates installation", async mode => {
     mocks.mode = mode;
     const { setupAutoUpdater, quitAndInstall, stopCheckForUpdates } = await import("../../electron/updater");

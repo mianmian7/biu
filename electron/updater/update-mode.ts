@@ -36,10 +36,20 @@ export function parseCodesignOutput(stderr: string): CodeSignatureKind {
 
 let cachedMode: Promise<UpdateMode> | undefined;
 
+// Keep IPC mode queries and install guards consistent after a native signature failure.
+export function disableAutoUpdate(): void {
+  cachedMode = Promise.resolve("manual");
+}
+
 export function detectUpdateMode(): Promise<UpdateMode> {
   cachedMode ??= (async () => {
     const { app } = await import("electron");
     const { default: log } = await import("electron-log");
+    const { default: isDev } = await import("electron-is-dev");
+    if (isDev || !app.isPackaged) {
+      log.info("[updater] mode=manual");
+      return "manual";
+    }
     const execPath = app.getPath("exe");
     let codeSignatureKind: CodeSignatureKind = "unsigned";
     let bundleParentWritable = false;

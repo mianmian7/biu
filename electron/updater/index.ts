@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { channel } from "../ipc/channel";
 import { classifyUpdateError } from "./classify-error";
-import { detectUpdateMode } from "./update-mode";
+import { detectUpdateMode, disableAutoUpdate } from "./update-mode";
 
 const { autoUpdater } = electronUpdater;
 let phase: "checking" | "downloading" | "downloaded" | "installing" = "checking";
@@ -27,7 +27,7 @@ export async function quitAndInstall() {
 async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => BrowserWindow | null }) {
   autoUpdater.logger = log;
   log.transports.file.level = "info";
-  const mode = await detectUpdateMode();
+  let mode = await detectUpdateMode();
   autoUpdater.autoDownload = mode === "auto";
   autoUpdater.autoInstallOnAppQuit = mode === "auto";
   autoUpdater.autoRunAppAfterInstall = true;
@@ -58,7 +58,18 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
 
   autoUpdater.on("error", error => {
     log.warn(`[updater] ${classifyUpdateError(error)} (${phase})`, error);
-    if (phase !== "downloading" && phase !== "installing") return;
+    const signatureFailure = /code[\s_-]*(?:requirement|sign(?:ature|ing))|ERR_UPDATER_INVALID_SIGNATURE/i.test(
+      `${(error as Error & { code?: string }).code ?? ""} ${error.message}`,
+    );
+    if (phase === "downloaded" && signatureFailure) {
+      mode = "manual";
+      disableAutoUpdate();
+      autoUpdater.autoDownload = false;
+      autoUpdater.autoInstallOnAppQuit = false;
+      log.warn("[updater] mode=manual (native signature validation failed)");
+    } else if (phase !== "downloading" && phase !== "installing") {
+      return;
+    }
     getMainWindow()?.webContents.send(channel.app.updateMessage, {
       status: "error",
       mode,
@@ -77,6 +88,7 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
   });
 
   const check = () => {
+    if (phase === "downloaded") return;
     autoUpdater.checkForUpdates().catch(error => {
       log.warn(`[updater] background check: ${classifyUpdateError(error)}`, error);
     });
