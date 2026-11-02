@@ -132,6 +132,10 @@ const ReleaseNoteModal = () => {
                   <Button color="primary" isLoading={status === "downloading"} onPress={startDownload}>
                     {status === "downloading" ? "正在下载" : "下载更新"}
                   </Button>
+                ) : mode === "auto" && status === "error" ? (
+                  <Button color="primary" onPress={startDownload}>
+                    重试下载
+                  </Button>
                 ) : status === "downloading" ? (
                   <span>正在下载 {downloadProgress?.percent.toFixed(2) ?? "0"}%</span>
                 ) : mode === "auto" && status === "idle" ? (

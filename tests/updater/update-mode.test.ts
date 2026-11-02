@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { parseCodesignOutput, resolveUpdateMode } from "../../electron/updater/update-mode";
@@ -46,6 +47,13 @@ describe("resolveUpdateMode", () => {
 });
 
 describe("parseCodesignOutput", () => {
+  it("parses the ad-hoc fixture including flags and absent team identifier", () => {
+    const stderr = readFileSync("tests/updater/fixtures/codesign-adhoc.txt", "utf8");
+    expect(stderr).toContain("Signature=adhoc");
+    expect(stderr).toContain("TeamIdentifier=not set");
+    expect(stderr).toContain("flags=0x2(adhoc)");
+    expect(parseCodesignOutput(stderr)).toBe("adhoc");
+  });
   // Representative codesign -dv --verbose=2 stderr fragments. No macOS host is
   // available here; on-device output must still be checked at the spike gate.
   it.each([
