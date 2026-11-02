@@ -8,6 +8,12 @@ import {
   handleDesktopLyricsCommand,
   startDesktopLyricsSync,
 } from "@/common/utils/desktop-lyrics";
+import {
+  getDesktopLyricsLineProgress,
+  markPlaybackAnchor,
+  resetPlaybackAnchor,
+  usePlaybackAnchor,
+} from "@/common/utils/playback-anchor";
 import { useLyricsStore } from "@/store/lyrics";
 import { usePlayList } from "@/store/play-list";
 import { usePlayProgress } from "@/store/play-progress";
@@ -38,6 +44,7 @@ const syncMock = () => (window as any).electron.syncDesktopLyrics as ReturnType<
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_000_000);
+  resetPlaybackAnchor();
   (window as any).electron = {
     getStore: vi.fn().mockResolvedValue(undefined),
     setStore: vi.fn().mockResolvedValue(undefined),
@@ -132,21 +139,26 @@ describe("computeDesktopLyricsPayload", () => {
       hasRomaji: false,
       lineStartMs: 1000,
       lineEndMs: 1000 + 1200,
-      positionMs: 2000,
+      anchor: usePlaybackAnchor.getState(),
+      offsetMs: 0,
       index: 0,
     });
     expect(payload.style.lineMode).toBe("double");
     expect(payload.style.showTranslation).toBe(true);
   });
 
-  test("does not highlight before the first line", () => {
+  test("shows the song title and prelude status before the first line", () => {
     useLyricsStore.getState().applyLyrics("[00:05.00]まだ");
     usePlayProgress.setState({ currentTime: 1 });
 
     const payload = computeDesktopLyricsPayload();
 
-    expect(payload.text).toBe("まだ");
+    expect(payload).toMatchObject({ index: -1, text: "星の歌 - 某UP", status: "前奏" });
     expect(payload.lineStartMs).toBeUndefined();
+    expect(payload.lineEndMs).toBeUndefined();
+
+    usePlayProgress.setState({ currentTime: 6 });
+    expect(computeDesktopLyricsPayload()).toMatchObject({ index: 0, text: "まだ" });
   });
 
   test("shows the song title and status when there are no lyrics", () => {
@@ -159,20 +171,67 @@ describe("computeDesktopLyricsPayload", () => {
 });
 
 describe("desktop lyrics sync", () => {
-  test("does not resend while playback advances as the window extrapolates, resends after a seek", () => {
-    useLyricsStore.getState().applyLyrics("[00:01.00]一行目\n[00:30.00]二行目");
-    usePlayProgress.setState({ currentTime: 1 });
+  test("does not resend during four seconds within a long line, but its cached anchor reaches 100%", () => {
+    useLyricsStore.getState().applyLyrics("[04:15.77]打ち砕いて欲しいから この空虚\n[04:30.00]次の行");
+    usePlayProgress.setState({ currentTime: 255.77 });
+    markPlaybackAnchor({ currentTime: 255.77, playbackRate: 1 }, true);
     const stop = startDesktopLyricsSync();
     try {
       const sent = syncMock().mock.calls.length;
+      const payload = syncMock().mock.lastCall![0] as DesktopLyricsPayload;
+      expect(payload.lineEndMs! - payload.lineStartMs!).toBe(4480);
+      for (let elapsed = 250; elapsed <= 4000; elapsed += 250) {
+        vi.advanceTimersByTime(250);
+        usePlayProgress.setState({ currentTime: 255.77 + elapsed / 1000 });
+        expect(syncMock().mock.calls.length).toBe(sent);
+      }
+      expect(getDesktopLyricsLineProgress(payload, payload.anchor.at + 4480)).toBeGreaterThanOrEqual(1);
+    } finally {
+      stop();
+    }
+  });
 
-      vi.advanceTimersByTime(250);
-      usePlayProgress.setState({ currentTime: 1.25 });
-      expect(syncMock().mock.calls.length).toBe(sent);
-
-      usePlayProgress.setState({ currentTime: 10 });
+  test("sends exactly one anchor for seeking and one for seeked", () => {
+    useLyricsStore.getState().applyLyrics("[00:01.00]一行目");
+    const stop = startDesktopLyricsSync();
+    try {
+      const sent = syncMock().mock.calls.length;
+      markPlaybackAnchor({ currentTime: 100, playbackRate: 1 }, false);
       expect(syncMock().mock.calls.length).toBe(sent + 1);
-      expect(syncMock().mock.lastCall?.[0].positionMs).toBe(10_000);
+      expect(syncMock().mock.lastCall?.[0].anchor).toMatchObject({ mediaMs: 100000, running: false });
+      markPlaybackAnchor({ currentTime: 100, playbackRate: 1 }, true);
+      expect(syncMock().mock.calls.length).toBe(sent + 2);
+      expect(syncMock().mock.lastCall?.[0].anchor).toMatchObject({ mediaMs: 100000, running: true });
+    } finally {
+      stop();
+    }
+  });
+
+  test("sends a changed rate once and extrapolates at that rate", () => {
+    useLyricsStore.getState().applyLyrics("[04:15.77]打ち砕いて欲しいから この空虚");
+    usePlayProgress.setState({ currentTime: 255.77 });
+    const stop = startDesktopLyricsSync();
+    try {
+      const sent = syncMock().mock.calls.length;
+      markPlaybackAnchor({ currentTime: 255.77, playbackRate: 1.5 }, true);
+      expect(syncMock().mock.calls.length).toBe(sent + 1);
+      const payload = syncMock().mock.lastCall![0] as DesktopLyricsPayload;
+      expect(payload.anchor.rate).toBe(1.5);
+      expect(getDesktopLyricsLineProgress(payload, payload.anchor.at + 1000)).toBeCloseTo(1500 / 4480);
+    } finally {
+      stop();
+    }
+  });
+
+  test("sends a changed offset without changing the anchor", () => {
+    const stop = startDesktopLyricsSync();
+    try {
+      const sent = syncMock().mock.calls.length;
+      const seq = usePlaybackAnchor.getState().seq;
+      useLyricsStore.setState({ offset: 500 });
+      expect(syncMock().mock.calls.length).toBe(sent + 1);
+      expect(syncMock().mock.lastCall?.[0]).toMatchObject({ offsetMs: 500, anchor: { seq } });
+      expect(usePlaybackAnchor.getState().seq).toBe(seq);
     } finally {
       stop();
     }

@@ -14,6 +14,7 @@ import {
 } from "@remixicon/react";
 import clsx from "classnames";
 
+import { anchorNow, getDesktopLyricsLineProgress } from "@/common/utils/playback-anchor";
 import DesktopLyricsView from "@/components/desktop-lyrics-view";
 
 /** 顶部工具栏行高：始终预留，悬停显示工具栏时窗口高度不变 */
@@ -22,8 +23,6 @@ const TOOLBAR_HEIGHT = 34;
 const CONTENT_PADDING_Y = 6;
 /** 锁定时悬停解锁按钮在指针静止多久后隐藏 */
 const LOCKED_HOVER_HIDE_MS = 1500;
-/** 播放中窗口端最多向前插值的时长，主窗口卡住时不至于跑飞 */
-const MAX_EXTRAPOLATE_MS = 1500;
 
 /** 把窗口背景透明化，只保留歌词内容 */
 const useTransparentWindowStyle = () => {
@@ -115,14 +114,7 @@ const DesktopLyrics = () => {
   /** 按最近一次同步的位置与时间戳插值出当前行进度 */
   const getProgress = useCallback(() => {
     const current = payloadRef.current;
-    if (!current || typeof current.lineStartMs !== "number" || typeof current.lineEndMs !== "number") return 0;
-
-    const elapsed = current.isPlaying
-      ? Math.min(MAX_EXTRAPOLATE_MS, (Date.now() - current.syncedAt) * current.rate)
-      : 0;
-    const position = current.positionMs + Math.max(0, elapsed);
-    const duration = Math.max(1, current.lineEndMs - current.lineStartMs);
-    return (position - current.lineStartMs) / duration;
+    return current ? getDesktopLyricsLineProgress(current, anchorNow()) : 0;
   }, []);
 
   // 内容高度变化时通知主进程调整窗口高度

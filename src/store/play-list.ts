@@ -10,6 +10,7 @@ import { immer } from "zustand/middleware/immer";
 import { getPlayModeList, PlayMode } from "@/common/constants/audio";
 import { getAudioUrl, getDashUrl, isUrlValid } from "@/common/utils/audio";
 import { beginPlayReport, endPlayReport, reportHeartbeat } from "@/common/utils/play-report";
+import { markPlaybackAnchor, resetPlaybackAnchor, usePlaybackAnchor } from "@/common/utils/playback-anchor";
 import { stripHtml } from "@/common/utils/str";
 import { formatUrlProtocol } from "@/common/utils/url";
 import { getAudioSongInfo } from "@/service/audio-song-info";
@@ -396,12 +397,19 @@ export const usePlayList = create<State & Action>()(
               }
             };
 
+            audio.onplaying = () => markPlaybackAnchor(audio, true);
+            audio.onwaiting = () => markPlaybackAnchor(audio, false);
+            audio.onseeking = () => markPlaybackAnchor(audio, false);
+            audio.onloadstart = () => resetPlaybackAnchor();
+
             audio.onseeked = () => {
               updatePositionState();
+              markPlaybackAnchor(audio, !audio.paused);
             };
 
             audio.onratechange = () => {
               updatePositionState();
+              markPlaybackAnchor(audio, usePlaybackAnchor.getState().running);
             };
 
             audio.onplay = () => {
@@ -415,6 +423,7 @@ export const usePlayList = create<State & Action>()(
             };
 
             audio.onpause = () => {
+              markPlaybackAnchor(audio, false);
               set({ isPlaying: false });
               updatePlaybackState();
               updatePositionState();

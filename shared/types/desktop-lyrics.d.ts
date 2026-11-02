@@ -46,6 +46,17 @@ declare global {
     unplayed: [string, string];
   }
 
+  /** 媒体事件产生的播放锚点，位置不含歌词偏移。 */
+  interface DesktopLyricsAnchor {
+    mediaMs: number;
+    /** performance.timeOrigin + performance.now()，毫秒 */
+    at: number;
+    rate: number;
+    running: boolean;
+    /** 每次重锚递增 */
+    seq: number;
+  }
+
   /** 桌面悬浮歌词窗口的展示内容 */
   interface DesktopLyricsPayload {
     /** 设置里是否开启桌面歌词 */
@@ -68,16 +79,14 @@ declare global {
     hasTranslation: boolean;
     /** 整首歌是否有罗马音 */
     hasRomaji: boolean;
-    /** 当前行开始时间（毫秒，已含偏移） */
+    /** 当前行开始时间（歌词时间轴，毫秒） */
     lineStartMs?: number;
     /** 当前行进度高亮结束时间（毫秒） */
     lineEndMs?: number;
-    /** 同步时的播放位置（毫秒，已含偏移） */
-    positionMs: number;
-    /** 同步时刻（Date.now()），桌面歌词窗口据此插值播放位置 */
-    syncedAt: number;
-    /** 播放倍速 */
-    rate: number;
+    /** 最近一次媒体事件的播放锚点 */
+    anchor: DesktopLyricsAnchor;
+    /** 歌词偏移（毫秒） */
+    offsetMs: number;
     /** 是否正在播放 */
     isPlaying: boolean;
     /** 当前播放项 id，用于切歌时重置动画 */

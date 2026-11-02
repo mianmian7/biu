@@ -65,49 +65,71 @@ interface DesktopLyricsAnchor {
 
 ### T1 锚点模块（新文件 `src/common/utils/playback-anchor.ts`）
 
-- [ ] 导出 `anchorNow()`（见设计 §1），供主窗口和桌面歌词窗口共用。
-- [ ] 导出 zustand store `usePlaybackAnchor`，状态为 `DesktopLyricsAnchor`。初始值 `{ mediaMs: 0, at: anchorNow(), rate: 1, running: false, seq: 0 }`。
-- [ ] 导出 `markPlaybackAnchor(media: Pick<HTMLMediaElement, "currentTime" | "playbackRate">, running: boolean, now = anchorNow())`：写入 `mediaMs = media.currentTime * 1000`（不取整）、`at = now`、`rate = media.playbackRate || 1`、`running`，并将 `seq` 加 1。
-- [ ] 导出 `resetPlaybackAnchor(now = anchorNow())`：`mediaMs = 0`、`running = false`，`seq` 加 1（切歌用）。
-- [ ] 导出纯函数 `getAnchorPositionMs(anchor: DesktopLyricsAnchor, offsetMs: number, now: number)`：返回 `anchor.mediaMs + (anchor.running ? Math.max(0, now - anchor.at) * anchor.rate : 0) + offsetMs`。
+- [x] 导出 `anchorNow()`（见设计 §1），供主窗口和桌面歌词窗口共用。
+  - 结果：共用 `performance.timeOrigin + performance.now()`；时钟测试通过。
+- [x] 导出 zustand store `usePlaybackAnchor`，状态为 `DesktopLyricsAnchor`。初始值 `{ mediaMs: 0, at: anchorNow(), rate: 1, running: false, seq: 0 }`。
+  - 结果：已新增 store，初始状态符合定义。
+- [x] 导出 `markPlaybackAnchor(media: Pick<HTMLMediaElement, "currentTime" | "playbackRate">, running: boolean, now = anchorNow())`：写入 `mediaMs = media.currentTime * 1000`（不取整）、`at = now`、`rate = media.playbackRate || 1`、`running`，并将 `seq` 加 1。
+  - 结果：精确媒体位置、速率兜底、时间戳和序号递增均有测试。
+- [x] 导出 `resetPlaybackAnchor(now = anchorNow())`：`mediaMs = 0`、`running = false`，`seq` 加 1（切歌用）。
+  - 结果：重置位置与时间戳，冻结并递增序号；未要求重置的 rate 保留。
+- [x] 导出纯函数 `getAnchorPositionMs(anchor: DesktopLyricsAnchor, offsetMs: number, now: number)`：返回 `anchor.mediaMs + (anchor.running ? Math.max(0, now - anchor.at) * anchor.rate : 0) + offsetMs`。
+  - 结果：无上限外推、倍速、冻结、时钟负差和偏移测试通过。
 
 ### T2 接线到播放器（`src/store/play-list.ts`，`init` 里的 audio 事件处理，约 375-440 行）
 
-- [ ] 在已有的 `audio.onpause`、`audio.onseeked`、`audio.onratechange` 回调里追加 `markPlaybackAnchor` 调用，参数分别为 `false`、`!audio.paused`、`usePlaybackAnchor.getState().running`。不删除原有逻辑。
-- [ ] 新增 `audio.onplaying = () => markPlaybackAnchor(audio, true)`、`audio.onwaiting = () => markPlaybackAnchor(audio, false)`、`audio.onseeking = () => markPlaybackAnchor(audio, false)`、`audio.onloadstart = () => resetPlaybackAnchor()`。先 grep 确认这些属性在本文件其他地方没有被赋值；如果已有赋值，把调用追加进原回调，不要覆盖。
-- [ ] `ontimeupdate` 不调用锚点函数。
+- [x] 在已有的 `audio.onpause`、`audio.onseeked`、`audio.onratechange` 回调里追加 `markPlaybackAnchor` 调用，参数分别为 `false`、`!audio.paused`、`usePlaybackAnchor.getState().running`。不删除原有逻辑。
+  - 结果：保留原逻辑，新增媒体事件锚点；事件测试通过。
+- [x] 新增 `audio.onplaying = () => markPlaybackAnchor(audio, true)`、`audio.onwaiting = () => markPlaybackAnchor(audio, false)`、`audio.onseeking = () => markPlaybackAnchor(audio, false)`、`audio.onloadstart = () => resetPlaybackAnchor()`。先 grep 确认这些属性在本文件其他地方没有被赋值；如果已有赋值，把调用追加进原回调，不要覆盖。
+  - 结果：修改前全仓搜索确认无赋值，已新增四个回调并测试。
+- [x] `ontimeupdate` 不调用锚点函数。
+  - 结果：原回调未改；新增测试确认 onplay / timeupdate 不递增锚点序号。
 
 ### T3 数据类型（`shared/types/desktop-lyrics.d.ts`）
 
-- [ ] 新增全局类型 `DesktopLyricsAnchor`（字段见设计 §1）。
-- [ ] `DesktopLyricsPayload`：删除 `positionMs`、`syncedAt`、`rate`，新增 `anchor: DesktopLyricsAnchor` 和 `offsetMs: number`（歌词偏移，毫秒）。保留 `isPlaying`，工具栏的播放/暂停图标在用它。
-- [ ] 全仓 grep `positionMs`、`syncedAt`、`payload.rate`，把引用改为新字段，包括 `electron/` 和 `tests/`。
+- [x] 新增全局类型 `DesktopLyricsAnchor`（字段见设计 §1）。
+  - 结果：已定义 mediaMs / at / rate / running / seq。
+- [x] `DesktopLyricsPayload`：删除 `positionMs`、`syncedAt`、`rate`，新增 `anchor: DesktopLyricsAnchor` 和 `offsetMs: number`（歌词偏移，毫秒）。保留 `isPlaying`，工具栏的播放/暂停图标在用它。
+  - 结果：数据类型与收发端已适配，工具栏保持原行为。
+- [x] 全仓 grep `positionMs`、`syncedAt`、`payload.rate`，把引用改为新字段，包括 `electron/` 和 `tests/`。
+  - 结果：旧 payload 字段引用已清除；positionMs 仅保留为发送端换行计算的局部变量，主进程无旧字段引用。
 
 ### T4 主窗口发送端（`src/common/utils/desktop-lyrics.ts`）
 
-- [ ] `computeDesktopLyricsPayload(now = anchorNow())`：base 里改为 `anchor: usePlaybackAnchor.getState()`、`offsetMs: offset`。换行判断（`getActiveLyricIndex`）仍用 `usePlayProgress.currentTime * 1000 + offset`。
-- [ ] 选项 D：`activeIndex < 0 && lyrics.length > 0` 时走“歌名 + 状态”分支，`index = -1`，`status = "前奏"`。删除“还没唱到第一句时展示第一句”的逻辑（第 79-84 行）和对应注释；`isBeforeFirstLine` 已无用，一并删除。无歌词时（`lyrics.length === 0`）仍用 `getStatusText()`。
-- [ ] `syncPayload`：删除 `POSITION_DRIFT_MS`、`lastSent` 和按偏差补发的逻辑（第 126-148 行）。改为：序列化整个数据（锚点含 `seq`，会参与比较），与上次不同才发送。`timeupdate` 在同一行内不再触发发送。
-- [ ] `startDesktopLyricsSync`：新增 `usePlaybackAnchor.subscribe(() => syncPayload())`，并加入 `unsubscribers`。`usePlayProgress` 的订阅保留，用于换行。stop 时清理 `lastSerialized`。
+- [x] `computeDesktopLyricsPayload(now = anchorNow())`：base 里改为 `anchor: usePlaybackAnchor.getState()`、`offsetMs: offset`。换行判断（`getActiveLyricIndex`）仍用 `usePlayProgress.currentTime * 1000 + offset`。
+  - 结果：base 与换行位置已适配。最小接口调整：删除已无用途的 now 参数；快照只读取事件锚点，不采集新的同步时刻，现有调用均无参数。
+- [x] 选项 D：`activeIndex < 0 && lyrics.length > 0` 时走“歌名 + 状态”分支，`index = -1`，`status = "前奏"`。删除“还没唱到第一句时展示第一句”的逻辑（第 79-84 行）和对应注释；`isBeforeFirstLine` 已无用，一并删除。无歌词时（`lyrics.length === 0`）仍用 `getStatusText()`。
+  - 结果：首句前显示歌名 + 前奏，无歌词状态保持原逻辑，进入首句的转换测试通过。
+- [x] `syncPayload`：删除 `POSITION_DRIFT_MS`、`lastSent` 和按偏差补发的逻辑（第 126-148 行）。改为：序列化整个数据（锚点含 `seq`，会参与比较），与上次不同才发送。`timeupdate` 在同一行内不再触发发送。
+  - 结果：整包 JSON 去重，无定时器或偏差补发；4 秒内每 250ms 推进进度，发送次数不变。
+- [x] `startDesktopLyricsSync`：新增 `usePlaybackAnchor.subscribe(() => syncPayload())`，并加入 `unsubscribers`。`usePlayProgress` 的订阅保留，用于换行。stop 时清理 `lastSerialized`。
+  - 结果：新增锚点订阅并统一释放；进度订阅和 stop 清理已保留。
 
 ### T5 窗口接收端（`src/pages/desktop-lyrics/index.tsx`）
 
-- [ ] 删除 `MAX_EXTRAPOLATE_MS`（第 26 行）。
-- [ ] `getProgress`（第 116-126 行）改为调用 T1 的纯函数：`position = getAnchorPositionMs(current.anchor, current.offsetMs, anchorNow())`，返回 `(position - lineStartMs) / max(1, lineEndMs - lineStartMs)`。缺少 `lineStartMs`/`lineEndMs` 时仍返回 0。
-- [ ] 为了方便测试，把上面的进度计算提成导出的纯函数 `getDesktopLyricsLineProgress(payload, now)`，放在 `src/common/utils/playback-anchor.ts`，`getProgress` 调用它。
-- [ ] 初始拉取逻辑（第 103-108 行）保持不变。
+- [x] 删除 `MAX_EXTRAPOLATE_MS`（第 26 行）。
+  - 结果：窗口端已删除 1500ms 外推上限。
+- [x] `getProgress`（第 116-126 行）改为调用 T1 的纯函数：`position = getAnchorPositionMs(current.anchor, current.offsetMs, anchorNow())`，返回 `(position - lineStartMs) / max(1, lineEndMs - lineStartMs)`。缺少 `lineStartMs`/`lineEndMs` 时仍返回 0。
+  - 结果：通过提取的行进度函数计算；缺少时间、零时长、暂停冻结和长句均有测试。
+- [x] 为了方便测试，把上面的进度计算提成导出的纯函数 `getDesktopLyricsLineProgress(payload, now)`，放在 `src/common/utils/playback-anchor.ts`，`getProgress` 调用它。
+  - 结果：已导出并由窗口直接调用，窗口以自己的 anchorNow() 持续外推。
+- [x] 初始拉取逻辑（第 103-108 行）保持不变。
+  - 结果：主动拉取缓存的逻辑未改，缓存锚点无需重置即可外推。
 
 ### T6 主进程（`electron/desktop-lyrics.ts`、`electron/ipc/desktop-lyrics.ts`）
 
-- [ ] 只做类型适配：`hasVisualChange` 不比较锚点；`getLastDesktopLyricsPayload` 原样返回缓存。确认主进程没有读取被删除的字段。
+- [x] 只做类型适配：`hasVisualChange` 不比较锚点；`getLastDesktopLyricsPayload` 原样返回缓存。确认主进程没有读取被删除的字段。
+  - 结果：检查确认两处逻辑原本即满足要求、无旧字段引用，因此 electron/desktop-lyrics.ts 和 electron/ipc/desktop-lyrics.ts 均未改动。
 
 ### T7 测试
 
-- [ ] 新文件 `tests/playback-anchor.test.ts`：
+- [x] 新文件 `tests/playback-anchor.test.ts`：
+  - 结果：9 项测试通过，覆盖 4480ms 长句、暂停、速率、偏移、时钟负差、序号及重置。
   - `getAnchorPositionMs`：`running=true`、`rate=1`，经过 4480ms 位置 +4480；`rate=1.5`，经过 1000ms 位置 +1500；`running=false` 时无论经过多久位置都不变；`now < at` 时不倒退；`offsetMs` 会加到结果上。
   - `getDesktopLyricsLineProgress`：一行 `[255770, 260250]`（4480ms，取自 p=2「打ち砕いて欲しいから この空虚」），锚点在 255770、`running=true`：+2240ms 时为 0.5，+4480ms 时 ≥1（**长于 1.5s 的句子能扫到 100%**）；同一行在 +3000ms 时把锚点改为 `running=false`，之后进度保持在 3000/4480（**暂停冻结**）。
   - `markPlaybackAnchor`：用 `{ currentTime: 12.345, playbackRate: 2 }` 调用后，`mediaMs = 12345`、`rate = 2`、`seq` 加 1。`resetPlaybackAnchor` 后 `mediaMs = 0`、`running = false`。
-- [ ] `tests/desktop-lyrics.test.ts`：
+- [x] `tests/desktop-lyrics.test.ts`：
+  - 结果：15 项测试通过，包含同一行 4 秒不补发、seek 两次重锚、倍速、偏移不重锚及前奏切入首句。
   - 重写 `does not resend while playback advances as the window extrapolates, resends after a seek`（第 162 行）为两个测试：
     - (a) 同一行内 `currentTime` 每 250ms 推进一次，持续 4s：发送次数不变；用最后一次发送的数据和 `getDesktopLyricsLineProgress(payload, 锚点.at + 4480)` 算出的进度 ≥1。这是长句回归测试。
     - (b) 调用 `markPlaybackAnchor({ currentTime: 100, playbackRate: 1 }, false)`（模拟 seeking）后恰好发送 1 次，`payload.anchor.mediaMs === 100000`、`running === false`；再以 `running=true` 调用（模拟 seeked），又发送 1 次（**seek 重锚**）。
@@ -115,17 +137,25 @@ interface DesktopLyricsAnchor {
   - 新增：设置 `useLyricsStore` 的 `offset = 500` 后，`payload.offsetMs === 500`，且 `anchor.seq` 不变。
   - 改写 `does not highlight before the first line`（第 142 行）：歌词 `[00:05.00]まだ`、`currentTime = 1` 时，`payload` 应满足 `{ index: -1, text: "星の歌 - 某UP", status: "前奏" }`，且 `lineStartMs` 为 `undefined`（**选项 D**）。新增一个断言：`currentTime = 6` 时 `index = 0`、`text = "まだ"`。
   - `beforeEach` 里调用 `resetPlaybackAnchor()`，避免测试之间互相影响。
-- [ ] `tests/play-list.test.ts` 的 `init sets audio props and handlers`：补充断言 `onplaying`、`onwaiting`、`onseeking`、`onloadstart` 都是函数；调用 `audio.onseeking()` 后 `usePlaybackAnchor.getState().seq` 加 1、`running === false`。
+- [x] `tests/play-list.test.ts` 的 `init sets audio props and handlers`：补充断言 `onplaying`、`onwaiting`、`onseeking`、`onloadstart` 都是函数；调用 `audio.onseeking()` 后 `usePlaybackAnchor.getState().seq` 加 1、`running === false`。
+  - 结果：12 项测试通过，额外覆盖全部 7 个媒体事件及 onplay / timeupdate 不重锚。
 
 ### T8 验收（执行者跑完，把实际输出贴进本项结果说明）
 
-- [ ] `pnpm vitest run tests/playback-anchor.test.ts tests/desktop-lyrics.test.ts tests/desktop-lyrics-view.test.tsx tests/play-list.test.ts`：全部通过。
-- [ ] `pnpm vitest run`：全部通过。如有失败，确认是否与本次改动无关并写明。
+- [x] `pnpm vitest run tests/playback-anchor.test.ts tests/desktop-lyrics.test.ts tests/desktop-lyrics-view.test.tsx tests/play-list.test.ts`：全部通过。
+  - 实际输出（Node v22.17.1 / pnpm 10.24.0）：`Test Files 4 passed (4)`；`Tests 38 passed (38)`；`Duration 13.66s`。
+- [x] `pnpm vitest run`：全部通过。如有失败，确认是否与本次改动无关并写明。
+  - 实际输出（Node v22.17.1）：`Test Files 16 passed (16)`；`Tests 197 passed (197)`；`Duration 37.51s`。
 - [ ] `pnpm exec tsc --noEmit -p tsconfig.json`：0 错误。如果项目的类型检查入口不是这个，用项目已有的命令并写明。
-- [ ] `pnpm exec eslint` 只检查本次改动的文件：0 错误。
+  - 阻塞：实际输出 `typecheck exit=2`；`baseline/current errors: 125 125`；`normalized diagnostics identical: True`。从 ff1e6a6 导出临时基线、共用同一依赖并运行同一命令，规范化 node_modules 路径后错误完全相同。118 个依赖声明错误，另有 electron/ipc/lyrics.ts 的 3 个类型导出错误、src/layout/side/collection/index.tsx 的 3 个类型错误、src/pages/user-profile/favorites/index.tsx 的 1 个缺失 type 错误。未修改这些范围外文件；等待 owner 处理或明确验收方式。
+- [x] `pnpm exec eslint` 只检查本次改动的文件：0 错误。
+  - 实际输出：8 个改动的 ts / tsx / d.ts 文件无诊断，`eslint exit=0`。
 - [ ] `pnpm build`：成功。
-- [ ] `git diff --stat`：只出现本计划列出的文件，外加 `docs/plans/karaoke-sync.md` 的勾选和结果说明。
-- [ ] `grep -rn "MAX_EXTRAPOLATE_MS\|POSITION_DRIFT_MS\|syncedAt" src electron shared tests`：无结果。
+  - 阻塞：Node v22.17.1 下，实际输出 `ready built in 36.5 s`，Electron main / preload / worker 已打包；x64 / arm64 的 AppImage、deb 已生成，但 RPM 阶段报 `to build rpm, executable rpmbuild is required`。入口的既有 catch 吞掉错误，退出码 0 不代表构建成功，故不勾选。未安装系统软件或修改构建入口，等待 owner 准备 rpmbuild 环境。
+- [x] `git diff --stat`：只出现本计划列出的文件，外加 `docs/plans/karaoke-sync.md` 的勾选和结果说明。
+  - 结果：仅计划文件、锚点模块与测试、发送端、接收端、播放器、数据类型及两处既有测试，共 9 个文件；未改主 checkout 或其他分支。计划快照按用户本次授权作为首个本地提交 99feff8，后续也只做本地提交。
+- [x] `grep -rn "MAX_EXTRAPOLATE_MS\|POSITION_DRIFT_MS\|syncedAt" src electron shared tests`：无结果。
+  - 实际输出：无匹配，`removed-fields grep exit=1`（grep 无匹配的预期退出码）。
 
 ## 不做
 

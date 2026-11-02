@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
 
 import { PlayMode } from "@/common/constants/audio";
+import { resetPlaybackAnchor, usePlaybackAnchor } from "@/common/utils/playback-anchor";
 import { usePlayList } from "@/store/play-list";
 
 vi.mock("@/common/utils/audio", () => ({
@@ -60,6 +61,7 @@ vi.mock("@heroui/react", async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   usePlayList.getState().clear();
+  resetPlaybackAnchor();
 });
 
 describe("play-list store", () => {
@@ -81,6 +83,39 @@ describe("play-list store", () => {
     expect(audio.muted).toBe(false);
     expect(audio.playbackRate).toBe(1);
     expect(typeof audio.onplay).toBe("function");
+    expect(typeof audio.onplaying).toBe("function");
+    expect(typeof audio.onwaiting).toBe("function");
+    expect(typeof audio.onseeking).toBe("function");
+    expect(typeof audio.onloadstart).toBe("function");
+    const seq = usePlaybackAnchor.getState().seq;
+    audio.onseeking!.call(audio, new Event("seeking"));
+    expect(usePlaybackAnchor.getState()).toMatchObject({ seq: seq + 1, running: false });
+  });
+
+  test("anchors media events but leaves timeupdate and onplay unanchored", async () => {
+    const s = usePlayList.getState();
+    await s.init();
+    const audio = s.getAudio();
+    audio.currentTime = 12.345;
+    const seq = usePlaybackAnchor.getState().seq;
+    audio.onplay!.call(audio, new Event("play"));
+    audio.ontimeupdate!.call(audio, new Event("timeupdate"));
+    expect(usePlaybackAnchor.getState().seq).toBe(seq);
+
+    audio.onplaying!.call(audio, new Event("playing"));
+    expect(usePlaybackAnchor.getState()).toMatchObject({ mediaMs: 12345, running: true, seq: seq + 1 });
+    audio.onwaiting!.call(audio, new Event("waiting"));
+    expect(usePlaybackAnchor.getState()).toMatchObject({ running: false, seq: seq + 2 });
+    audio.playbackRate = 1.5;
+    audio.onratechange!.call(audio, new Event("ratechange"));
+    expect(usePlaybackAnchor.getState()).toMatchObject({ rate: 1.5, running: false, seq: seq + 3 });
+    audio.onseeked!.call(audio, new Event("seeked"));
+    expect(usePlaybackAnchor.getState()).toMatchObject({ running: !audio.paused, seq: seq + 4 });
+    audio.onpause!.call(audio, new Event("pause"));
+    expect(usePlaybackAnchor.getState()).toMatchObject({ running: false, seq: seq + 5 });
+    audio.onloadstart!.call(audio, new Event("loadstart"));
+    expect(usePlaybackAnchor.getState()).toMatchObject({ mediaMs: 0, running: false, seq: seq + 6 });
+    audio.playbackRate = 1;
   });
 
   test("setVolume, setRate, setPlayMode", async () => {

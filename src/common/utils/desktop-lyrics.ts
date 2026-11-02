@@ -12,6 +12,8 @@ import {
   resolveDesktopLyricsStyle,
 } from "@shared/settings/desktop-lyrics";
 
+import { usePlaybackAnchor } from "./playback-anchor";
+
 /** 判断当前渲染进程是否是子窗口（迷你播放器/桌面歌词） */
 function isSubWindow() {
   const hash = window.location.hash;
@@ -67,21 +69,17 @@ function getStatusText() {
  * 以主窗口的播放/歌词状态为准，通过 IPC 交给主进程再转发给桌面歌词窗口，
  * 这样主窗口缩到托盘/最小化时桌面歌词仍然可以正常更新。
  */
-export function computeDesktopLyricsPayload(now = Date.now()): DesktopLyricsPayload {
+export function computeDesktopLyricsPayload(): DesktopLyricsPayload {
   const settings = useSettings.getState();
-  const { playId, isPlaying, rate } = usePlayList.getState();
+  const { playId, isPlaying } = usePlayList.getState();
   const playItem = findPlayItem(playId);
   const { lyrics, translatedLyrics, romajiLyrics, offset } = useLyricsStore.getState();
-  const positionMs = Math.round(usePlayProgress.getState().currentTime * 1000 + offset);
+  const positionMs = usePlayProgress.getState().currentTime * 1000 + offset;
   const style = resolveDesktopLyricsStyle(settings.desktopLyricsStyle);
 
-  const activeIndex = getActiveLyricIndex(lyrics, positionMs);
-  // 还没唱到第一句时展示第一句（与顶部歌词栏保持一致）
-  const index = activeIndex >= 0 ? activeIndex : lyrics.length ? 0 : -1;
+  const index = getActiveLyricIndex(lyrics, positionMs);
   const line = index >= 0 ? lyrics[index] : undefined;
   const nextLine = index >= 0 ? lyrics[index + 1] : undefined;
-  // 未唱到第一句时不高亮
-  const isBeforeFirstLine = activeIndex < 0;
 
   const base = {
     enabled: Boolean(settings.showDesktopLyrics),
@@ -89,9 +87,8 @@ export function computeDesktopLyricsPayload(now = Date.now()): DesktopLyricsPayl
     active: Boolean(playItem),
     hasTranslation: translatedLyrics.length > 0,
     hasRomaji: romajiLyrics.length > 0,
-    positionMs,
-    syncedAt: now,
-    rate: Number(rate) || 1,
+    anchor: usePlaybackAnchor.getState(),
+    offsetMs: offset,
     isPlaying: Boolean(isPlaying),
     playId,
     index,
@@ -104,7 +101,11 @@ export function computeDesktopLyricsPayload(now = Date.now()): DesktopLyricsPayl
     const title = playItem
       ? [playItem.pageTitle || playItem.title, playItem.ownerName].filter(Boolean).join(" - ")
       : "";
-    return { ...base, text: title || undefined, status: playItem ? getStatusText() : undefined };
+    return {
+      ...base,
+      text: title || undefined,
+      status: playItem ? (lyrics.length > 0 ? "前奏" : getStatusText()) : undefined,
+    };
   }
 
   return {
@@ -113,38 +114,23 @@ export function computeDesktopLyricsPayload(now = Date.now()): DesktopLyricsPayl
     romaji: getCompanionByTime(romajiLyrics, line.time),
     translation: getCompanionByTime(translatedLyrics, line.time),
     nextText: nextLine?.text,
-    lineStartMs: isBeforeFirstLine ? undefined : line.time,
-    lineEndMs: isBeforeFirstLine ? undefined : getLineHighlightEnd(line.text, line.time, nextLine?.time),
+    lineStartMs: line.time,
+    lineEndMs: getLineHighlightEnd(line.text, line.time, nextLine?.time),
   };
 }
 
-/** 只比较展示相关字段：播放中位置每次 timeupdate 都会变，由窗口端插值，不必每次同步 */
-function serializeForCompare(payload: DesktopLyricsPayload) {
-  return JSON.stringify({ ...payload, positionMs: 0, syncedAt: 0 });
-}
-
-/** 播放中时窗口端插值误差超过该值才重新同步位置 */
-const POSITION_DRIFT_MS = 120;
-
 let isSyncStarted = false;
 let lastSerialized = "";
-let lastSent: DesktopLyricsPayload | null = null;
 
-/** 计算内容快照，并在内容或播放位置明显变化时同步给主进程 */
+/** 只在锚点或可见内容变化时同步，不按时间或位置偏差补发。 */
 function syncPayload() {
   if (!window.electron?.syncDesktopLyrics) return;
 
   const payload = computeDesktopLyricsPayload();
-  const serialized = serializeForCompare(payload);
-
-  if (serialized === lastSerialized && lastSent) {
-    const elapsed = lastSent.isPlaying ? (payload.syncedAt - lastSent.syncedAt) * lastSent.rate : 0;
-    const expected = lastSent.positionMs + elapsed;
-    if (Math.abs(expected - payload.positionMs) < POSITION_DRIFT_MS) return;
-  }
+  const serialized = JSON.stringify(payload);
+  if (serialized === lastSerialized) return;
 
   lastSerialized = serialized;
-  lastSent = payload;
   window.electron.syncDesktopLyrics(payload);
 }
 
@@ -223,6 +209,7 @@ export function startDesktopLyricsSync() {
   void useLyricsStore.getState().load();
 
   const unsubscribers = [
+    usePlaybackAnchor.subscribe(() => syncPayload()),
     usePlayList.subscribe((state, prevState) => {
       if (state.playId !== prevState.playId) {
         void useLyricsStore.getState().load();
@@ -286,7 +273,6 @@ export function startDesktopLyricsSync() {
   return () => {
     isSyncStarted = false;
     lastSerialized = "";
-    lastSent = null;
     unsubscribers.forEach(unsubscribe => unsubscribe());
     offToggleRequested?.();
     offLockToggleRequested?.();
