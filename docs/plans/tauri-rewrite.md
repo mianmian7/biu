@@ -179,7 +179,7 @@ Rust → 前端事件（沿用 channel 名作为事件名）：`auto-lyrics:prog
 | # | 内容 | 机器 | 通过标准 | 不通过时的退路 |
 |---|---|---|---|---|
 | S1 | Mac WKWebView 经 `biu-media://` 播放 B 站 fMP4 FLAC（`codecs=flac`/`fLaC`）和 Dolby（`ec-3`）各 3 首 | mac（arm64；有条件再测 x64） | `canPlayType` 返回 `probably`/`maybe`；连续播放 ≥ 60 s 无中断；拖动 5 次都能继续播放；`AudioContext` 波形有非零数据 | FLAC 不行：Mac 上 lossless 自动降级为最高码率 AAC，并在音质设置里标注。ec-3 不行：所有平台按 `canPlayType` 跳过 Dolby（与 Electron 现状一致）。两项都不影响继续 |
-| S2 | 三个系统上经 `biu-media://` 播放 5 分钟 AAC，拖动进度 | mac、pc（WebView2）、Linux（wsl 的 WebKitGTK + 一台 x64 Linux 实机/VM） | 随机拖动 10 次，每次 ≤ 1.5 s 恢复播放；日志显示每次是 Range 请求，没有整文件重拉；播放 30 分钟内存不持续增长；URL 过期后能经刷新地址继续 | 退路 A：改用 `127.0.0.1` 随机端口的本地 HTTP 代理（带一次性 token），接口不变。A 也不行：停下报告 |
+| S2 | 三个系统上经 `biu-media://` 播放 5 分钟 AAC，拖动进度 | mac、pc（WebView2）、Linux（wsl 的 WebKitGTK + 一台 x64 Linux 实机/VM） | 随机拖动 10 次，每次 ≤ 1.5 s 恢复播放；日志显示每次是 Range 请求，没有整文件重拉；播放 30 分钟内存不持续增长；URL 过期后能经刷新地址继续 | 退路 A：改用 `127.0.0.1` 随机端口的本地 HTTP 代理（每次 app 启动生成一个随机 token，本次进程内的请求共用；退出即失效），接口不变。A 也不行：停下报告 |
 | S3 | Linux 上 gst-libav 依赖 | Ubuntu 24.04、Fedora 41+、Arch 的干净 VM（x64；arm64 用 osa-a1 做构建冒烟） | 没装 gst-libav 时，app 能在 3 s 内识别出「无法解码」（`error` 事件或无 `timeupdate`），并提示安装命令；`apt install ./biu.deb` 会自动拉上 `gstreamer1.0-libav`；rpm 声明的依赖在 Fedora 上可解析；装好后 AAC、FLAC 都能播放 | Linux 增加原生播放后端（symphonia + `cpal`，在 Rust 里播放，前端播放器接口加一个实现）。工作量约 +1 个里程碑，需要用户重新批准 |
 | S4 | 二进制体积 | CI（三平台） | 带上计划内全部 crate 和插件 + 现在的 `dist/web`，release profile（`opt-level="s"`、`lto=true`、`codegen-units=1`、`strip=true`、`panic="abort"`）：mac arm64 dmg ≤ 8 MB，win x64 NSIS ≤ 7 MB，deb ≤ 8 MB | 按 `cargo bloat` 排行替换大 crate（例如 `fontdb` 换 `font-kit`、去掉 `rubato` 改用简单重采样、`lofty` 只开需要的格式）。仍超 10 MB：停下报告实际数字，由用户决定 |
 | S5 | 桌面歌词窗口 | mac、pc、Linux X11、Linux Wayland（GNOME、KDE） | 透明背景无黑边；置顶在普通窗口之上（mac 包括全屏 app 之上，与现状一致）；锁定后点击穿透；D3 方案下悬停 1 s 内出现解锁按钮；卡拉 OK 扫光 60 fps，歌词窗口 CPU < 10%（M 系列 Mac / 中端 Windows） | Wayland 上置顶或穿透不行：与 Electron 现状一样标为已知限制。mac/win 上不行：停下报告 |
@@ -272,10 +272,10 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - 复现：`spikes/m0/` 测试页提供六个用户自备 fMP4 样本入口；每首自动记录连续 60 s、5 次 seek 和波形。文件必须来自用户有权使用的音频，留在忽略的 `fixtures/`，不加入传输包或 Git。
   - 退路：Mac FLAC 不通过则最高码率 AAC 并标注音质降级；ec-3 按 `canPlayType` 跳过。README 的 Mac S1 节给出直接操作步骤及回传字段；Mac x64 仍待有条件补测。
 - [ ] S2 三平台拖动进度
-  - 结果：**Linux 自定义协议不通过；计划退路 A 的无头播放检查通过。mac / pc / Linux x64 待运行**。WebKitGTK 日志明确为 `biu-media (allowed: no)`；系统 GStreamer 可独立解码同一 AAC，故没有把协议失败误记为 codec 缺失。
+  - 结果：**Linux 自定义协议不通过；HTTP 退路的播放/seek 检查通过；内存待定。mac / pc / wsl 的 WebKitGTK / Linux x64 实机或 VM 待运行**。WebKitGTK 日志明确为 `biu-media (allowed: no)`；系统 GStreamer 可独立解码同一 AAC，故没有把协议失败误记为 codec 缺失。
   - 退路实测：Rust 随机 loopback 端口 + 每次启动随机临时 token，初始响应 200、实际 Range 响应 206、流式转发；测试上游只允许 `127.0.0.1:18765`。AAC 长度 **300.023333 s**；seed=2401 的 10 次随机 seek，本轮恢复 **33–868 ms**，均 ≤1500 ms；非缓存的 6 次 Range 传输均为 206，没有把每次 seek 改成整文件重拉。缓存命中不产生网络请求，已单独说明。
-  - 连续播放：本轮 **1800 s** 完整结束，**180次采样、0次暂停/解码错误**。进程树 RSS 在60 s时 **630,906,880字节（630.906880 MB）**，峰值 **676,425,728字节（676.425728 MB）**，末次 **650,854,400字节（650.854400 MB）**；末段出现回落，没有贯穿30 min的单调增长。该观察不能排除长期泄漏。完整摘要和断言输出在 `spikes/evidence/linux-results.json`、`acceptance.txt`。
-  - URL 过期：夹具注入403，Rust刷新测试地址并继续同一Range。**真实 B 站 CDN / 登录态 / 地址续签没有实测**；HTTP 退路目前只放行夹具上游，生产白名单和续签逻辑不在此原型里。Mac/Windows、真实 CDN、Linux x64 和物理音频输出均待验证。
+  - 内存：**待定**。原1800 s测试仅循环已整体缓存的文件，soak期间没有代理/Range流量；warmup后曾近线性增长，不能用末段GC回落记为通过。原RSS数字仅保留为历史，不用于内存验收。重测方法已先提交：每30 s用新URL重新加载、强制seek并核对每轮代理和上游Range/206，运行≥3600 s；排除前600 s warmup后，对全部RSS样本及最后30 min分别求OLS斜率（MB/min），两者均≤0才可将本轮内存记通过，否则仍待定。原始RSS序列和逐轮流量证据须提交到evidence。
+  - URL 过期：夹具注入403，Rust刷新测试地址并继续同一Range。**真实 B 站 CDN / 登录态 / 地址续签没有实测**；HTTP 退路目前只放行夹具上游，生产白名单和续签逻辑不在此原型里。原`*.akamaized.net`等后缀白名单已从spike代码移除；夹具放行及写死403刷新仅在显式`BIU_SPIKE_FIXTURES=1`时启用。**这些规则不得带入M2；M2只能放行playurl返回的具体host，不能沿用Akamai公共后缀白名单**。HTTP退路ACAO只允许app源，Host必须等于实际绑定的`127.0.0.1:<port>`；每次启动一个随机token，进程内共用，并非每请求一次性。Mac/Windows、wsl WebKitGTK、真实CDN、Linux x64实机/VM和物理音频输出均待验证。
 - [ ] S3 Linux gst-libav
   - 结果：**osa-a1 arm64 构建/解码冒烟通过；Ubuntu/Fedora/Arch 干净 x64 VM 矩阵待运行**。独立插件目录链接系统插件但排除 `libgstlibav.so`，同时设置 `GST_PLUGIN_SYSTEM_PATH_1_0`、空 `GST_PLUGIN_PATH_1_0` 和独立 `GST_REGISTRY`；未卸载系统包。仅设置 PLUGIN_PATH 无法隔离系统插件，复现说明已避免此做法。
   - 实测：缺 libav 时 AAC `canPlayType` 为空，**146 ms** 内收到 `MEDIA_ERR_SRC_NOT_SUPPORTED`（code 4），没有 `timeupdate`，页面显示 `sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good`。正常插件环境中 AAC/FLAC 可播放，AAC 波形最大幅值约 **0.800177**。
@@ -288,12 +288,12 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - `cargo bloat --release --crates -n 15`：前几名 **zbus 896.5 KiB、std 866.1 KiB、tauri 819.8 KiB、lofty 432.3 KiB、tokio 382.4 KiB、rustfft 333.6 KiB、rustls 244.5 KiB**；前15名完整输出在 `spikes/evidence/cargo-bloat.txt`。LTO归属是工具估算；bloat重建的未strip分析副本约16.4 MiB，不能当成发布二进制实测值。
   - 证据：`sizes.json`（字节/MB/SHA256）、`frontend-manifest.json`、deb/rpm元数据。Mac dmg与Windows NSIS没有本机实测值，未用预算冒充实测。
 - [ ] S5 桌面歌词窗口
-  - 结果：**Linux 原型 API 冒烟通过；完整交互/真实合成器、mac / pc / X11视觉 / Wayland GNOME/KDE 待验证**。创建透明、无边框、置顶窗口并成功调用鼠标穿透；D3每100 ms检查光标，进入左上100×60区域临时取消穿透。
+  - 结果：**未验证（仅 API 调用无报错）**；完整交互/真实合成器、mac / pc / X11视觉 / Wayland GNOME/KDE仍待验证。创建透明、无边框、置顶窗口并成功调用鼠标穿透；D3每100 ms检查光标，进入左上100×60区域临时取消穿透。悬停轮询已去掉65 s截止，持续到窗口Destroyed事件；这仅修复原型生命周期，不代表完整D3交互已通过。
   - 实测：xvfb下60 s扫光记录 **3903帧 / 60004 ms ≈65.046 fps**。该数字是requestAnimationFrame吞吐，**不能证明真实显示器稳定60 fps**。无物理显示器、无真实合成器，libEGL访问/dev/dri被拒，未提升权限，软件渲染继续测试。
   - 缺口：当前解锁按钮为常显原型，完整锁定/悬停显示状态机未实现；不能宣称“1 s内出现解锁按钮”通过。透明无黑边、实体点击穿透、全屏app上方置顶、Mac/Windows CPU<10%均未验证。Wayland限制按原计划记录；Mac/Windows失败仍需报告用户。
 - [ ] S6 图片 / 登录 / 极验 / webview 代理
-  - 结果：**Linux 图片和合成HTTP代理探针通过；二维码完整登录/极验、mac / pc 待验证**。no-referrer页面实载hdslb默认头像，**naturalWidth=180 px**；`WebviewWindowBuilder::proxy_url`探针图片加载成功，上游记录代理请求且Referer为空。
-  - 发现：Linux上代理窗口会影响共享WebKit context，连主窗口loopback媒体请求也进入测试代理，从而播放失败。原型不宣称webview代理与loopback组合可用；按计划退路，正式实现可先只代理Rust流量并在设置明示，或另行验证排除loopback的办法。
+  - 结果：**图片通过；Linux webview 代理不通过（与 S2 退路 A 冲突），采用『只代理 Rust 流量』**；二维码完整登录/极验、mac / pc仍待验证。no-referrer页面实载hdslb默认头像，**naturalWidth=180 px**；`WebviewWindowBuilder::proxy_url`探针图片加载成功，上游记录代理请求且Referer为空。
+  - 发现：Linux上代理窗口会影响共享WebKit context，连主窗口loopback媒体请求也进入测试代理，从而播放失败。因此Linux采用只代理Rust流量的退路，图片等webview直连，并在设置明示；正式产品策略作为§7 D6待用户拍板。Mac代理探针已启用tauri的`macos-proxy` feature，需macOS 14+，尚未实机验证。
   - 缺口：当前独立播放器原型没有二维码/极验最小页面，内嵌正式dist不等于已适配正式登录。未发起扫码授权、未自动点击验证码、未使用真实cookie。README明确此格不能靠外部浏览器或占位页验收，需要补最小登录复现页并由用户操作。
 - [ ] S7 更新端到端
   - 结果：**Linux AppImage 本地测试更新链通过；mac / pc 待运行**。`python3 -m http.server`仅监听127.0.0.1；Tauri updater后台下载并验签，本地测试AppImage **0.0.1→0.0.2** 安装后退出，再次启动确为0.0.2；测试设置和虚拟登录夹具均保留（两个preserved字段为true）。本轮使用补齐媒体插件后的AppImage重跑成功。
@@ -317,6 +317,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 ### M2 — 网络、cookie、登录
 - [ ] `bili/client.rs`、`bili/request.rs`（白名单）、cookie jar 落盘
 - [ ] axios adapter；WBI / bili_ticket；代理设置（34）；cookie 命令（35–36）
+  - M0审查安全约束：M2仅放行playurl返回的具体CDN host；不得复制spike原`*.akamaized.net`后缀白名单、夹具放行或写死403刷新逻辑。spike测试路径须保持env/cfg显式开关，正式请求不能带测试分支。Linux webview代理策略见§7 D6。
 - [ ] 二维码登录、短信/密码登录、极验（按 S6 结论）、退出登录
 - 测试：Rust 单元——WBI 签名用现有 TS 实现生成的测试向量对比；Set-Cookie 写入 jar；白名单拒绝非 B 站域名；代理切换后新请求走代理（wiremock / 本地 HTTP 代理）。前端单元——adapter 把 axios 配置正确转成 `bili_request` 参数并还原响应。手动：登录 → 首页推荐、搜索、收藏夹、动态、个人主页各页面能正常显示，重启后仍登录。
 
@@ -406,6 +407,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 | D3 | 桌面歌词锁定后的悬停 | A. Rust 每 100 ms 轮询光标位置，进入解锁按钮区域时临时取消穿透；B. 锁定后完全穿透，只能从托盘或快捷键解锁 | **A**（待用户拍板） | 保留现在的交互；轮询开销很小，且只在锁定且窗口可见时运行 |
 | D4 | 按需资源托管 | A. 只用 GitHub Release；B. 只用国内镜像；C. 两者，按顺序回退 | **C**（待用户拍板） | 国内用户访问 GitHub 下载不稳定。sha256 写在随包的清单里，镜像不可信也不影响安全。国内镜像的具体选择（Gitee Release、对象存储等）需要用户提供账号 |
 | D5 | Tauri 首版版本号与 bundle id | A. `2.0.0`，沿用 `com.biu.wood3n`；B. 继续 `-autolyrics.N` 后缀 | **A**（待用户拍板） | 框架换了，主版本号升级表达清楚；Tauri updater 只在 Tauri 版本之间比较，不受旧通道后缀限制。沿用 bundle id 时 Mac 新版直接覆盖旧 `.app` |
+| D6 | Linux 代理策略（M0实测新增） | A. 只代理Rust流量，webview图片等直连并在设置明示；B. 验证独立context或loopback排除后再支持webview代理 | **A，待用户拍板**（M0先采用此退路） | WebKitGTK共享WebContext且ignore_hosts为空，webview代理会接管S2 loopback媒体，导致播放失败；图片探针成功不能算代理方案通过 |
 
 D1：用户已接受推荐默认值（2026-11-02 23:54 SGT）。
 

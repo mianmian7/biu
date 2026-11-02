@@ -7,7 +7,7 @@
     "status": "pending mac arm64"
   },
   "S2": {
-    "status": "custom scheme failed; approved HTTP fixture fallback passed",
+    "status": "custom scheme failed; HTTP fixture playback/seek passed; memory 待定; mac/pc/wsl WebKitGTK/Linux x64 pending",
     "aac_seconds": 300.023333333,
     "seek_seed": 2401,
     "seeks": [
@@ -82,7 +82,9 @@
     "rss_last_bytes": 650854400,
     "rss_last_5min_min_bytes": 646524928,
     "rss_last_5min_max_bytes": 676425728,
-    "rss_interpretation": "RSS rose during warmup then dropped before end; no unbounded monotonic growth established in this 30-min run. Longer leakage not ruled out.",
+    "memory_status": "待定",
+    "prior_soak_scope": "Historical 1800 s cached-file loop; no proxy/Range traffic during soak; not valid for memory acceptance.",
+    "rss_interpretation": "待定。Warmup后存在正斜率，不能用末段GC回落判通过。重测>=3600 s，每30 s重新加载并强制Range；warmup=600 s后全段及最后30 min OLS均<=0 MB/min才可通过；提交原始RSS序列。",
     "production_CDN_refresh": "not tested; synthetic 403 -> new fixture URL only"
   },
   "S3": {
@@ -128,7 +130,7 @@
     "appimage_smoke_completed": true
   },
   "S5": {
-    "status": "prototype API/rAF smoke only; visual/full interaction/compositor/CPU pending",
+    "status": "未验证（仅 API 调用无报错）",
     "rAF": {
       "event": "lyrics_frames",
       "fps": 65.04566362242518,
@@ -138,7 +140,7 @@
     "hover_unlock_full_UI": "not implemented"
   },
   "S6": {
-    "status": "hdslb image passed; proxy synthetic probe passed with shared-context loopback conflict; QR/geetest pending",
+    "status": "图片通过；Linux webview 代理不通过（与 S2 退路 A 冲突），采用『只代理 Rust 流量』；QR/geetest pending",
     "image": {
       "event": "hdslb_image",
       "loaded": true,

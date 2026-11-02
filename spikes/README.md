@@ -6,9 +6,9 @@
 
 - 只在 `spike/tauri-m0` 本地提交。没有 push、tag、release、远端资源或 secrets 变更。
 - `m0/src-tauri/` 是一个主窗口、自定义协议、歌词原型、官方插件和计划依赖；`m0/web/` 是独立测试页。`web/assets/` 内嵌了既有 `dist/web`，用于 S4 **体积**测试；现有产品页还没有 ElectronAPI→Tauri 适配，不能把本工程当成可登录的完整产品。
-- Linux WebKitGTK 2.52.6 拒绝媒体自定义协议（`Requested protocol: biu-media (allowed: no)`）。Linux 测试采用 S2 退路 A：Rust 绑定 `127.0.0.1:0`，每次启动生成临时随机 token；返回 200 初始流、206 Range 流。token 不写日志，不用于远端鉴权。
-- HTTP 退路仅允许本地测试上游 `127.0.0.1:18765`；403 后刷新到同一夹具的新地址。**真实 B 站 CDN、真实 URL 续签尚未验证**。生产白名单、凭据与续签接口属于后续工作。
-- 缓存命中的 seek 可以没有网络请求；实际发生的 Range 请求必须返回 206，不能重新请求整文件。首个无 Range 请求返回 200 符合 HTTP 语义。原始记录在 `evidence/*.jsonl`（忽略提交），摘要在 `evidence/linux-results.json`。
+- Linux WebKitGTK 2.52.6 拒绝媒体自定义协议（`Requested protocol: biu-media (allowed: no)`）。Linux 测试采用 S2 退路 A：Rust 绑定 `127.0.0.1:0`，每次启动生成一个随机 token，本次进程的请求共用，退出即失效；不是每请求一次性 token。返回200初始流、206 Range流。Host严格校验为实际`127.0.0.1:<port>`，ACAO仅为app源（Linux/macOS为`tauri://localhost`，Windows为`http://tauri.localhost`），显式外部Origin拒绝；原生媒体后端缺省Origin时仍须正确Host及token。token不写日志。
+- 夹具及写死403刷新必须显式设置`BIU_SPIKE_FIXTURES=1`才启用（Linux runner自动设置）；默认关闭。HTTP退路仅允许`http://127.0.0.1:18765`的固定夹具路径。已移除`*.akamaized.net`等后缀放行；这些规则不得带入M2，M2只能放行playurl返回的具体host。**真实B站CDN、真实URL续签尚未验证**。所有手动测试终端都须设置测试开关，不能把该开关当成正式配置。
+- 缓存命中的 seek 可以没有网络请求；实际发生的 Range 请求必须返回 206，不能重新请求整文件。首个无 Range 请求返回 200 符合 HTTP 语义。一般原始日志忽略提交；60 min实测RSS序列特例提交为`evidence/soak-60min-rss.jsonl`，逐轮代理/上游Range证明为`soak-60min-rounds.json`，斜率/判定为`soak-60min-summary.json`。历史30 min缓存文件循环不能证明代理内存通过，内存格先记“待定”。
 - `bundleMediaFramework: true` 的 AppImage 已通过 AAC / FLAC / 10 次 seek 冒烟。初始未打媒体插件的 AppImage 未通过解码检测，不能交付。AppImage 不受 D1 的 10 MB 限制，优先交付 deb/rpm。
 - 无头测试验证解码、时钟、波形、API 与 D-Bus。它不验证实际扬声器、窗口透明视觉效果、真实合成器、Wayland、实体媒体键或全屏 app 上方置顶。
 - 当前 S7 用虚拟登录夹具验证 store 保留，不代表 B 站登录迁移已通过。更新命令模拟“退出并安装”：下载、验签、安装，然后退出；正式退出生命周期尚未接入。
@@ -69,7 +69,7 @@ git switch --create spike/tauri-m0 --no-track refs/remotes/osa-a1/spike-tauri-m0
 
 ### 1.1 安装与构建
 
-先由用户准备 Xcode Command Line Tools、Homebrew、Node.js（22 或更新 LTS）、Python 3、Rust stable。以下安装命令出现 GUI/许可确认时暂停，由用户处理；执行者不替用户确认。
+本轮Mac测试要求 **macOS 14+**（tauri已启用`macos-proxy`，WKWebView代理API要求macOS 14+）。先由用户准备Xcode Command Line Tools、Homebrew、Node.js（22或更新LTS）、Python 3、Rust stable。以下安装命令出现 GUI/许可确认时暂停，由用户处理；执行者不替用户确认。
 
 ```bash
 uname -m                         # 必须记录 arm64
@@ -88,9 +88,9 @@ mkdir -p evidence m0/private
 cd m0
 ../node_modules/.bin/tauri build --ci --bundles dmg > ../evidence/mac-build.log 2>&1
 # macOS 覆盖配置自动选择 dmg / ad-hoc 签名 / icns。
-export BIU_FIXTURES="$PWD/fixtures"
+export BIU_SPIKE_FIXTURES=1 BIU_FIXTURES="$PWD/fixtures"
 export BIU_LOG="$PWD/../evidence/mac.jsonl"
-export BIU_SOAK_SECONDS=1800
+export BIU_SOAK_SECONDS=3600
 ```
 
 开第二个终端，提供本地上游（保持运行，测试结束 Ctrl-C）：
@@ -107,7 +107,7 @@ python3 scripts/fixture_server.py --fixtures m0/fixtures --log evidence/mac-serv
 
 ```bash
 cd ~/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0
-export BIU_FIXTURES="$PWD/fixtures" BIU_LOG="$PWD/../evidence/mac-s1.jsonl" BIU_MODE=interactive
+export BIU_SPIKE_FIXTURES=1 BIU_FIXTURES="$PWD/fixtures" BIU_LOG="$PWD/../evidence/mac-s1.jsonl" BIU_MODE=interactive
 ./src-tauri/target/release/bundle/macos/'Biu M0.app'/Contents/MacOS/biu-m0
 ```
 
@@ -119,17 +119,17 @@ export BIU_FIXTURES="$PWD/fixtures" BIU_LOG="$PWD/../evidence/mac-s1.jsonl" BIU_
 
 ```bash
 cd ~/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0
-export BIU_FIXTURES="$PWD/fixtures" BIU_LOG="$PWD/../evidence/mac-s2-custom.jsonl"
-export BIU_MODE=custom BIU_SOAK_SECONDS=1800
+export BIU_SPIKE_FIXTURES=1 BIU_FIXTURES="$PWD/fixtures" BIU_LOG="$PWD/../evidence/mac-s2-custom.jsonl"
+export BIU_MODE=custom BIU_SOAK_SECONDS=3600
 ./src-tauri/target/release/bundle/macos/'Biu M0.app'/Contents/MacOS/biu-m0 &
 APP_PID=$!
-python3 ../scripts/sample_memory.py --pid "$APP_PID" --seconds 1800 --out ../evidence/mac-s2-custom-memory.jsonl
+python3 ../scripts/sample_memory.py --pid "$APP_PID" --seconds 3600 --out ../evidence/mac-s2-custom-memory.jsonl
 wait "$APP_PID"
 ```
 
 若自定义协议失败，保留失败日志，改为 `BIU_MODE=full`、日志名 `mac-s2-http.jsonl` 重跑同一命令。HTTP 退路测试可执行 `python3 ../scripts/check_evidence.py playback ../evidence/mac-s2-http.jsonl`。自定义协议日志是 `range` 事件，不要套用仅检查 HTTP 退路的断言。
 
-记录：10 个 seed=2401 的随机目标、每次 ≤1500 ms、实际网络请求的 Range/206/字节数、403→新地址继续播放、30 min 内存曲线及末段回落/增长。缓存命中单独注明。macOS 的 WebKit 服务可能被 launchd 接管，脚本只统计可识别的子进程；须用 Activity Monitor 补记录相关 WebKit 服务 RSS，不能把主进程数值当总内存。合成上游不等同于真实 CDN 续签，真实 CDN 单列待测。
+记录：10 个 seed=2401 的随机目标、每次 ≤1500 ms、实际网络请求的 Range/206/字节数、403→新地址继续播放、≥60 min内存曲线。soak每30 s重新加载带round的新URL并强制Range seek，不再`audio.loop`缓存文件。排除600 s warmup后计算全段和最后30 min OLS斜率（MB/min）；两段均≤0才可记本轮内存通过，正斜率仍待定，不用GC回落代替斜率。缓存命中单独注明。macOS 的 WebKit 服务可能被 launchd 接管，脚本只统计可识别的子进程；须用 Activity Monitor 补记录相关 WebKit 服务 RSS，不能把主进程数值当总内存。合成上游不等同于真实 CDN 续签，真实 CDN 单列待测。
 
 ### 1.4 S3–S6、S8
 
@@ -138,7 +138,7 @@ wait "$APP_PID"
 | S3 | 不在 Mac 测 Linux gst-libav | 填“不适用；Linux VM 矩阵待测” |
 | S4 | `stat -f '%z %N' src-tauri/target/release/biu-m0 src-tauri/target/release/bundle/dmg/*.dmg`；在 `src-tauri/` 执行 `cargo install cargo-bloat --locked`、`cargo bloat --release --crates -n 15 > ../../evidence/mac-bloat.txt` | dmg 字节及 MB=字节/1000000，arm64 目标 ≤8 MB，硬上限 10 MB；bloat 会重建未剥离副本，其文件大小不等于交付二进制 |
 | S5 | 用 `BIU_MODE=interactive` 启动，点击 `Lyrics prototype`；将光标移入窗口左上 100×60 解锁区域，移出；在下方放普通窗口；再把另一 app 全屏 | 透明无黑边、全屏 app 上方置顶、锁定点击穿透、悬停 ≤1000 ms 出现可操作区域。当前按钮只是原型，不含完整解锁状态机；缺失行为填不通过/待补，不视作完成。记录 60 s 的 `lyrics_frames`、Activity Monitor 歌词相关进程 CPU，目标60 fps、CPU<10% |
-| S6 | `BIU_MODE=controls` 启动可测 no-referrer 下 hdslb 图片；`BIU_WEBVIEW_PROXY=http://127.0.0.1:18765` 可打开独立 proxy 测试窗口 | 图片成功、代理服务器记录 `/art.svg` 且 Referer为空。WebKit 代理可能作用于共享 context，把 loopback 流量也送给代理；出现此问题按计划退到仅 Rust 代理并明示。**二维码/极验页面尚未接入这个播放器原型，不能在此工程完成“完整登录”验收**；需补登录复现页，保持待验证，不用外部浏览器登录代替 |
+| S6 | `BIU_MODE=controls` 启动可测 no-referrer 下 hdslb 图片；`BIU_WEBVIEW_PROXY=http://127.0.0.1:18765` 可打开独立 proxy 测试窗口 | 图片成功、代理服务器记录 `/art.svg` 且 Referer为空。该探针在Mac上要求macOS 14+。Linux实测代理作用于共享context，与S2 loopback冲突，**Linux webview代理不通过，采用只代理Rust流量**；正式策略列为计划§7 D6待用户拍板。**二维码/极验页面尚未接入这个播放器原型，不能在此工程完成“完整登录”验收**；需补登录复现页，保持待验证，不用外部浏览器登录代替 |
 | S8 | `BIU_MODE=full` 播放时打开 macOS 正在播放，查看标题/封面，用实体媒体键暂停/播放/上一首/下一首 | 记录每个动作、前端时间是否停止/继续及 `media_action`。若原生 mediaSession 不行，计划退路是 souvlaki；当前 souvlaki 启动接线只实现 Linux，Mac 需另补，不能声称已验证 |
 
 ### 1.5 S7：仅本地 HTTP 的 0.0.1 → 0.0.2
@@ -221,8 +221,8 @@ New-Item -ItemType Directory -Force evidence,m0\private | Out-Null
 Set-Location m0
 & ..\node_modules\.bin\tauri.cmd build --ci --bundles nsis *> ..\evidence\pc-build.log
 if ($LASTEXITCODE -ne 0) { throw 'Build failed; inspect pc-build.log' }
-$env:BIU_FIXTURES="$PWD\fixtures"
-$env:BIU_SOAK_SECONDS='1800'
+$env:BIU_SPIKE_FIXTURES='1'; $env:BIU_FIXTURES="$PWD\fixtures"
+$env:BIU_SOAK_SECONDS='3600'
 ```
 
 另一个 PowerShell 终端提供上游：
@@ -240,10 +240,10 @@ S2 先测 WebView2 自定义协议，失败再切 HTTP：
 
 ```powershell
 Set-Location "$HOME\Developer\biu-m0-transfer\biu-tauri-m0\spikes\m0"
-$env:BIU_FIXTURES="$PWD\fixtures"; $env:BIU_LOG="$PWD\..\evidence\pc-s2-custom.jsonl"
-$env:BIU_MODE='custom'; $env:BIU_SOAK_SECONDS='1800'
+$env:BIU_SPIKE_FIXTURES='1'; $env:BIU_FIXTURES="$PWD\fixtures"; $env:BIU_LOG="$PWD\..\evidence\pc-s2-custom.jsonl"
+$env:BIU_MODE='custom'; $env:BIU_SOAK_SECONDS='3600'
 $app=Start-Process -FilePath "$PWD\src-tauri\target\release\biu-m0.exe" -PassThru
-python ..\scripts\sample_memory.py --pid $app.Id --seconds 1800 --out ..\evidence\pc-s2-custom-memory.jsonl
+python ..\scripts\sample_memory.py --pid $app.Id --seconds 3600 --out ..\evidence\pc-s2-custom-memory.jsonl
 Wait-Process -Id $app.Id -ErrorAction SilentlyContinue
 # 自定义协议失败才重跑：
 # $env:BIU_MODE='full'; $env:BIU_LOG="$PWD\..\evidence\pc-s2-http.jsonl"
@@ -253,7 +253,7 @@ Wait-Process -Id $app.Id -ErrorAction SilentlyContinue
 
 | 项目 | 操作 | 数字与判定 |
 |---|---|---|
-| S2 | 对照 S2 JSONL，检查 Range 头、206、10 个随机 seek，测试403刷新，跑满30 min | 每次恢复≤1500 ms；记录整个进程树 RSS，含 msedgewebview2.exe。部分缓存命中注明。真实 CDN 过期续签仍另测 |
+| S2 | 对照 S2 JSONL，检查 Range 头、206、10 个随机 seek，测试403刷新，每30 s重新加载并强制Range，跑满≥60 min | 每次恢复≤1500 ms；记录整个进程树RSS，含msedgewebview2.exe，按Mac节相同的600 s warmup后OLS斜率规则判定，不以末次回落记通过。部分缓存命中注明。真实 CDN 过期续签仍另测 |
 | S4 | `Get-Item .\src-tauri\target\release\biu-m0.exe, .\src-tauri\target\release\bundle\nsis\*.exe | Select-Object Name,Length,@{n='MB';e={$_.Length/1000000}}`；`Push-Location src-tauri; cargo install cargo-bloat --locked; cargo bloat --release --crates -n 15 > ..\..\evidence\pc-bloat.txt; Pop-Location` | x64 NSIS≤7 MB，硬上限10 MB，裸 exe 单独记录。WebView2 bootstrapper 是在线安装，不能把系统 runtime 计入小包冒充自包含 |
 | S5 | `BIU_MODE=interactive` 启动并点击歌词原型；下面放一个记事本窗口，测试透过歌词点击、移到左上解锁区域、普通窗口上置顶、透明边缘 | 悬停≤1000 ms、扫光60 s 的 fps、任务管理器歌词相关进程 CPU<10%。当前解锁按钮是原型、非完整状态机，不能标产品交互已通过 |
 | S6 | `BIU_MODE=controls` 可检查 hdslb 图片；设置 `$env:BIU_WEBVIEW_PROXY='http://127.0.0.1:18765'` 启动可检查 proxy 窗口，然后 `Remove-Item Env:BIU_WEBVIEW_PROXY` | 记录图片加载、代理日志 Referer 为空。二维码和极验最小页面尚未接入，保持待验证；必须由用户进行交互授权，不可自动扫码或同意 |
@@ -266,8 +266,9 @@ Wait-Process -Id $app.Id -ErrorAction SilentlyContinue
 ```powershell
 Set-Location "$HOME\Developer\biu-m0-transfer\biu-tauri-m0\spikes\m0"
 New-Item -ItemType Directory -Force private\http | Out-Null
-if (Test-Path private\updater.key) { throw 'Key already exists; reuse it instead of regenerating' }
-& ..\node_modules\.bin\tauri.cmd signer generate --ci --password= -w private\updater.key *> private\signer-generate.log
+if (-not (Test-Path private\updater.key)) {
+    & ..\node_modules\.bin\tauri.cmd signer generate --ci --password= -w private\updater.key *> private\signer-generate.log
+}
 Copy-Item .\src-tauri\target\release\bundle\nsis\*.exe .\private\Biu-M0-0.0.1-setup.exe
 # 用临时配置文件避免 PowerShell 吞掉 JSON 引号。
 '{"version":"0.0.2"}' | Set-Content -Encoding ascii .\private\v002.json
@@ -295,7 +296,7 @@ $env:BIU_MODE='verify-update'
 
 ### 2.4 PC 要回传什么
 
-写 `evidence/pc-results.md`，逐项 S1–S8 状态，Windows build、CPU/架构、WebView2 版本、每次 seek ms、30 min RSS、NSIS/exe 字节与 MB、歌词 fps/CPU、更新结果/权限阻塞。回传 `pc*.jsonl`、`pc-bloat.txt`、`pc-results.md` 和无敏感信息截图；先人工脱敏。不要回传 private、音频、登录信息或安装器。
+写 `evidence/pc-results.md`，逐项 S1–S8 状态，Windows build、CPU/架构、WebView2 版本、每次seek ms、≥60 min RSS及warmup后斜率、NSIS/exe 字节与 MB、歌词 fps/CPU、更新结果/权限阻塞。回传 `pc*.jsonl`、`pc-bloat.txt`、`pc-results.md` 和无敏感信息截图；先人工脱敏。不要回传 private、音频、登录信息或安装器。
 
 ```powershell
 Set-Location "$HOME\Developer\biu-m0-transfer\biu-tauri-m0\spikes"
@@ -314,15 +315,16 @@ cd spikes
 npm ci --ignore-scripts --no-audit --no-fund
 source "$HOME/.cargo/env"
 cd m0/src-tauri
-BIU_FIXTURES="$PWD/../fixtures" BIU_LOG="$PWD/../../evidence/unit.jsonl" cargo test --release
+BIU_SPIKE_FIXTURES=1 BIU_FIXTURES="$PWD/../fixtures" BIU_LOG="$PWD/../../evidence/unit.jsonl" cargo test --release
 cd ..
 # patchelf 缺少时，仅解包到本 worktree：
 mkdir -p runtime/patchelf
 (cd runtime/patchelf && apt-get download patchelf && dpkg-deb -x ./*.deb .)
 PATH="$PWD/runtime/patchelf/usr/bin:$PATH" APPIMAGE_EXTRACT_AND_RUN=1 ../node_modules/.bin/tauri build --ci --bundles deb,rpm,appimage
 cd ../..
-dbus-run-session -- xvfb-run -a python3 spikes/scripts/run_linux.py --root spikes --seconds 1800 --name linux-repro
+dbus-run-session -- xvfb-run -a python3 spikes/scripts/run_linux.py --root spikes --seconds 3600 --name linux-repro
 python3 spikes/scripts/check_evidence.py playback spikes/evidence/linux-repro.jsonl
+python3 spikes/scripts/analyze_soak.py --events spikes/evidence/linux-repro.jsonl --memory spikes/evidence/linux-repro-memory.jsonl --server spikes/evidence/linux-repro-server.jsonl --out spikes/evidence
 # 隔离时同时设置 SYSTEM_PATH 和独立 REGISTRY；只设置 PLUGIN_PATH 不会禁用系统插件。
 GST_PLUGIN_SYSTEM_PATH_1_0="$PWD/spikes/m0/runtime/gst-no-libav" GST_PLUGIN_PATH_1_0='' GST_REGISTRY="$PWD/spikes/m0/runtime/isolated-registry.bin" dbus-run-session -- xvfb-run -a python3 spikes/scripts/run_linux.py --root spikes --mode missing --seconds 3 --name missing-repro
 python3 spikes/scripts/check_evidence.py missing spikes/evidence/missing-repro.jsonl
@@ -350,6 +352,6 @@ python3 spikes/scripts/check_evidence.py update spikes/evidence/update.jsonl
 ## 4. 仍待完成的矩阵
 
 - Mac S1 全部、S2/S5/S6/S7/S8；Windows S2/S5/S6/S7/S8。mac/Windows 下载包体积待对应机器或 CI。
-- Linux x64 Ubuntu 24.04 / Fedora 41+ / Arch 干净 VM、Fedora libav 依赖源是否可解析（可能需要 RPM Fusion）、Wayland GNOME/KDE、真实 X11 合成器、物理媒体键、真实 CDN URL 续签。
+- **wsl 的 WebKitGTK（S2必测）**，以及独立Linux x64实机/VM；Ubuntu 24.04 / Fedora 41+ / Arch干净VM、Fedora libav 依赖源是否可解析（可能需要 RPM Fusion）、Wayland GNOME/KDE、真实 X11 合成器、物理媒体键、真实 CDN URL 续签。
 - S5 完整解锁 UI/锁定状态机、S6 QR/极验最小页面、Mac/Windows souvlaki 接线尚未实现。上述项目不能用当前播放器冒烟代替。
-- 用户另外安排 Claude 审查。本执行线程已取消原审查，不采纳其结果，也不宣称独立审查/最终验收通过。
+- 本轮按用户采纳的Claude审查意见逐条修复；未启动新的审查，不宣称最终验收通过。歌词悬停轮询现持续到窗口Destroyed，不再65 s截止；S5仍为“未验证（仅API调用无报错）”。

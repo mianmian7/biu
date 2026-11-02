@@ -19,6 +19,11 @@ if args.kind=='playback':
     assert len(ranged)>=5,f'only {len(ranged)} network Range transfers (some seeks may use cache)'
     assert all(r['status']==206 for r in ranged)
     soak=events('soak');assert soak and all(not r['paused'] and r['error'] is None for r in soak)
+    if events('soak_start')[0].get('kind')=='reload-and-range':
+        reloads=events('soak_reload');assert reloads
+        for reload in reloads:
+            assert any(r.get('round')==reload['round'] and r['bytes']>0 for r in ranged),reload['round']
+    # Playback assertions do not judge the RSS slope. analyze_soak.py owns memory verdicts.
     print(f"PASS playback: seeks=10 max={max(s['ms'] for s in seek):.1f} ms; Range/206={len(ranged)}; waveform={events('waveform')[0]['max']:.6f}; soak={events('soak_start')[0]['seconds']} s")
 elif args.kind=='missing':
     missing=events('missing_decoder')[-1];assert missing['detected'] and missing['ms']<=3000 and missing['updates']==0

@@ -16,5 +16,5 @@ with args.out.open('w') as f:
             previous=found.copy();found.update(a for a,b,c in rows if b in found)
         active=[r for r in rows if r[0] in found]
         if not any(r[0]==args.pid for r in active):break
-        f.write(json.dumps({'seconds':time.monotonic()-start,'rss_bytes':sum(r[2] for r in active),'pids':[r[0] for r in active]})+'\n');f.flush();time.sleep(10)
+        f.write(json.dumps({'seconds':time.monotonic()-start,'unix_seconds':time.time(),'rss_bytes':sum(r[2] for r in active),'pids':[r[0] for r in active]})+'\n');f.flush();time.sleep(10)
 print('Saved process-tree RSS; inspect missing/reparented WebKit processes before interpreting a plateau.')
