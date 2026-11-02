@@ -61,6 +61,8 @@ declare global {
     getNeteaseLyrics: (params: GetLyricsByNeteaseParams) => Promise<GetLyricsByNeteaseResponse>;
     /** 在 LrcLib 搜索歌曲/歌词 */
     searchLrclibLyrics: (params: SearchSongByLrclibParams) => Promise<SearchSongByLrclibResponse[]>;
+    /** 为日语歌词行本地生成罗马音（非日语歌或纯英文行返回 null） */
+    romanizeLyrics: (lines: string[]) => Promise<(string | null)[]>;
     /** 获取当前应用平台：macos | windows | linux */
     getPlatform: () => AppPlatForm;
     /** 更新网络代理设置 */
@@ -107,10 +109,20 @@ declare global {
     onDesktopLyricsToggleRequested: (cb: () => void) => VoidFunction;
     /** 主窗口：订阅“锁定/解锁桌面歌词”请求 */
     onDesktopLyricsLockToggleRequested: (cb: () => void) => VoidFunction;
-    /** 请求切换桌面歌词显示状态（桌面歌词窗口按钮使用） */
-    requestDesktopLyricsToggle: () => void;
-    /** 请求切换桌面歌词锁定状态（桌面歌词窗口按钮使用） */
-    requestDesktopLyricsToggleLock: () => void;
+    /** 桌面歌词窗口：发送工具栏操作（打开设置由主进程处理，其余转发给主窗口） */
+    sendDesktopLyricsCommand: (command: DesktopLyricsCommand) => void;
+    /** 主窗口：订阅桌面歌词窗口发来的操作 */
+    onDesktopLyricsCommand: (cb: (command: DesktopLyricsCommand) => void) => VoidFunction;
+    /** 桌面歌词窗口：开始拖动（主进程跟随光标移动窗口） */
+    startDesktopLyricsDrag: () => void;
+    /** 桌面歌词窗口：结束拖动 */
+    endDesktopLyricsDrag: () => void;
+    /** 桌面歌词窗口：锁定状态下临时切换鼠标穿透 */
+    setDesktopLyricsIgnoreMouse: (ignore: boolean) => void;
+    /** 桌面歌词窗口：上报内容高度（DIP），窗口高度跟随 */
+    setDesktopLyricsContentHeight: (height: number) => void;
+    /** 重置桌面歌词窗口位置 */
+    resetDesktopLyricsPosition: () => void;
     /** 最小化窗口 */
     minimizeWindow: () => void;
     /** 最大化/还原窗口 */

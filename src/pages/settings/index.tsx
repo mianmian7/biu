@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { useSearchParams } from "react-router";
 
 import { Tab, Tabs } from "@heroui/react";
 import { useShallow } from "zustand/react/shallow";
@@ -8,6 +9,7 @@ import ScrollContainer from "@/components/scroll-container";
 import { useAppUpdateStore } from "@/store/app-update";
 import { useSettings } from "@/store/settings";
 
+import DesktopLyricsSettings from "./desktop-lyrics-settings";
 import MenuSettings from "./menu-settings";
 import ProxySettings from "./proxy-settings";
 import ShortcutSettingsPage from "./shortcut-settings";
@@ -34,9 +36,6 @@ const useSystemSettingsForm = () => {
     reportPlayHistory,
     showTopLyrics,
     showTopLyricsTranslation,
-    showDesktopLyrics,
-    desktopLyricsLocked,
-    desktopLyricsFontSize,
   } = useSettings(
     useShallow(s => ({
       fontFamily: s.fontFamily,
@@ -57,9 +56,6 @@ const useSystemSettingsForm = () => {
       reportPlayHistory: s.reportPlayHistory,
       showTopLyrics: s.showTopLyrics,
       showTopLyricsTranslation: s.showTopLyricsTranslation,
-      showDesktopLyrics: s.showDesktopLyrics,
-      desktopLyricsLocked: s.desktopLyricsLocked,
-      desktopLyricsFontSize: s.desktopLyricsFontSize,
     })),
   );
   const updateSettings = useSettings(s => s.update);
@@ -96,9 +92,6 @@ const useSystemSettingsForm = () => {
       reportPlayHistory,
       showTopLyrics,
       showTopLyricsTranslation,
-      showDesktopLyrics,
-      desktopLyricsLocked,
-      desktopLyricsFontSize,
     },
   });
 
@@ -130,15 +123,25 @@ const useSystemSettingsForm = () => {
 
 const SettingsPage = () => {
   const system = useSystemSettingsForm();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedTab = searchParams.get("tab") || "system";
 
   return (
     <ScrollContainer enableBackToTop className="h-full w-full">
       <div className="m-auto mb-6 max-w-[900px] px-8 py-4">
         <div className="space-y-6">
           <h1>设置</h1>
-          <Tabs aria-label="设置选项" classNames={{ panel: "px-1 py-0", cursor: "rounded-medium" }}>
+          <Tabs
+            aria-label="设置选项"
+            selectedKey={selectedTab}
+            onSelectionChange={key => setSearchParams({ tab: String(key) }, { replace: true })}
+            classNames={{ panel: "px-1 py-0", cursor: "rounded-medium" }}
+          >
             <Tab key="system" title="常规设置">
               <SystemSettingsTab {...system} />
+            </Tab>
+            <Tab key="desktop-lyrics" title="桌面歌词">
+              <DesktopLyricsSettings />
             </Tab>
             <Tab key="menu" title="菜单设置">
               <MenuSettings control={system.control} />

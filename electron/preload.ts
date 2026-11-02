@@ -21,6 +21,7 @@ const api: ElectronAPI = {
   searchNeteaseSongs: params => ipcRenderer.invoke(channel.lyrics.searchNeteaseSongs, params),
   getNeteaseLyrics: params => ipcRenderer.invoke(channel.lyrics.getNeteaseLyrics, params),
   searchLrclibLyrics: params => ipcRenderer.invoke(channel.lyrics.searchLrclib, params),
+  romanizeLyrics: lines => ipcRenderer.invoke(channel.lyrics.romanize, lines),
   autoLyrics: {
     start: params => ipcRenderer.invoke(channel.autoLyrics.start, params),
     prefetch: params => ipcRenderer.invoke(channel.autoLyrics.prefetch, params),
@@ -222,10 +223,24 @@ const api: ElectronAPI = {
 
     return () => ipcRenderer.removeListener(channel.desktopLyrics.lockToggleRequested, handler);
   },
-  // 请求切换桌面歌词显示状态（桌面歌词窗口按钮使用）
-  requestDesktopLyricsToggle: () => ipcRenderer.send(channel.desktopLyrics.requestToggle),
-  // 请求切换桌面歌词锁定状态（桌面歌词窗口按钮使用）
-  requestDesktopLyricsToggleLock: () => ipcRenderer.send(channel.desktopLyrics.requestToggleLock),
+  // 桌面歌词窗口：发送工具栏操作
+  sendDesktopLyricsCommand: command => ipcRenderer.send(channel.desktopLyrics.command, command),
+  // 主窗口：订阅桌面歌词窗口发来的操作
+  onDesktopLyricsCommand: cb => {
+    const handler = (_: Electron.IpcRendererEvent, command: DesktopLyricsCommand) => cb(command);
+    ipcRenderer.on(channel.desktopLyrics.command, handler);
+
+    return () => ipcRenderer.removeListener(channel.desktopLyrics.command, handler);
+  },
+  // 桌面歌词窗口：开始/结束拖动
+  startDesktopLyricsDrag: () => ipcRenderer.send(channel.desktopLyrics.dragStart),
+  endDesktopLyricsDrag: () => ipcRenderer.send(channel.desktopLyrics.dragEnd),
+  // 桌面歌词窗口：锁定时临时切换鼠标穿透
+  setDesktopLyricsIgnoreMouse: ignore => ipcRenderer.send(channel.desktopLyrics.setIgnoreMouse, ignore),
+  // 桌面歌词窗口：上报内容高度
+  setDesktopLyricsContentHeight: height => ipcRenderer.send(channel.desktopLyrics.setContentHeight, height),
+  // 重置桌面歌词窗口位置
+  resetDesktopLyricsPosition: () => ipcRenderer.send(channel.desktopLyrics.resetPosition),
   // 最小化窗口
   minimizeWindow: () => ipcRenderer.send(channel.window.minimize),
   // 最大化/还原窗口

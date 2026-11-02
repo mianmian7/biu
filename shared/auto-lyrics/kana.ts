@@ -81,6 +81,35 @@ const BASE: Record<string, string> = {
   ぉ: "o",
 };
 const SMALL_Y: Record<string, string> = { ゃ: "a", ゅ: "u", ょ: "o" };
+/** 外来语的小写元音组合：ファ → fa、ティ → ti、ウィ → wi、シェ → she …… */
+const SMALL_VOWEL_COMBOS: Record<string, string> = {
+  "fu+ぁ": "fa",
+  "fu+ぃ": "fi",
+  "fu+ぇ": "fe",
+  "fu+ぉ": "fo",
+  "vu+ぁ": "va",
+  "vu+ぃ": "vi",
+  "vu+ぇ": "ve",
+  "vu+ぉ": "vo",
+  "te+ぃ": "ti",
+  "de+ぃ": "di",
+  "to+ぅ": "tu",
+  "do+ぅ": "du",
+  "u+ぃ": "wi",
+  "u+ぇ": "we",
+  "u+ぉ": "wo",
+  "shi+ぇ": "she",
+  "chi+ぇ": "che",
+  "ji+ぇ": "je",
+  "tsu+ぁ": "tsa",
+  "tsu+ぃ": "tsi",
+  "tsu+ぇ": "tse",
+  "tsu+ぉ": "tso",
+  "i+ぇ": "ye",
+};
+
+/** 长前缀优先匹配，避免 ツィ 被 u+ぃ 抢先匹配成 tswi */
+const COMBO_KEYS = Object.keys(SMALL_VOWEL_COMBOS).toSorted((a, b) => b.length - a.length);
 
 /** Katakana and hiragana to Hepburn; returns undefined when the text is not pure kana. */
 export function romanizeKana(text: string): string | undefined {
@@ -95,6 +124,11 @@ export function romanizeKana(text: string): string | undefined {
       continue;
     }
     let syllable: string;
+    const combo = COMBO_KEYS.find(key => key.endsWith(`+${char}`) && out.endsWith(key.split("+")[0]));
+    if (combo) {
+      out = out.slice(0, out.length - combo.split("+")[0].length) + SMALL_VOWEL_COMBOS[combo];
+      continue;
+    }
     if (char in SMALL_Y) {
       // き + ゃ → kya, し + ゃ → sha, ち + ゃ → cha, じ + ゃ → ja.
       const vowel = SMALL_Y[char];

@@ -6,9 +6,11 @@ import clsx from "classnames";
 import { debounce } from "es-toolkit";
 import { useShallow } from "zustand/react/shallow";
 
-import { getActiveLyricIndex, getLyricsCacheKey, useLyricsStore } from "@/store/lyrics";
+import { getActiveLyricIndex, useLyricsStore } from "@/store/lyrics";
 import { usePlayList } from "@/store/play-list";
 import { usePlayProgress } from "@/store/play-progress";
+import { useSettings } from "@/store/settings";
+import { defaultAppSettings } from "@shared/settings/app-settings";
 import { StoreNameMap } from "@shared/store";
 
 import IconButton from "../icon-button";
@@ -20,7 +22,10 @@ type PlayItem = ReturnType<ReturnType<typeof usePlayList.getState>["getPlayItem"
 
 const activeTextBase = "text-white drop-shadow-[0_4px_24px_rgba(0,0,0,0.35)]";
 
-const DEFAULT_FONT_SIZE = 20;
+/** 当前行相对其他行的放大倍数 */
+const ACTIVE_SCALE = 1.5;
+/** 罗马音/翻译相对所在行原文字号的比例：当前行与其他行一致，滚动时比例不跳变 */
+const SUB_SCALE = 0.65;
 
 const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: boolean; showControls?: boolean }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -38,7 +43,8 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
       autoStatus: s.autoStatus,
     })),
   );
-  const [fontSize, setFontSize] = useState<number>(DEFAULT_FONT_SIZE);
+  // 字号全局保存：所有歌曲使用同一字号，不再按歌曲各存一份
+  const fontSize = useSettings(s => s.lyricsFontSize) || defaultAppSettings.lyricsFontSize;
   const currentTime = usePlayProgress(s => s.currentTime);
   const currentMs = currentTime * 1000 + offset;
 
@@ -50,32 +56,8 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
   } = useDisclosure();
 
   useEffect(() => {
-    let canceled = false;
-    setFontSize(DEFAULT_FONT_SIZE);
-
-    const restoreLyricSettings = async () => {
-      const playItem = usePlayList.getState().getPlayItem();
-      const cacheKey = getLyricsCacheKey(playItem?.bvid, playItem?.cid);
-      if (!cacheKey) return;
-
-      try {
-        const store = await window.electron.getStore(StoreNameMap.LyricsCache);
-        const cached = store?.[cacheKey];
-        if (canceled || !cached) return;
-
-        setFontSize(typeof cached.fontSize === "number" ? cached.fontSize : DEFAULT_FONT_SIZE);
-      } catch {
-        // 缓存读取失败时使用默认值
-      }
-    };
-
-    void restoreLyricSettings();
     // 歌词内容与偏移量由全局 store 统一加载，顶部歌词栏与全屏播放器共用
     void useLyricsStore.getState().load();
-
-    return () => {
-      canceled = true;
-    };
   }, [playId]);
 
   const translationMap = useMemo(() => {
@@ -98,7 +80,7 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
 
   const persistLyricsCache = useMemo(
     () =>
-      debounce(async (playItem: PlayItem, nextOffset?: number, nextFontSize?: number) => {
+      debounce(async (playItem: PlayItem, nextOffset?: number) => {
         try {
           if (!playItem?.bvid || !playItem?.cid) return;
           const store = await window.electron.getStore(StoreNameMap.LyricsCache);
@@ -110,7 +92,6 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
             [key]: {
               ...prev,
               offset: nextOffset ?? 0,
-              fontSize: nextFontSize ?? 0,
             },
           });
         } catch {
@@ -129,26 +110,16 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
       const cid = playItem?.cid ? Number(playItem.cid) : undefined;
       if (!playItem?.bvid || cid === undefined || Number.isNaN(cid)) return;
 
-      persistLyricsCache(playItem, next, fontSize);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fontSize, persistLyricsCache, playId],
-  );
-
-  /** 调整全屏播放器歌词字号（仅影响全屏播放器，持久化到缓存） */
-  const handleFontSizeChange = useCallback(
-    (next: number) => {
-      setFontSize(next);
-
-      const playItem = usePlayList.getState().getPlayItem();
-      const cid = playItem?.cid ? Number(playItem.cid) : undefined;
-      if (!playItem?.bvid || cid === undefined || Number.isNaN(cid)) return;
-
-      persistLyricsCache(playItem, useLyricsStore.getState().offset, next);
+      persistLyricsCache(playItem, next);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [persistLyricsCache, playId],
   );
+
+  /** 调整全屏播放器歌词字号（全局设置，所有歌曲共用） */
+  const handleFontSizeChange = useCallback((next: number) => {
+    useSettings.getState().update({ lyricsFontSize: next });
+  }, []);
 
   const updateCenterPadding = useCallback(() => {
     if (activeIndex < 0) {
@@ -232,6 +203,9 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
     const romaji = romajiMap.get(line.time);
     const activeWeight = isActive ? "font-extrabold" : "font-normal";
     const activeShadow = isActive ? activeTextBase : "";
+    // 罗马音/翻译跟随字号控件缩放：当前行略大，其余行按比例缩小
+    const lineFontSize = isActive ? fontSize * ACTIVE_SCALE : fontSize;
+    const subFontSize = Math.max(12, Math.round(lineFontSize * SUB_SCALE));
 
     return (
       <div
@@ -244,7 +218,7 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
           centered ? "text-center" : "text-left",
           isActive ? "opacity-100" : "opacity-60",
         )}
-        style={{ fontSize: isActive ? fontSize * 1.5 : fontSize, transform: "none" }}
+        style={{ fontSize: lineFontSize, transform: "none" }}
       >
         <div
           className={clsx("leading-snug break-words whitespace-pre-wrap", activeWeight, activeShadow)}
@@ -252,9 +226,21 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
         >
           {line.text}
         </div>
-        {romaji ? <div className="mt-1 text-sm break-words whitespace-pre-wrap text-white/70">{romaji}</div> : null}
+        {romaji ? (
+          <div
+            className="mt-1 leading-snug break-words whitespace-pre-wrap text-white/70"
+            style={{ fontSize: subFontSize }}
+          >
+            {romaji}
+          </div>
+        ) : null}
         {translation ? (
-          <div className="mt-1 text-sm break-words whitespace-pre-wrap text-white/80">{translation}</div>
+          <div
+            className="mt-1 leading-snug break-words whitespace-pre-wrap text-white/80"
+            style={{ fontSize: subFontSize }}
+          >
+            {translation}
+          </div>
         ) : null}
       </div>
     );

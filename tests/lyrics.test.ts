@@ -54,6 +54,7 @@ beforeEach(() => {
     syncDesktopLyrics: vi.fn(),
     onDesktopLyricsToggleRequested: vi.fn().mockReturnValue(() => {}),
     onDesktopLyricsLockToggleRequested: vi.fn().mockReturnValue(() => {}),
+    onDesktopLyricsCommand: vi.fn().mockReturnValue(() => {}),
   };
 });
 
@@ -405,6 +406,33 @@ describe("useLyricsStore", () => {
     } finally {
       stopSync();
     }
+  });
+
+  test("complements missing romaji for Japanese lyrics and keeps source romaji", async () => {
+    const romanizeLyrics = vi.fn().mockResolvedValue(["kaze ni", "machi no akari", null]);
+    (window as any).electron.romanizeLyrics = romanizeLyrics;
+
+    useLyricsStore
+      .getState()
+      .applyLyrics("[00:01.00]風に\n[00:02.00]街の灯り\n[00:03.00]Hello", undefined, "[00:01.00]ka ze ni");
+    await flushPromises();
+
+    expect(romanizeLyrics).toHaveBeenCalledWith(["風に", "街の灯り", "Hello"]);
+    expect(useLyricsStore.getState().romajiLyrics).toEqual([
+      { time: 1000, text: "ka ze ni" },
+      { time: 2000, text: "machi no akari" },
+    ]);
+  });
+
+  test("does not request romaji for Chinese lyrics", async () => {
+    const romanizeLyrics = vi.fn();
+    (window as any).electron.romanizeLyrics = romanizeLyrics;
+
+    useLyricsStore.getState().applyLyrics("[00:01.00]夜空中\n[00:02.00]最亮的星");
+    await flushPromises();
+
+    expect(romanizeLyrics).not.toHaveBeenCalled();
+    expect(useLyricsStore.getState().romajiLyrics).toEqual([]);
   });
 
   test("applies cached offset when loading lyrics", async () => {

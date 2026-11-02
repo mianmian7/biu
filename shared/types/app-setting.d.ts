@@ -38,6 +38,8 @@ interface AppSettings {
   reportPlayHistory: boolean;
   /** 本地音乐目录列表 */
   localMusicDirs: string[];
+  /** 歌词页（全屏播放器）字号（px），所有歌曲共用 */
+  lyricsFontSize: number;
   /** 是否在主窗口顶部显示歌词栏 */
   showTopLyrics: boolean;
   /** 顶部歌词栏是否显示翻译歌词 */
@@ -48,4 +50,6 @@ interface AppSettings {
   desktopLyricsLocked: boolean;
   /** 桌面歌词字号（px） */
   desktopLyricsFontSize: number;
+  /** 桌面歌词样式 */
+  desktopLyricsStyle: DesktopLyricsStyle;
 }

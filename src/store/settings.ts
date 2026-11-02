@@ -77,11 +77,13 @@ export const useSettings = create<AppSettings & SettingsActions>()(
           sideMenuCollectionFolded: state.sideMenuCollectionFolded,
           reportPlayHistory: state.reportPlayHistory,
           localMusicDirs: state.localMusicDirs,
+          lyricsFontSize: state.lyricsFontSize,
           showTopLyrics: state.showTopLyrics,
           showTopLyricsTranslation: state.showTopLyricsTranslation,
           showDesktopLyrics: state.showDesktopLyrics,
           desktopLyricsLocked: state.desktopLyricsLocked,
           desktopLyricsFontSize: state.desktopLyricsFontSize,
+          desktopLyricsStyle: state.desktopLyricsStyle,
         };
       },
     },

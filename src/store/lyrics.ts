@@ -4,6 +4,7 @@ import type { WebPlayerParams } from "@/service/web-player";
 import type { AutoLyricsResult } from "@shared/auto-lyrics/service-types";
 
 import { getLyricsByBili } from "@/components/lyrics/get-lyrics";
+import { isJapaneseLyrics, needsRomaji } from "@shared/lyrics/romaji";
 import { StoreNameMap } from "@shared/store";
 
 import { usePlayList } from "./play-list";
@@ -291,3 +292,46 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
     }
   },
 }));
+
+/**
+ * 补齐缺失的罗马音。
+ *
+ * 网易云很多日语歌只有翻译没有罗马音，或罗马音只覆盖部分行；歌词变化后为缺失的行本地生成，
+ * 来源自带的罗马音优先保留。生成结果只放在内存里，不写入歌词缓存。
+ */
+async function complementRomaji(lyrics: LyricLine[]) {
+  const romanize = window.electron?.romanizeLyrics;
+  if (!romanize || !lyrics.length) return;
+
+  const texts = lyrics.map(line => line.text);
+  if (!isJapaneseLyrics(texts)) return;
+
+  const covered = new Set(useLyricsStore.getState().romajiLyrics.map(line => line.time));
+  if (lyrics.every(line => covered.has(line.time) || !needsRomaji(line.text))) return;
+
+  let generated: (string | null)[];
+  try {
+    generated = await romanize(texts);
+  } catch {
+    return;
+  }
+
+  // 等待期间歌词已切换（切歌/采用新歌词）时丢弃结果
+  const state = useLyricsStore.getState();
+  if (state.lyrics !== lyrics) return;
+
+  const existing = new Set(state.romajiLyrics.map(line => line.time));
+  const added = lyrics.flatMap((line, i) => {
+    const text = generated[i];
+    return text && !existing.has(line.time) ? [{ time: line.time, text }] : [];
+  });
+  if (!added.length) return;
+
+  useLyricsStore.setState({
+    romajiLyrics: [...state.romajiLyrics, ...added].toSorted((a, b) => a.time - b.time),
+  });
+}
+
+useLyricsStore.subscribe((state, prevState) => {
+  if (state.lyrics !== prevState.lyrics) void complementRomaji(state.lyrics);
+});

@@ -42,6 +42,8 @@ export const channel = {
     searchNeteaseSongs: "lyrics:netease-search",
     getNeteaseLyrics: "lyrics:netease-lyrics",
     searchLrclib: "lyrics:lrclib-search",
+    /** 为日语歌词行本地生成罗马音 */
+    romanize: "lyrics:romanize",
   },
   router: {
     navigate: "router:navigate",
@@ -105,8 +107,17 @@ export const channel = {
     toggleRequested: "desktop-lyrics:toggle-requested",
     /** 桌面歌词窗口/托盘 -> 主进程 -> 主窗口：请求切换锁定 */
     lockToggleRequested: "desktop-lyrics:lock-toggle-requested",
-    requestToggle: "desktop-lyrics:request-toggle",
-    requestToggleLock: "desktop-lyrics:request-toggle-lock",
     getContent: "desktop-lyrics:get-content",
+    /** 桌面歌词窗口 -> 主进程：工具栏操作（播放控制/样式切换等），大多转发给主窗口 */
+    command: "desktop-lyrics:command",
+    /** 桌面歌词窗口 -> 主进程：开始/结束拖动窗口 */
+    dragStart: "desktop-lyrics:drag-start",
+    dragEnd: "desktop-lyrics:drag-end",
+    /** 桌面歌词窗口 -> 主进程：锁定状态下临时切换鼠标穿透（悬停解锁按钮） */
+    setIgnoreMouse: "desktop-lyrics:set-ignore-mouse",
+    /** 桌面歌词窗口 -> 主进程：内容高度变化，窗口高度跟随 */
+    setContentHeight: "desktop-lyrics:set-content-height",
+    /** 设置页 -> 主进程：重置窗口位置 */
+    resetPosition: "desktop-lyrics:reset-position",
   },
 };

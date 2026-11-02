@@ -1,5 +1,6 @@
 import { ipcMain } from "electron";
 
+import { romanizeLyricLines } from "../lyrics-romaji";
 import { getLyricsByLrclib, type SeachSongByLrclibParams } from "./api/lrclib-lyric";
 import {
   getLyricsByNetease,
@@ -21,4 +22,6 @@ export function registerLyricsHandlers() {
   ipcMain.handle(channel.lyrics.searchLrclib, async (_, params: SeachSongByLrclibParams) => {
     return getLyricsByLrclib(params);
   });
+
+  ipcMain.handle(channel.lyrics.romanize, async (_, lines: string[]) => romanizeLyricLines(lines));
 }

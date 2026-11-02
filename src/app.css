@@ -60,3 +60,18 @@ html, body, #root {
 
   padding: 0;
 }
+
+/* 桌面歌词换行淡入：只做不透明度，不做位移，避免透明窗口残留阴影 */
+@keyframes desktop-lyrics-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.desktop-lyrics-fade {
+  animation: desktop-lyrics-fade-in 180ms ease-out both;
+}

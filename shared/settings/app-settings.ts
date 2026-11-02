@@ -1,3 +1,5 @@
+import { defaultDesktopLyricsStyle } from "./desktop-lyrics";
+
 export const defaultAppSettings: AppSettings = {
   autoStart: false,
   closeWindowOption: "hide",
@@ -28,9 +30,11 @@ export const defaultAppSettings: AppSettings = {
   },
   reportPlayHistory: true,
   localMusicDirs: [],
+  lyricsFontSize: 20,
   showTopLyrics: true,
   showTopLyricsTranslation: true,
   showDesktopLyrics: false,
   desktopLyricsLocked: true,
-  desktopLyricsFontSize: 32,
+  desktopLyricsFontSize: 36,
+  desktopLyricsStyle: defaultDesktopLyricsStyle,
 };
