@@ -5,17 +5,33 @@ import electronUpdater, { type UpdateDownloadedEvent } from "electron-updater";
 import path from "node:path";
 
 import { channel } from "../ipc/channel";
+import { classifyUpdateError } from "./classify-error";
+import { detectUpdateMode } from "./update-mode";
 
 const { autoUpdater } = electronUpdater;
-
+let phase: "checking" | "downloading" | "downloaded" | "installing" = "checking";
 let checkForUpdatesInterval: NodeJS.Timeout | null = null;
-function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => BrowserWindow | null }) {
+
+export async function downloadUpdate() {
+  phase = "downloading";
+  return autoUpdater.downloadUpdate();
+}
+
+export async function quitAndInstall() {
+  if ((await detectUpdateMode()) !== "auto") return false;
+  phase = "installing";
+  autoUpdater.quitAndInstall(true, true);
+  return true;
+}
+
+async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => BrowserWindow | null }) {
   autoUpdater.logger = log;
   log.transports.file.level = "info";
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
+  const mode = await detectUpdateMode();
+  autoUpdater.autoDownload = mode === "auto";
+  autoUpdater.autoInstallOnAppQuit = mode === "auto";
   autoUpdater.autoRunAppAfterInstall = true;
-  autoUpdater.allowPrerelease = true;
+  autoUpdater.allowPrerelease = false;
 
   if (isDev) {
     autoUpdater.updateConfigPath = path.resolve(process.cwd(), "electron/updater/dev-app-update.yml");
@@ -24,46 +40,49 @@ function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => BrowserWindo
   }
 
   autoUpdater.on("update-available", info => {
-    const mainWindow = getMainWindow();
-    mainWindow?.webContents.send(channel.app.onUpdateAvailable, {
+    if (mode === "auto") phase = "downloading";
+    getMainWindow()?.webContents.send(channel.app.onUpdateAvailable, {
       latestVersion: info.version,
       releaseNotes: info.releaseNotes,
     });
   });
 
   autoUpdater.on("download-progress", progressObj => {
-    const mainWindow = getMainWindow();
-    mainWindow?.webContents.send(channel.app.updateMessage, {
+    phase = "downloading";
+    getMainWindow()?.webContents.send(channel.app.updateMessage, {
       status: "downloading",
+      mode,
       processInfo: progressObj,
     });
   });
 
   autoUpdater.on("error", error => {
-    const mainWindow = getMainWindow();
-    mainWindow?.webContents.send(channel.app.updateMessage, {
+    log.warn(`[updater] ${classifyUpdateError(error)} (${phase})`, error);
+    if (phase !== "downloading" && phase !== "installing") return;
+    getMainWindow()?.webContents.send(channel.app.updateMessage, {
       status: "error",
+      mode,
       error: error instanceof Error ? error.message : String(error),
     });
+    phase = "checking";
   });
 
   autoUpdater.on("update-downloaded", (info: UpdateDownloadedEvent) => {
-    const mainWindow = getMainWindow();
-    mainWindow?.webContents.send(channel.app.updateMessage, {
+    phase = "downloaded";
+    getMainWindow()?.webContents.send(channel.app.updateMessage, {
       status: "downloaded",
-      downloadInfo: {
-        filePath: info.downloadedFile,
-      },
+      mode,
+      downloadInfo: { filePath: info.downloadedFile },
     });
   });
 
-  autoUpdater.checkForUpdates();
-  checkForUpdatesInterval = setInterval(
-    () => {
-      autoUpdater.checkForUpdates();
-    },
-    1 * 60 * 60 * 1000,
-  );
+  const check = () => {
+    autoUpdater.checkForUpdates().catch(error => {
+      log.warn(`[updater] background check: ${classifyUpdateError(error)}`, error);
+    });
+  };
+  check();
+  checkForUpdatesInterval = setInterval(check, 60 * 60 * 1000);
 }
 
 const stopCheckForUpdates = () => {

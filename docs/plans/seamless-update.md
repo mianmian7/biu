@@ -107,7 +107,7 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
 
 ### 2. 主进程：更新模式、开关、错误分类
 
-- [ ] 2.1 新增 `electron/updater/update-mode.ts`，内容是纯函数，加一个很薄的 IO 封装：
+- [x] 2.1 新增 `electron/updater/update-mode.ts`，内容是纯函数，加一个很薄的 IO 封装：
   - `type UpdateMode = "auto" | "manual"`
   - `resolveUpdateMode({ platform, env, execPath, codeSignatureKind, bundleParentWritable })`：
     - win32：设置了 `PORTABLE_EXECUTABLE_DIR` 或 `PORTABLE_EXECUTABLE_FILE` 时返回 manual，否则返回 auto；
@@ -115,7 +115,7 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
     - darwin：`execPath` 包含 `/AppTranslocation/` 或以 `/Volumes/` 开头时返回 manual；`codeSignatureKind !== "certificate"` 时返回 manual；`!bundleParentWritable` 时返回 manual；其余返回 auto。
   - `parseCodesignOutput(stderr): "certificate" | "adhoc" | "unsigned"`：输出含 `Signature=adhoc` 时返回 adhoc；含 `code object is not signed` 时返回 unsigned；含 `Authority=` 时返回 certificate。
   - `detectUpdateMode()`：只在 darwin 上执行 `execFile("/usr/bin/codesign", ["-dv", "--verbose=2", bundlePath])`，`bundlePath` 是从 `app.getPath("exe")` 往上三级得到的 `.app`；再用 `fs.promises.access(dirname(bundlePath), W_OK)` 检查目录可写。检测结果缓存起来，并写一行 `log.info("[updater] mode=…")`。
-- [ ] 2.2 修改 `electron/updater/index.ts`：
+- [x] 2.2 修改 `electron/updater/index.ts`：
   - `allowPrerelease` 从 `true` 改为 `false`；`allowDowngrade` 保持默认的 `false`；
   - `setupAutoUpdater` 改为 async：先 `await detectUpdateMode()`，再设置 `autoDownload = mode === "auto"`、`autoInstallOnAppQuit = mode === "auto"`；
   - manual 模式下，Mac 必须保持 `autoInstallOnAppQuit = false`，否则 Squirrel 会报签名错误；
@@ -123,12 +123,14 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
   - 启动检查和每小时检查都改成 `autoUpdater.checkForUpdates().catch(...)`，只写 `log.warn`，消除 `unhandledRejection`；
   - `error` 事件只在下载或安装阶段（用一个 `phase` 变量跟踪）才转发给渲染进程，检查阶段的错误只写日志；
   - 新增 `update-downloaded` 时把 `{ status: "downloaded", mode }` 发给渲染进程。
-- [ ] 2.3 修改 `electron/ipc/app.ts`：
+- [x] 2.3 修改 `electron/ipc/app.ts`：
   - `checkUpdate` 遇到 unpublished 错误时，返回 `{ isUpdateAvailable: false, notice: "新版本正在发布，请几分钟后再试" }`，不再返回 error；
   - 新增 `channel.app.getUpdateMode` handler，返回缓存的 mode；
   - `quitAndInstall` 在 mode 为 auto 时调用 `autoUpdater.quitAndInstall(true, true)`（Win 静默安装并重启；AppImage 重启；Mac 的 `MacUpdater.quitAndInstall` 忽略参数，并因 `autoRunAppAfterInstall=true` 自动重启），mode 为 manual 时直接返回 false。
-- [ ] 2.4 修改 `electron/ipc/channel.ts`：增加 `getUpdateMode: "app:get-update-mode"`。
-- [ ] 2.5 修改 `electron/main.ts`：调用处改为 `setupAutoUpdater(...)` 并 catch 错误后写日志。`will-quit` 中的 `autoUpdater.removeAllListeners()` 保留：BaseUpdater 的退出安装挂在 `app.once("quit")` 上，不受影响。
+- [x] 2.4 修改 `electron/ipc/channel.ts`：增加 `getUpdateMode: "app:get-update-mode"`。
+- [x] 2.5 修改 `electron/main.ts`：调用处改为 `setupAutoUpdater(...)` 并 catch 错误后写日志。`will-quit` 中的 `autoUpdater.removeAllListeners()` 保留：BaseUpdater 的退出安装挂在 `app.once("quit")` 上，不受影响。
+
+执行结果（2.1–2.5）：已实现模式检测与缓存、后台下载、错误分类、IPC 模式查询和安装门控；检查失败记录 warn。错误分类独立为纯函数模块，便于在 Linux 上测试。
 
 ### 3. 预加载与渲染进程
 

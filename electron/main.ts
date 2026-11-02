@@ -174,7 +174,7 @@ if (!gotTheLock) {
 
     setupAutoUpdater({
       getMainWindow: () => mainWindow,
-    });
+    }).catch(error => log.warn("[updater] setup failed", error));
 
     registerAllShortcuts(() => mainWindow);
 
