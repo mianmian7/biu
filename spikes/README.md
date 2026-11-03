@@ -140,7 +140,7 @@ wait "$APP_PID"
 | S3 | 不在 Mac 测 Linux gst-libav | 填“不适用；Linux VM 矩阵待测” |
 | S4 | `stat -f '%z %N' src-tauri/target/release/biu-m0 src-tauri/target/release/bundle/dmg/*.dmg`；在 `src-tauri/` 执行 `cargo install cargo-bloat --locked`、`cargo bloat --release --crates -n 15 > ../../evidence/mac-bloat.txt` | dmg 字节及 MB=字节/1000000，arm64 目标 ≤8 MB，硬上限 10 MB；bloat 会重建未剥离副本，其文件大小不等于交付二进制 |
 | S5 | 用 `BIU_MODE=interactive` 启动，点击 `Lyrics prototype`；将光标移入窗口左上 100×60 解锁区域，移出；在下方放普通窗口；再把另一 app 全屏 | 透明无黑边、全屏 app 上方置顶、锁定点击穿透、悬停 ≤1000 ms 出现可操作区域。当前按钮只是原型，不含完整解锁状态机；缺失行为填不通过/待补，不视作完成。记录 60 s 的 `lyrics_frames`、Activity Monitor 歌词相关进程 CPU，目标60 fps、CPU<10% |
-| S6 | `BIU_MODE=controls` 启动可测 no-referrer 下 hdslb 图片；`BIU_WEBVIEW_PROXY=http://127.0.0.1:18765` 可打开独立 proxy 测试窗口 | 图片成功、代理服务器记录 `/art.svg` 且 Referer为空。该探针在Mac上要求macOS 14+。Linux实测代理作用于共享context，与S2 loopback冲突，**Linux webview代理不通过，采用只代理Rust流量**；正式策略列为计划§7 D6待用户拍板。**二维码/极验页面尚未接入这个播放器原型，不能在此工程完成“完整登录”验收**；需补登录复现页，保持待验证，不用外部浏览器登录代替 |
+| S6 | `BIU_MODE=controls` 启动可测 no-referrer 下 hdslb 图片；`BIU_WEBVIEW_PROXY=http://127.0.0.1:18765` 可打开独立 proxy 测试窗口 | 图片成功、代理服务器记录 `/art.svg` 且 Referer为空。该探针在Mac上要求macOS 14+。Linux实测代理作用于共享context，与S2 loopback冲突，**Linux webview代理不通过，采用只代理Rust流量**；正式策略已按计划§7 D6=A确定（用户已拍板 2026-11-03）。**二维码/极验页面尚未接入这个播放器原型，不能在此工程完成“完整登录”验收**；需补登录复现页，保持待验证，不用外部浏览器登录代替 |
 | S8 | `BIU_MODE=full` 播放时打开 macOS 正在播放，查看标题/封面，用实体媒体键暂停/播放/上一首/下一首 | 记录每个动作、前端时间是否停止/继续及 `media_action`。若原生 mediaSession 不行，计划退路是 souvlaki；当前 souvlaki 启动接线只实现 Linux，Mac 需另补，不能声称已验证 |
 
 ### 1.5 S7：仅本地 HTTP 的 0.0.1 → 0.0.2

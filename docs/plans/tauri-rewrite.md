@@ -293,7 +293,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - 缺口：当前解锁按钮为常显原型，完整锁定/悬停显示状态机未实现；不能宣称“1 s内出现解锁按钮”通过。透明无黑边、实体点击穿透、全屏app上方置顶、Mac/Windows CPU<10%均未验证。Wayland限制按原计划记录；Mac/Windows失败仍需报告用户。
 - [ ] S6 图片 / 登录 / 极验 / webview 代理
   - 结果：**图片通过；Linux webview 代理不通过（与 S2 退路 A 冲突），采用『只代理 Rust 流量』**；二维码完整登录/极验、mac / pc仍待验证。no-referrer页面实载hdslb默认头像，**naturalWidth=180 px**；`WebviewWindowBuilder::proxy_url`探针图片加载成功，上游记录代理请求且Referer为空。
-  - 发现：Linux上代理窗口会影响共享WebKit context，连主窗口loopback媒体请求也进入测试代理，从而播放失败。因此Linux采用只代理Rust流量的退路，图片等webview直连，并在设置明示；正式产品策略作为§7 D6待用户拍板。Mac代理探针已启用tauri的`macos-proxy` feature，需macOS 14+，尚未实机验证。
+  - 发现：Linux上代理窗口会影响共享WebKit context，连主窗口loopback媒体请求也进入测试代理，从而播放失败。因此Linux采用只代理Rust流量的退路，图片等webview直连，并在设置明示；正式产品策略已按§7 D6=A确定（用户已拍板 2026-11-03）。Mac代理探针已启用tauri的`macos-proxy` feature，需macOS 14+，尚未实机验证。
   - 缺口：当前独立播放器原型没有二维码/极验最小页面，内嵌正式dist不等于已适配正式登录。未发起扫码授权、未自动点击验证码、未使用真实cookie。README明确此格不能靠外部浏览器或占位页验收，需要补最小登录复现页并由用户操作。
 - [ ] S7 更新端到端
   - 结果：**Linux AppImage 本地测试更新链通过；mac / pc 待运行**。`python3 -m http.server`仅监听127.0.0.1；Tauri updater后台下载并验签，本地测试AppImage **0.0.1→0.0.2** 安装后退出，再次启动确为0.0.2；测试设置和虚拟登录夹具均保留（两个preserved字段为true）。本轮使用补齐媒体插件后的AppImage重跑成功。
@@ -317,7 +317,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 ### M2 — 网络、cookie、登录
 - [ ] `bili/client.rs`、`bili/request.rs`（白名单）、cookie jar 落盘
 - [ ] axios adapter；WBI / bili_ticket；代理设置（34）；cookie 命令（35–36）
-  - M0审查安全约束：M2仅放行playurl返回的具体CDN host；不得复制spike原`*.akamaized.net`后缀白名单、夹具放行或写死403刷新逻辑。spike测试路径须保持env/cfg显式开关，正式请求不能带测试分支。Linux webview代理策略见§7 D6。
+  - M0审查安全约束：M2仅放行playurl返回的具体CDN host；不得复制spike原`*.akamaized.net`后缀白名单、夹具放行或写死403刷新逻辑。spike测试路径须保持env/cfg显式开关，正式请求不能带测试分支。Linux代理按§7 D6=A执行（用户已拍板 2026-11-03）：仅代理Rust侧B站API、登录、音频和下载；webview图片等直连并在设置明示，暂不推进B。
 - [ ] 二维码登录、短信/密码登录、极验（按 S6 结论）、退出登录
 - 测试：Rust 单元——WBI 签名用现有 TS 实现生成的测试向量对比；Set-Cookie 写入 jar；白名单拒绝非 B 站域名；代理切换后新请求走代理（wiremock / 本地 HTTP 代理）。前端单元——adapter 把 axios 配置正确转成 `bili_request` 参数并还原响应。手动：登录 → 首页推荐、搜索、收藏夹、动态、个人主页各页面能正常显示，重启后仍登录。
 
@@ -407,7 +407,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 | D3 | 桌面歌词锁定后的悬停 | A. Rust 每 100 ms 轮询光标位置，进入解锁按钮区域时临时取消穿透；B. 锁定后完全穿透，只能从托盘或快捷键解锁 | **A**（待用户拍板） | 保留现在的交互；轮询开销很小，且只在锁定且窗口可见时运行 |
 | D4 | 按需资源托管 | A. 只用 GitHub Release；B. 只用国内镜像；C. 两者，按顺序回退 | **C**（待用户拍板） | 国内用户访问 GitHub 下载不稳定。sha256 写在随包的清单里，镜像不可信也不影响安全。国内镜像的具体选择（Gitee Release、对象存储等）需要用户提供账号 |
 | D5 | Tauri 首版版本号与 bundle id | A. `2.0.0`，沿用 `com.biu.wood3n`；B. 继续 `-autolyrics.N` 后缀 | **A**（待用户拍板） | 框架换了，主版本号升级表达清楚；Tauri updater 只在 Tauri 版本之间比较，不受旧通道后缀限制。沿用 bundle id 时 Mac 新版直接覆盖旧 `.app` |
-| D6 | Linux 代理策略（M0实测新增） | A. 只代理Rust流量，webview图片等直连并在设置明示；B. 验证独立context或loopback排除后再支持webview代理 | **A，待用户拍板**（M0先采用此退路） | WebKitGTK共享WebContext且ignore_hosts为空，webview代理会接管S2 loopback媒体，导致播放失败；图片探针成功不能算代理方案通过 |
+| D6 | Linux 代理策略（M0实测新增） | A. 只代理Rust流量，webview图片等直连并在设置明示；B. 验证独立context或loopback排除后再支持webview代理 | **A（用户已拍板 2026-11-03）**（M0先采用此退路） | WebKitGTK共享WebContext且ignore_hosts为空，webview代理会接管S2 loopback媒体，导致播放失败；图片探针成功不能算代理方案通过 |
 
 D1：用户已接受推荐默认值（2026-11-02 23:54 SGT）。
 
