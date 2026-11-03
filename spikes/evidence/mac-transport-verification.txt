@@ -1,0 +1,4 @@
+biu-tauri-m0.bundle: OK
+m0-inputs.tar.gz: OK
+9bdd4a9b47742372d69c18f0c576a6eb1368961794030c71b69422baa0874bca  ../../biu-tauri-m0.bundle
+a564da90964aff2ad2a6800d9aace2f150dfe1dfebb5d5b2d533615284f4968e  ../../m0-inputs.tar.gz
