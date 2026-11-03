@@ -38,8 +38,9 @@ Failed running AppleScript
 
 清单（执行者完成一项勾一项，在该项下追加一句结果）：
 
-- [ ] 1. 改 `spikes/README.md`（唯一改动文件）：§1.1 的 `tauri build --ci --bundles dmg` 与 §1.5 的 0.0.2 构建命令前都加 `CI=true `；在 §1.1 该命令下加一行注释：`# CI=true 让 Tauri 传 --skip-jenkins，跳过 Finder AppleScript（与 GitHub Actions 一致；dmg 无自定义窗口布局）。`。§1.1 的日志改写到 `../evidence/mac-build-dmgfix.log`，保留原失败日志 `mac-build.log` 不覆盖。不改 `tauri.conf.json`、`tauri.macos.conf.json`、脚本或 Rust 代码。
+- [x] 1. 改 `spikes/README.md`（唯一改动文件）：§1.1 的 `tauri build --ci --bundles dmg` 与 §1.5 的 0.0.2 构建命令前都加 `CI=true `；在 §1.1 该命令下加一行注释：`# CI=true 让 Tauri 传 --skip-jenkins，跳过 Finder AppleScript（与 GitHub Actions 一致；dmg 无自定义窗口布局）。`。§1.1 的日志改写到 `../evidence/mac-build-dmgfix.log`，保留原失败日志 `mac-build.log` 不覆盖。不改 `tauri.conf.json`、`tauri.macos.conf.json`、脚本或 Rust 代码。
   - 执行：Claude（osa-a1）自己做（两行文本，派出去不划算），一个本地 commit，不 push。
+  - 结果（2026-11-03，Claude）：§1.1、§1.5 两条构建命令已加 `CI=true`，§1.1 加注释行、日志改为 `mac-build-dmgfix.log`；只改 README，未在 Mac 上验证（第 2 步）。
 - [ ] 2. Mac 验证（下节命令），并按 README §1.4 S4、§1.5 S7 重跑，回填 `tauri-rewrite.md` S4/S7 项下结果。
   - 执行：Sol（mac 线程，`delegate_task` + mac `environmentId`），与 §6 “S1、S5、S7、S8 的 Mac 执行与记录”同一角色；必须等 soak 线程 mcp:2d74e759 结束后开始，不与其抢 CPU、不动其进程。顺带审查第 1 步的 README 改动（作者 Claude，审查者 Sol）。
   - 最终验收：Opus（osa-a1）核对回传的实际输出。
