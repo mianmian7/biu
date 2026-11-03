@@ -1,0 +1,317 @@
+{
+  "custom": {
+    "run": {
+      "mode": "custom",
+      "label": "custom",
+      "app_pid": 96190,
+      "exit": -6,
+      "elapsed_seconds": 50.234656499989796,
+      "complete": false,
+      "failures": []
+    },
+    "seek_targets": [
+      56,
+      26,
+      235,
+      162,
+      169,
+      255,
+      83,
+      100,
+      271,
+      154
+    ],
+    "seek_ms": [
+      218,
+      225,
+      225,
+      223,
+      223,
+      226,
+      228,
+      223,
+      224,
+      225
+    ],
+    "seek_max_ms": 228,
+    "transport_events": 258,
+    "range_requests": 258,
+    "status_counts": {
+      "206": 258
+    },
+    "url_refresh_events": 119,
+    "configured_soak_seconds": 3600,
+    "soak_started": true,
+    "completed_soak_seconds": null,
+    "last_observed_soak_seconds": 30.003,
+    "soak_reload_rounds": 1,
+    "main_tree_rss_samples": 5,
+    "main_tree_peak_bytes": 107020288,
+    "main_tree_last_bytes": 104808448,
+    "main_tree_note": "ps parent-tree misses launchd-owned WebKit; not total app RSS",
+    "attributed_subset_peak_bytes": 183943168,
+    "new_webkit_cohort_peak_bytes": null,
+    "post_600s_OLS_MB_per_min": null,
+    "last_30min_OLS_MB_per_min": null,
+    "memory_verdict": "not evaluable: no 3600 s completed soak and no post-warmup samples"
+  },
+  "http": {
+    "run": {
+      "mode": "full",
+      "label": "http",
+      "app_pid": 97192,
+      "exit": -15,
+      "elapsed_seconds": 261.027799708012,
+      "complete": false,
+      "failures": [],
+      "termination_reason": "executor SIGTERM before soak; see mac-session-state.json; not an application crash"
+    },
+    "seek_targets": [],
+    "seek_ms": [],
+    "seek_max_ms": null,
+    "transport_events": 2,
+    "range_requests": 2,
+    "status_counts": {
+      "206": 2
+    },
+    "url_refresh_events": 2,
+    "configured_soak_seconds": 3600,
+    "soak_started": false,
+    "completed_soak_seconds": null,
+    "last_observed_soak_seconds": 0,
+    "soak_reload_rounds": 0,
+    "main_tree_rss_samples": 26,
+    "main_tree_peak_bytes": 105906176,
+    "main_tree_last_bytes": 59523072,
+    "main_tree_note": "ps parent-tree misses launchd-owned WebKit; not total app RSS",
+    "attributed_subset_peak_bytes": 174669824,
+    "new_webkit_cohort_peak_bytes": 245727232,
+    "post_600s_OLS_MB_per_min": null,
+    "last_30min_OLS_MB_per_min": null,
+    "memory_verdict": "not evaluable: no 3600 s completed soak and no post-warmup samples"
+  },
+  "s5": {
+    "elapsed_seconds": 80.93567791598616,
+    "exit": -15,
+    "stopped_by_executor_at_bound": true,
+    "events": [
+      {
+        "event": "startup",
+        "version": "0.0.1"
+      },
+      {
+        "event": "transport",
+        "kind": "loopback-http-token"
+      },
+      {
+        "codecs": {
+          "audio/flac": "maybe",
+          "audio/mp4; codecs=\"ec-3\"": "probably",
+          "audio/mp4; codecs=\"fLaC\"": "probably",
+          "audio/mp4; codecs=\"flac\"": "probably",
+          "audio/mp4; codecs=\"mp4a.40.2\"": "probably"
+        },
+        "event": "environment",
+        "mediaSession": true,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+      },
+      {
+        "event": "dependency_probe",
+        "result": {
+          "files": 3,
+          "flac_frames": 4608,
+          "fonts": 998,
+          "md5": "0e143fa33c7839086cc703a7877a6145",
+          "mp4_tracks": 1,
+          "resample_frames": 512,
+          "tags": true
+        }
+      },
+      {
+        "always_on_top": true,
+        "event": "lyrics_api",
+        "ignore_cursor": true,
+        "poll_ms": 100,
+        "transparent": true
+      },
+      {
+        "event": "url_refresh",
+        "range": "bytes=0-1"
+      },
+      {
+        "bytes": 2,
+        "event": "http_range",
+        "ms": 8.391208,
+        "range": "bytes=0-1",
+        "round": null,
+        "status": 206
+      },
+      {
+        "event": "url_refresh",
+        "range": "bytes=0-4852593"
+      },
+      {
+        "event": "url_refresh",
+        "range": "bytes=98304-4852593"
+      },
+      {
+        "bytes": 131072,
+        "event": "http_range",
+        "ms": 289.383625,
+        "range": "bytes=0-4852593",
+        "round": null,
+        "status": 206
+      },
+      {
+        "bytes": 4754290,
+        "event": "http_range",
+        "ms": 11099.503290999999,
+        "range": "bytes=98304-4852593",
+        "round": null,
+        "status": 206
+      },
+      {
+        "event": "lyrics_poll_alive",
+        "seconds": 60
+      }
+    ],
+    "ps_cpu_percent_sum_mean": 0.7374999999999999,
+    "ps_cpu_percent_sum_max": 4.6,
+    "cpu_samples": 16,
+    "cpu_limitations": "native-new-XPC cohort; includes startup. No lyrics_frames means this is not animated-lyrics CPU acceptance."
+  },
+  "s6": {
+    "elapsed_seconds": 25.270112542028073,
+    "exit": 0,
+    "stopped_by_executor_at_bound": false,
+    "events": [
+      {
+        "event": "startup",
+        "version": "0.0.1"
+      },
+      {
+        "event": "transport",
+        "kind": "loopback-http-token"
+      },
+      {
+        "codecs": {
+          "audio/flac": "maybe",
+          "audio/mp4; codecs=\"ec-3\"": "probably",
+          "audio/mp4; codecs=\"fLaC\"": "probably",
+          "audio/mp4; codecs=\"flac\"": "probably",
+          "audio/mp4; codecs=\"mp4a.40.2\"": "probably"
+        },
+        "event": "environment",
+        "mediaSession": true,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+      },
+      {
+        "bytes": 2,
+        "event": "http_range",
+        "ms": 1.388458,
+        "range": "bytes=0-1",
+        "round": null,
+        "status": 206
+      },
+      {
+        "bytes": 4852594,
+        "event": "http_range",
+        "ms": 18.940959,
+        "range": "bytes=0-4852593",
+        "round": null,
+        "status": 206
+      },
+      {
+        "event": "hdslb_image",
+        "loaded": true,
+        "width": 180
+      },
+      {
+        "event": "controls_playing"
+      }
+    ],
+    "ps_cpu_percent_sum_mean": 0.26,
+    "ps_cpu_percent_sum_max": 0.4,
+    "cpu_samples": 5,
+    "cpu_limitations": "native-new-XPC cohort; includes startup. No lyrics_frames means this is not animated-lyrics CPU acceptance."
+  },
+  "s6-proxy": {
+    "elapsed_seconds": 25.273183124954812,
+    "exit": 0,
+    "stopped_by_executor_at_bound": false,
+    "events": [
+      {
+        "event": "startup",
+        "version": "0.0.1"
+      },
+      {
+        "event": "proxy_image",
+        "loaded": false
+      },
+      {
+        "event": "transport",
+        "kind": "loopback-http-token"
+      },
+      {
+        "codecs": {
+          "audio/flac": "maybe",
+          "audio/mp4; codecs=\"ec-3\"": "probably",
+          "audio/mp4; codecs=\"fLaC\"": "probably",
+          "audio/mp4; codecs=\"flac\"": "probably",
+          "audio/mp4; codecs=\"mp4a.40.2\"": "probably"
+        },
+        "event": "environment",
+        "mediaSession": true,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+      },
+      {
+        "event": "hdslb_image",
+        "loaded": true,
+        "width": 180
+      },
+      {
+        "bytes": 2,
+        "event": "http_range",
+        "ms": 0.392042,
+        "range": "bytes=0-1",
+        "round": null,
+        "status": 206
+      },
+      {
+        "bytes": 4852594,
+        "event": "http_range",
+        "ms": 17.545082999999998,
+        "range": "bytes=0-4852593",
+        "round": null,
+        "status": 206
+      },
+      {
+        "event": "controls_playing"
+      }
+    ],
+    "ps_cpu_percent_sum_mean": 0.28,
+    "ps_cpu_percent_sum_max": 0.4,
+    "cpu_samples": 5,
+    "cpu_limitations": "native-new-XPC cohort; includes startup. No lyrics_frames means this is not animated-lyrics CPU acceptance."
+  },
+  "proxy_server": {
+    "art_svg_requests": [
+      {
+        "time": 1793674702.9180832,
+        "path": "/art.svg",
+        "round": null,
+        "range": null,
+        "referer": null,
+        "proxy": false
+      }
+    ],
+    "proxy_art_empty_referer": false
+  },
+  "s8": {
+    "mediaSession_API_present": true,
+    "metadata_and_handler_setup_reached": "custom run reached seek_seed and seek after metadata/handler setup in harness.js",
+    "physical_actions_observed": 0,
+    "now_playing_verified": false,
+    "source_limitation": "mediaSession handlers in harness.js report media_action only; no explicit audio.pause/play or previous/next playback mutation in those callbacks. Mac souvlaki wiring is absent."
+  }
+}

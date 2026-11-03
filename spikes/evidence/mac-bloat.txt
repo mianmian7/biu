@@ -1,0 +1,20 @@
+ File  .text     Size Crate
+ 8.1%  17.0% 904.8KiB tauri
+ 6.8%  14.2% 754.6KiB std
+ 3.8%   8.0% 426.1KiB lofty
+ 3.4%   7.0% 375.4KiB tokio
+ 2.8%   5.9% 312.2KiB rustfft
+ 2.3%   4.8% 255.6KiB rustls
+ 2.0%   4.2% 225.9KiB biu_m0
+ 2.0%   4.1% 219.1KiB reqwest
+ 1.0%   2.1% 110.7KiB tao
+ 0.9%   1.8%  97.2KiB ring
+ 0.7%   1.5%  82.2KiB symphonia_format_isomp4
+ 0.7%   1.5%  79.8KiB muda
+ 0.7%   1.4%  75.5KiB tauri_utils
+ 0.7%   1.4%  73.3KiB wry
+ 0.6%   1.2%  63.2KiB hyper_util
+11.5%  23.9%   1.2MiB And 171 more crates. Use -n N to show more.
+47.9% 100.0%   5.2MiB .text section size, the file size is 10.9MiB
+
+Note: numbers above are a result of guesswork. They are not 100% correct and never will be.

@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/scripts/check_evidence.py", line 10, in <module>
+    assert events('complete'),'no completion event'
+           ~~~~~~^^^^^^^^^^^^
+AssertionError: no completion event

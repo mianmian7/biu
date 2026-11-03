@@ -1,0 +1,12 @@
+{"event":"startup","version":"0.0.1"}
+{"event":"transport","kind":"loopback-http-token"}
+{"codecs":{"audio/flac":"maybe","audio/mp4; codecs=\"ec-3\"":"probably","audio/mp4; codecs=\"fLaC\"":"probably","audio/mp4; codecs=\"flac\"":"probably","audio/mp4; codecs=\"mp4a.40.2\"":"probably"},"event":"environment","mediaSession":true,"userAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"}
+{"event":"dependency_probe","result":{"files":3,"flac_frames":4608,"fonts":998,"md5":"0e143fa33c7839086cc703a7877a6145","mp4_tracks":1,"resample_frames":512,"tags":true}}
+{"always_on_top":true,"event":"lyrics_api","ignore_cursor":true,"poll_ms":100,"transparent":true}
+{"event":"url_refresh","range":"bytes=0-1"}
+{"bytes":2,"event":"http_range","ms":8.391208,"range":"bytes=0-1","round":null,"status":206}
+{"event":"url_refresh","range":"bytes=0-4852593"}
+{"event":"url_refresh","range":"bytes=98304-4852593"}
+{"bytes":131072,"event":"http_range","ms":289.383625,"range":"bytes=0-4852593","round":null,"status":206}
+{"bytes":4754290,"event":"http_range","ms":11099.503290999999,"range":"bytes=98304-4852593","round":null,"status":206}
+{"event":"lyrics_poll_alive","seconds":60}

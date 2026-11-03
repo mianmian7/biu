@@ -1,0 +1,11 @@
+{
+  "unix_seconds": 1793675209.2295291,
+  "screen_locked": true,
+  "screen_lock_source": "ioreg Root IOConsoleUsers CGSSessionScreenIsLocked=true",
+  "http_app_pid": 97192,
+  "http_events": 13,
+  "soak_started": false,
+  "intervention": "SIGTERM only this test app after no aac_playing/soak_start while session locked; no unlock, UI click, or security change",
+  "causality": "locked session observed; causal relationship to media playing promise stall not established",
+  "permission_note": "launchctl procinfo requires root; no elevation attempted. ps, vmmap -summary and footprint reads succeeded."
+}

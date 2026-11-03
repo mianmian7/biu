@@ -1,0 +1,189 @@
+{
+  "label": "s6",
+  "mode": "controls",
+  "proxy_enabled": false,
+  "app_pid": 1718,
+  "elapsed_seconds": 25.270112542028073,
+  "bounded_probe_seconds": 35,
+  "stopped_by_executor_at_bound": false,
+  "exit": 0,
+  "cpu_note": "ps %cpu snapshots for native-new-XPC cohort; not a rendered-lyrics CPU acceptance result if no lyrics_frames",
+  "samples": [
+    {
+      "seconds": 0.04280508303781971,
+      "unix_seconds": 1793675533.640285,
+      "processes": [
+        {
+          "pid": 1718,
+          "ppid": 1552,
+          "rss_bytes": 163840,
+          "cpu_percent": 0.0,
+          "cpu_time": "0:00.00",
+          "name": "/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0"
+        }
+      ],
+      "rss_bytes": 163840,
+      "cpu_percent_sum": 0.0
+    },
+    {
+      "seconds": 5.100161708018277,
+      "unix_seconds": 1793675538.697657,
+      "processes": [
+        {
+          "pid": 1718,
+          "ppid": 1552,
+          "rss_bytes": 111968256,
+          "cpu_percent": 0.0,
+          "cpu_time": "0:00.30",
+          "name": "/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0"
+        },
+        {
+          "pid": 1721,
+          "ppid": 1,
+          "rss_bytes": 54493184,
+          "cpu_percent": 0.2,
+          "cpu_time": "0:00.23",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU"
+        },
+        {
+          "pid": 1722,
+          "ppid": 1,
+          "rss_bytes": 45580288,
+          "cpu_percent": 0.2,
+          "cpu_time": "0:00.16",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+        },
+        {
+          "pid": 1723,
+          "ppid": 1,
+          "rss_bytes": 25460736,
+          "cpu_percent": 0.0,
+          "cpu_time": "0:00.10",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking"
+        }
+      ],
+      "rss_bytes": 237502464,
+      "cpu_percent_sum": 0.4
+    },
+    {
+      "seconds": 10.15037458302686,
+      "unix_seconds": 1793675543.7478862,
+      "processes": [
+        {
+          "pid": 1718,
+          "ppid": 1552,
+          "rss_bytes": 111738880,
+          "cpu_percent": 0.0,
+          "cpu_time": "0:00.31",
+          "name": "/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0"
+        },
+        {
+          "pid": 1721,
+          "ppid": 1,
+          "rss_bytes": 53821440,
+          "cpu_percent": 0.2,
+          "cpu_time": "0:00.27",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU"
+        },
+        {
+          "pid": 1722,
+          "ppid": 1,
+          "rss_bytes": 45449216,
+          "cpu_percent": 0.1,
+          "cpu_time": "0:00.18",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+        },
+        {
+          "pid": 1723,
+          "ppid": 1,
+          "rss_bytes": 25477120,
+          "cpu_percent": 0.0,
+          "cpu_time": "0:00.11",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking"
+        }
+      ],
+      "rss_bytes": 236486656,
+      "cpu_percent_sum": 0.30000000000000004
+    },
+    {
+      "seconds": 15.198097333020996,
+      "unix_seconds": 1793675548.795624,
+      "processes": [
+        {
+          "pid": 1718,
+          "ppid": 1552,
+          "rss_bytes": 111738880,
+          "cpu_percent": 0.0,
+          "cpu_time": "0:00.31",
+          "name": "/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0"
+        },
+        {
+          "pid": 1721,
+          "ppid": 1,
+          "rss_bytes": 53870592,
+          "cpu_percent": 0.2,
+          "cpu_time": "0:00.31",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU"
+        },
+        {
+          "pid": 1722,
+          "ppid": 1,
+          "rss_bytes": 45301760,
+          "cpu_percent": 0.1,
+          "cpu_time": "0:00.20",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+        },
+        {
+          "pid": 1723,
+          "ppid": 1,
+          "rss_bytes": 25427968,
+          "cpu_percent": 0.0,
+          "cpu_time": "0:00.11",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking"
+        }
+      ],
+      "rss_bytes": 236339200,
+      "cpu_percent_sum": 0.30000000000000004
+    },
+    {
+      "seconds": 20.259188125026412,
+      "unix_seconds": 1793675553.8567302,
+      "processes": [
+        {
+          "pid": 1718,
+          "ppid": 1552,
+          "rss_bytes": 111853568,
+          "cpu_percent": 0.0,
+          "cpu_time": "0:00.31",
+          "name": "/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0"
+        },
+        {
+          "pid": 1721,
+          "ppid": 1,
+          "rss_bytes": 53919744,
+          "cpu_percent": 0.2,
+          "cpu_time": "0:00.35",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU"
+        },
+        {
+          "pid": 1722,
+          "ppid": 1,
+          "rss_bytes": 45318144,
+          "cpu_percent": 0.1,
+          "cpu_time": "0:00.22",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+        },
+        {
+          "pid": 1723,
+          "ppid": 1,
+          "rss_bytes": 25427968,
+          "cpu_percent": 0.0,
+          "cpu_time": "0:00.11",
+          "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking"
+        }
+      ],
+      "rss_bytes": 236519424,
+      "cpu_percent_sum": 0.30000000000000004
+    }
+  ]
+}

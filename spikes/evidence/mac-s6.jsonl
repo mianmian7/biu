@@ -1,0 +1,7 @@
+{"event":"startup","version":"0.0.1"}
+{"event":"transport","kind":"loopback-http-token"}
+{"codecs":{"audio/flac":"maybe","audio/mp4; codecs=\"ec-3\"":"probably","audio/mp4; codecs=\"fLaC\"":"probably","audio/mp4; codecs=\"flac\"":"probably","audio/mp4; codecs=\"mp4a.40.2\"":"probably"},"event":"environment","mediaSession":true,"userAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"}
+{"bytes":2,"event":"http_range","ms":1.388458,"range":"bytes=0-1","round":null,"status":206}
+{"bytes":4852594,"event":"http_range","ms":18.940959,"range":"bytes=0-4852593","round":null,"status":206}
+{"event":"hdslb_image","loaded":true,"width":180}
+{"event":"controls_playing"}

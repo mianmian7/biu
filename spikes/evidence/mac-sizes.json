@@ -1,17 +1,11 @@
 {
-  "dmg_build_succeeded": false,
-  "artifacts": [
-    {
-      "path": "m0/src-tauri/target/release/biu-m0",
-      "bytes": 8258528,
-      "MB": 8.258528,
-      "role": "release executable; not a DMG"
-    },
-    {
-      "path": "m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0",
-      "bytes": 8210656,
-      "MB": 8.210656,
-      "role": "release executable; not a DMG"
-    }
-  ]
+  "measurement": "before cargo bloat; existing 0.0.1 artifacts",
+  "app_bundle_logical_bytes": 8226719,
+  "app_bundle_files": 4,
+  "release_binary_bytes": 8258528,
+  "app_executable_bytes": 8210656,
+  "dmg_status": "PARKED per owner decision 2026-11-03",
+  "app_bundle_logical_MB": 8.226719,
+  "release_binary_MB": 8.258528,
+  "app_executable_MB": 8.210656
 }

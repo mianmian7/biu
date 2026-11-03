@@ -1,0 +1,141 @@
+{
+  "app_pid": 96190,
+  "baseline_native_webkit_pids": [
+    2510,
+    2513,
+    2516,
+    94040
+  ],
+  "probes": {
+    "96190": {
+      "pid": 96190,
+      "name": "/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0",
+      "attributed_to_app": true,
+      "tools": {
+        "vmmap": {
+          "exit": 0,
+          "summary": [
+            "Process:         biu-m0 [96190]",
+            "Path:            /Users/USER/*/Biu M0.app/Contents/MacOS/biu-m0",
+            "Identifier:      com.biu.spike.m0",
+            "Parent Process:  Python [96187]",
+            "Physical footprint:         31.5M",
+            "Physical footprint (peak):  31.7M"
+          ]
+        },
+        "footprint": {
+          "exit": 0,
+          "summary": []
+        },
+        "lsof": {
+          "exit": 0,
+          "app_path_association": true
+        }
+      }
+    },
+    "96198": {
+      "pid": 96198,
+      "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU",
+      "attributed_to_app": true,
+      "tools": {
+        "vmmap": {
+          "exit": 0,
+          "summary": [
+            "Process:         com.apple.WebKit.GPU [96198]",
+            "Path:            /System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU",
+            "Identifier:      com.apple.WebKit.GPU",
+            "Parent Process:  launchd [1]",
+            "Physical footprint:         29.1M",
+            "Physical footprint (peak):  32.7M"
+          ]
+        },
+        "footprint": {
+          "exit": 0,
+          "summary": []
+        },
+        "lsof": {
+          "exit": 0,
+          "app_path_association": true
+        }
+      }
+    },
+    "96200": {
+      "pid": 96200,
+      "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+      "attributed_to_app": false,
+      "tools": {
+        "vmmap": {
+          "exit": 0,
+          "summary": [
+            "Process:         com.apple.WebKit.WebContent [96200]",
+            "Path:            /System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+            "Identifier:      com.apple.WebKit.WebContent",
+            "Parent Process:  launchd [1]",
+            "Physical footprint:         55.9M",
+            "Physical footprint (peak):  58.4M"
+          ]
+        },
+        "footprint": {
+          "exit": 0,
+          "summary": []
+        },
+        "lsof": {
+          "exit": 0,
+          "app_path_association": false
+        }
+      }
+    },
+    "96201": {
+      "pid": 96201,
+      "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking",
+      "attributed_to_app": true,
+      "tools": {
+        "vmmap": {
+          "exit": 0,
+          "summary": [
+            "Process:         com.apple.WebKit.Networking [96201]",
+            "Path:            /System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking",
+            "Identifier:      com.apple.WebKit.Networking",
+            "Parent Process:  launchd [1]",
+            "Physical footprint:         8497K",
+            "Physical footprint (peak):  9057K"
+          ]
+        },
+        "footprint": {
+          "exit": 0,
+          "summary": []
+        },
+        "lsof": {
+          "exit": 0,
+          "app_path_association": true
+        }
+      }
+    },
+    "96204": {
+      "pid": 96204,
+      "name": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+      "attributed_to_app": false,
+      "tools": {
+        "vmmap": {
+          "exit": 0,
+          "summary": [
+            "Process:         com.apple.WebKit.WebContent [96204]",
+            "Path:            /System/Volumes/Preboot/Cryptexes/OS/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent",
+            "Identifier:      com.apple.WebKit.WebContent",
+            "Parent Process:  launchd [1]",
+            "Physical footprint:         15.4M",
+            "Physical footprint (peak):  16.1M"
+          ]
+        },
+        "footprint": {
+          "exit": 0,
+          "summary": []
+        },
+        "lsof": {
+          "exit": 0,
+          "app_path_association": false
+        }
+      }
+    }
+  }
+}
