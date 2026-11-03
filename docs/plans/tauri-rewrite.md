@@ -286,6 +286,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - 交付体积：**deb 5,084,262 字节（5.084262 MB）**；**rpm 5,089,701 字节（5.089701 MB）**；**strip 后二进制 10,659,672 字节（10.659672 MB）**；**含媒体插件 AppImage 145,115,656 字节（145.115656 MB）**。deb低于8 MB目标，deb/rpm低于10 MB下载包硬上限；裸二进制不适用压缩下载包门槛。AppImage按D1例外，不受10 MB限制。
   - AppImage处理：默认未打媒体插件的版本解码检测失败；启用 `bundle.linux.appimage.bundleMediaFramework=true` 后成功打包并通过 AAC、FLAC、10次拖动、波形冒烟。linuxdeploy 需要 patchelf，本次只用 `apt-get download` + `dpkg-deb -x` 解包到 worktree，不以sudo安装它。辅助AppImage较预算大，D1仍优先deb/rpm。
   - `cargo bloat --release --crates -n 15`：前几名 **zbus 896.5 KiB、std 866.7 KiB、tauri 820.2 KiB、lofty 432.2 KiB、tokio 382.4 KiB、rustfft 333.6 KiB、rustls 244.5 KiB**；前15名完整输出在 `spikes/evidence/cargo-bloat.txt`。LTO归属是工具估算；bloat重建的未strip分析副本约16.4 MiB，不能当成发布二进制实测值。
+  - Mac dmg 打包失败（AppleScript -2741）的根因与修复方案见 `docs/plans/macos-dmg-fix.md`（待用户批准）。
   - 证据：`sizes.json`（字节/MB/SHA256）、`frontend-manifest.json`、deb/rpm元数据；以上体积已在审查修复后重测，`acceptance-review.txt`记录非内存断言。Mac dmg与Windows NSIS没有本机实测值，未用预算冒充实测。
 - [ ] S5 桌面歌词窗口
   - 结果：**未验证（仅 API 调用无报错）**；完整交互/真实合成器、mac / pc / X11视觉 / Wayland GNOME/KDE仍待验证。创建透明、无边框、置顶窗口并成功调用鼠标穿透；D3每100 ms检查光标，进入左上100×60区域临时取消穿透。悬停轮询已去掉65 s截止，持续到窗口Destroyed事件；本轮日志记录轮询在3600 s仍运行，验证已超过原65 s截止；这仅修复原型生命周期，不代表完整D3交互已通过。
