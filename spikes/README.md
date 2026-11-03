@@ -88,7 +88,8 @@ cd ~/Developer/biu-m0-transfer/biu-tauri-m0/spikes
 npm ci --ignore-scripts --no-audit --no-fund
 mkdir -p evidence m0/private
 cd m0
-../node_modules/.bin/tauri build --ci --bundles dmg > ../evidence/mac-build.log 2>&1
+CI=true ../node_modules/.bin/tauri build --ci --bundles dmg > ../evidence/mac-build-dmgfix.log 2>&1
+# CI=true 让 Tauri 传 --skip-jenkins，跳过 Finder AppleScript（与 GitHub Actions 一致；dmg 无自定义窗口布局）。
 # macOS 覆盖配置自动选择 dmg / ad-hoc 签名 / icns。
 export BIU_SPIKE_FIXTURES=1 BIU_FIXTURES="$PWD/fixtures"
 export BIU_LOG="$PWD/../evidence/mac.jsonl"
@@ -154,7 +155,7 @@ chmod 700 private
 ../node_modules/.bin/tauri signer generate --ci -p '' -w private/updater.key > private/signer-generate.log 2>&1
 chmod 600 private/updater.key private/updater.key.pub
 ditto 'src-tauri/target/release/bundle/macos/Biu M0.app' 'private/Biu M0 0.0.1.app'
-../node_modules/.bin/tauri build --ci --bundles dmg --config '{"version":"0.0.2"}' > ../evidence/mac-build-002.log 2>&1
+CI=true ../node_modules/.bin/tauri build --ci --bundles dmg --config '{"version":"0.0.2"}' > ../evidence/mac-build-002.log 2>&1
 tar -czf private/http/Biu-M0-0.0.2.app.tar.gz -C src-tauri/target/release/bundle/macos 'Biu M0.app'
 ../node_modules/.bin/tauri signer sign -f private/updater.key -p '' --app-version 0.0.2 private/http/Biu-M0-0.0.2.app.tar.gz > private/signer-sign.log 2>&1
 python3 ../scripts/make_update_manifest.py --artifact private/http/Biu-M0-0.0.2.app.tar.gz --target darwin-aarch64 --out private/http
