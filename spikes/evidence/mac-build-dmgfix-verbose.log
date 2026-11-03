@@ -1,0 +1,91 @@
+       Debug [tauri_cli::helpers::app_paths] Found Tauri project inside /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri on early lookup
+       Debug [tauri_cli::helpers::app_paths] resolving frontend directory from /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0
+       Debug [globset] built glob set; 0 literals, 3 basenames, 0 extensions, 0 prefixes, 0 suffixes, 0 required extensions, 0 regexes
+       Debug [ignore::gitignore] opened gitignore file: /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/.gitignore
+       Debug [globset] glob `Glob("**/npm-debug.log*")` converted to regex: `"(?-u)^(?:/?|.*/)npm\\-debug\\.log[^/]*$"`
+       Debug [globset] glob `Glob("**/yarn-debug.log*")` converted to regex: `"(?-u)^(?:/?|.*/)yarn\\-debug\\.log[^/]*$"`
+       Debug [globset] glob `Glob("**/yarn-error.log*")` converted to regex: `"(?-u)^(?:/?|.*/)yarn\\-error\\.log[^/]*$"`
+       Debug [globset] glob `Glob("**/lerna-debug.log*")` converted to regex: `"(?-u)^(?:/?|.*/)lerna\\-debug\\.log[^/]*$"`
+       Debug [globset] built glob set; 4 literals, 33 basenames, 6 extensions, 0 prefixes, 0 suffixes, 1 required extensions, 4 regexes
+       Debug [ignore::gitignore] opened gitignore file: /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/.git/info/exclude
+       Debug [ignore::gitignore] opened gitignore file: /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/.gitignore
+       Debug [globset] glob `Glob("**/*.key.*")` converted to regex: `"(?-u)^(?:/?|.*/)[^/]*\\.key\\.[^/]*$"`
+       Debug [globset] built glob set; 2 literals, 8 basenames, 19 extensions, 0 prefixes, 0 suffixes, 3 required extensions, 1 regexes
+        Info [tauri_cli::build] Looking up installed tauri packages to check mismatched versions...
+     Running [tauri_cli] Command `cargo build --bins --features tauri/custom-protocol --release`
+    Finished `release` profile [optimized] target(s) in 0.72s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+       Built [tauri_cli::build] application at: /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/biu-m0
+    Bundling [tauri_bundler::bundle::macos::app] Biu M0.app (/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app)
+     Running [tauri_bundler::utils] Command `xattr  -crs /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app`
+     Signing [tauri_bundler::bundle::macos::sign] with identity "-"
+Signing with identity "-"
+Signing /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0
+     Running [tauri_macos_sign] Command `codesign  --force -s - --options runtime /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0`
+/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0: replacing existing signature
+Signing with identity "-"
+Signing /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app
+     Running [tauri_macos_sign] Command `codesign  --force -s - --options runtime /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app`
+/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app: replacing existing signature
+        Warn [tauri_bundler::bundle::macos::app] skipping app notarization, no APPLE_ID & APPLE_PASSWORD & APPLE_TEAM_ID or APPLE_API_KEY & APPLE_API_ISSUER & APPLE_API_KEY_PATH environment variables found
+    Bundling [tauri_bundler::bundle::macos::dmg] Biu M0_0.0.1_aarch64.dmg (/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/dmg/Biu M0_0.0.1_aarch64.dmg)
+     Running [tauri_bundler::bundle::macos::dmg] bundle_dmg.sh
+     Running [tauri_bundler::utils] Command `/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/dmg/bundle_dmg.sh  --volname Biu M0 --icon Biu M0.app 180 170 --app-drop-link 480 170 --window-size 660 400 --hide-extension Biu M0.app --volicon /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/dmg/icon.icns --skip-jenkins Biu M0_0.0.1_aarch64.dmg Biu M0.app`
+Creating disk image...
+hdiutil: WARNING: 'hdiutil create -volname -format ...' is deprecated. Please use 'diskutil image create from/blank --volumeName --format ...' instead.
+created: /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/rw.11048.Biu M0_0.0.1_aarch64.dmg
+hdiutil: WARNING: 'hdiutil resize ...' is deprecated. Please use 'diskutil image resize ...' instead.
+hdiutil: WARNING: 'hdiutil resize -size ...' is deprecated. Please use 'diskutil image resize --size ...' instead.
+Mounting disk image...
+hdiutil: WARNING: 'hdiutil attach -nobrowse ...' is deprecated. Please use 'diskutil image attach --mountOptions nobrowse ...' instead.
+Device name:     /dev/disk6
+Searching for mounted interstitial disk image using /dev/disk6s...
+Mount dir:       /Volumes/dmg.YDD7Zz
+Making link to Applications dir...
+/Volumes/dmg.YDD7Zz
+Copying volume icon file '/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/dmg/icon.icns'...
+
+Will skip running AppleScript to configure DMG aesthetics because of --skip-jenkins option.
+This will result in a DMG without any custom background or icons positioning.
+More info at https://github.com/create-dmg/create-dmg/issues/72
+
+Fixing permissions...
+Done fixing permissions
+Skipping blessing on sandbox
+Deleting .fseventsd
+Unmounting disk image...
+hdiutil: WARNING: 'hdiutil detach ...' is deprecated. Please use 'diskutil eject ...' instead.
+"disk6" ejected.
+Compressing disk image...
+Preparing imaging engine…
+Reading Protective Master Boot Record (MBR : 0)…
+   (CRC32 $B717F486: Protective Master Boot Record (MBR : 0))
+Reading GPT Header (Primary GPT Header : 1)…
+   (CRC32 $307057AA: GPT Header (Primary GPT Header : 1))
+Reading GPT Partition Data (Primary GPT Table : 2)…
+   (CRC32 $35ED6034: GPT Partition Data (Primary GPT Table : 2))
+Reading  (Apple_Free : 3)…
+   (CRC32 $00000000:  (Apple_Free : 3))
+Reading disk image (Apple_HFS : 4)…
+   (CRC32 $8D5798B3: disk image (Apple_HFS : 4))
+Reading  (Apple_Free : 5)…
+   (CRC32 $00000000:  (Apple_Free : 5))
+Reading GPT Partition Data (Backup GPT Table : 6)…
+   (CRC32 $35ED6034: GPT Partition Data (Backup GPT Table : 6))
+Reading GPT Header (Backup GPT Header : 7)…
+   (CRC32 $D29B6F48: GPT Header (Backup GPT Header : 7))
+Adding resources…
+Elapsed Time:  2.616s
+File size: 3946673 bytes, Checksum: CRC32 $0FD3AB09
+Sectors processed: 65616, 18260 compressed
+Speed: 3.4MB/s
+Savings: 88.3%
+hdiutil: WARNING: 'hdiutil convert -format ...' is deprecated. Please use 'diskutil image create from --format ...' instead.
+created: /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0_0.0.1_aarch64.dmg
+hdiutil does not support internet-enable. Note it was removed in macOS 10.15.
+Disk image done
+    Cleaning [tauri_bundler::bundle] /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app
+    Finished [tauri_bundler::bundle] 1 bundle at:
+        /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/dmg/Biu M0_0.0.1_aarch64.dmg (3.76 MiB)
+

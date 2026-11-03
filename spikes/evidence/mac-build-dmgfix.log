@@ -1,0 +1,20 @@
+        Info Looking up installed tauri packages to check mismatched versions...
+    Finished `release` profile [optimized] target(s) in 0.85s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+       Built application at: /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/biu-m0
+    Bundling Biu M0.app (/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app)
+     Signing with identity "-"
+Signing with identity "-"
+Signing /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0
+/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app/Contents/MacOS/biu-m0: replacing existing signature
+Signing with identity "-"
+Signing /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app
+/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app: replacing existing signature
+        Warn skipping app notarization, no APPLE_ID & APPLE_PASSWORD & APPLE_TEAM_ID or APPLE_API_KEY & APPLE_API_ISSUER & APPLE_API_KEY_PATH environment variables found
+    Bundling Biu M0_0.0.1_aarch64.dmg (/Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/dmg/Biu M0_0.0.1_aarch64.dmg)
+     Running bundle_dmg.sh
+    Cleaning /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/macos/Biu M0.app
+    Finished 1 bundle at:
+        /Users/mianmian/Developer/biu-m0-transfer/biu-tauri-m0/spikes/m0/src-tauri/target/release/bundle/dmg/Biu M0_0.0.1_aarch64.dmg (3.76 MiB)
+
