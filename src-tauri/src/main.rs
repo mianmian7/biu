@@ -10,6 +10,7 @@ mod local_music;
 mod lyrics;
 mod media;
 mod media_keys;
+mod migration;
 mod shortcut;
 mod store;
 mod tray;
@@ -229,6 +230,7 @@ fn main() {
             let bili_state = Arc::new(
                 BiliState::new(cookie_path, saved_proxy).expect("failed to initialize BiliState"),
             );
+            migration::run_startup_migration(app.handle(), &app_data_dir, &bili_state);
             sync_allowed_local_dirs_from_store(app.handle(), &bili_state);
             app.manage(bili_state.clone());
             app.manage(Arc::new(DesktopLyricsState::default()));

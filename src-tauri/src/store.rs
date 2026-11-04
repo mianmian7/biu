@@ -1,7 +1,5 @@
 use serde_json::{json, Value};
-#[cfg(test)]
 use std::collections::HashMap;
-#[cfg(test)]
 use std::path::PathBuf;
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_store::StoreExt;
@@ -240,8 +238,6 @@ pub fn get_saved_proxy_settings<R: Runtime>(app: &AppHandle<R>) -> Option<Value>
         .and_then(|v| v.get("appSettings")?.get("proxySettings").cloned())
 }
 
-/// Pure file-backed store helpers for unit tests without a running Tauri AppHandle.
-#[cfg(test)]
 pub fn file_store_get(dir: &std::path::Path, name: &str) -> Result<Value, String> {
     let filename = store_filename(name)?;
     let path: PathBuf = dir.join(filename);
