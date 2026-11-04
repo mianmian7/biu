@@ -123,12 +123,13 @@ Sol 审查 `8eaf2533` 和桥接版 `1a835bb6`，结论“暂不建议发布”�
   复审修复：pause/resume/retry/cancel/clear 均改为先 `stop_and_wait_worker` 等待旧 worker 退出后再加锁修改状态与删目录（`completed`/`failed` 不回改）；`WorkerControl` 保留在 `workers` 直至 worker 退出时由守卫移除并触发 `watch` 完成广播，令所有并发等待者共同等待且信号换用 `watch` 并清理完成的 `generations`；单分块整文件且 `actual_offset == 0`、`Content-Length` 匹配时接受 `200 OK` 截断写入；持久化 `stream_id` 并在流信息变化时清空临时目录重下、合并后校验 `m4s` 总长度；退出路径（托盘/主窗口关闭与 `RunEvent::Exit`）先停止全部 worker（限时 5s 杀停 ffmpeg）再 `save_to_disk`，转封装前清理残留 `.part`；补齐并发 pause/cancel 与 pause/resume、`Content-Range`/最终长度不符、转封装取消与超时 kill、cancel 仅删自身 `.part` 等测试。
 - [x] 重定向：`bili_request`、歌词和自动歌词的 HTTP 客户端每一跳都检查 host 白名单。（owner）
   `3b2fc916`。`allowlist_redirect_policy`；kuromoji 下载有 sha256 校验，不限制。
-- [ ] 代码逻辑审查（GPT-6.1-Sol）。
+- [x] 代码逻辑审查（GPT-6.1-Sol）。
   2026-11-05 审查记录（owner）：
   - Sol 第 1 轮（Tauri `8eaf2533`、桥接 `1a835bb6`）：不可发布，3 阻塞 + 10 应修，修复见上面各项。
   - Sol 复核 1–4 轮（桥接 `b4e5cdef` → `5b258345`，Tauri `5cdd4efc`、`cbf3fb89`）：陆续指出 Mac 隐藏窗口挡住安装、导出失败仍安装、读取失败记为完成、重试重复导入、普通退出安装无兜底、Linux AppImage 同步启动、Mac 普通退出会重启、导出期间退出可绕过、签名错误后仍安装、安装失败后未收回交接。均已修复；第 4 轮结论：桥接版可发布。
   - Opus 审 Argon 下载修复 `8b82c7c8`：不可发布（B1、B2、S1–S4）。Argon 在 `feat/tauri-dl3` 修复，合入 `370905a4`。Opus 复核：可发布，1 应修（续传的整文件单分块收到 200 永久失败）。
   - owner 修该应修，并补 `shutdown` 后不再启动 worker：`1e7916ca`，交 Argon 审。
+  - Argon 审 `1e7916ca`：可发布，无阻塞、无应修。
   - Codex 7d 余量 3%，Sol 后两段由 Opus / Argon 按作者异构替代。
 - [x] Mac 签名链：用 `workflow_dispatch` 跑 `release.yml`（只构建不发布），在 Mac 上对正式签名的 zip 执行 `codesign --verify -R`，条件取 `.6` 的 designated requirement。（owner）
   2026-11-05 部分完成：run 41902247789（`3b2fc916`）六目标通过，mac arm64 dmg 5.5 MB。Mac 上 `.6` release zip 的 DR 为 `identifier "com.biu.wood3n" and certificate leaf = H"9580df08…529b3c"`；`2.0.0` zip 同证书同 DR，`codesign --verify --deep --strict -R=<.6 DR>` 通过。`.7` 包构建后再验 `.6 DR → .7`。
