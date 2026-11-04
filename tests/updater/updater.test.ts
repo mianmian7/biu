@@ -11,7 +11,9 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
-  return { app: mocks.app, autoUpdater: new EventEmitter() };
+  const nativeAutoUpdater = new EventEmitter();
+  nativeAutoUpdater.setMaxListeners(0); // every test re-imports the updater module
+  return { app: mocks.app, autoUpdater: nativeAutoUpdater };
 });
 vi.mock("../../electron/migration", () => ({
   exportTauriMigration: async () => mocks.exportResult,
@@ -59,6 +61,21 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("updater lifecycle", () => {
+  it("takes the quit back when the install fails and the app keeps running", async () => {
+    const { setupAutoUpdater, quitAndInstall, isInstallerHandedOff, stopCheckForUpdates } =
+      await import("../../electron/updater");
+    await setupAutoUpdater({ getMainWindow: () => ({ webContents: { send: vi.fn() } }) as never });
+    updater.emit("update-downloaded", { downloadedFile: "/tmp/Biu.zip" });
+
+    expect(await quitAndInstall()).toBe(true);
+    expect(isInstallerHandedOff()).toBe(true);
+    // Squirrel.Mac rejects the signature; the app stays open.
+    updater.emit("error", new Error("update does not satisfy code requirement"));
+    expect(isInstallerHandedOff()).toBe(false);
+    expect(mocks.app.quitting).toBe(false);
+    stopCheckForUpdates();
+  });
+
   it("does not install when a signature error arrives while exporting", async () => {
     const { setupAutoUpdater, quitAndInstall, isInstallerHandedOff, stopCheckForUpdates } =
       await import("../../electron/updater");

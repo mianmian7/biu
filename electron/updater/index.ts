@@ -27,6 +27,13 @@ function handOffToInstaller() {
   (app as unknown as { quitting?: boolean }).quitting = true;
 }
 
+/** The install failed and the app keeps running: later quits must export again. */
+function takeBackFromInstaller() {
+  if (!installerHandedOff) return;
+  installerHandedOff = false;
+  (app as unknown as { quitting?: boolean }).quitting = false;
+}
+
 /**
  * The bridge's next update is the Tauri app, listed in the release's tauri*.yml
  * (latest*.yml there send older Electron clients to this bridge). Windows ARM64 gets its
@@ -127,6 +134,7 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
 
   autoUpdater.on("error", error => {
     log.warn(`[updater] ${classifyUpdateError(error)} (${phase})`, error);
+    takeBackFromInstaller();
     const signatureFailure = /code[\s_-]*(?:requirement|sign(?:ature|ing))|ERR_UPDATER_INVALID_SIGNATURE/i.test(
       `${(error as Error & { code?: string }).code ?? ""} ${error.message}`,
     );
