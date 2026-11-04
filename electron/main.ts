@@ -11,6 +11,7 @@ import { channel } from "./ipc/channel";
 import { quitAndSaveTasks } from "./ipc/download";
 import { registerIpcHandlers } from "./ipc/index";
 import { destroyMiniPlayer } from "./mini-player";
+import { exportTauriMigration } from "./migration";
 import { injectAuthCookie } from "./network/cookie";
 import { installWebRequestInterceptors } from "./network/interceptor";
 import { registerAllShortcuts, unregisterAllShortcuts } from "./shortcut";
@@ -155,7 +156,9 @@ if (!gotTheLock) {
     }
 
     createWindow();
-    injectAuthCookie();
+    injectAuthCookie().finally(() => {
+      void exportTauriMigration();
+    });
 
     // 如果上次退出时开启了桌面歌词，启动后自动恢复悬浮歌词窗口
     try {
@@ -191,12 +194,15 @@ if (!gotTheLock) {
         },
       });
     }
+
+    void exportTauriMigration();
   });
 
   app.on("activate", () => mainWindow?.show());
 
   app.on("before-quit", () => {
     (app as any).quitting = true;
+    void exportTauriMigration();
   });
 
   app.on("will-quit", () => {
@@ -205,6 +211,8 @@ if (!gotTheLock) {
     } catch (err) {
       log.error("[main] quitAndSaveTasks failed:", err);
     }
+
+    void exportTauriMigration();
 
     try {
       destroyTray();

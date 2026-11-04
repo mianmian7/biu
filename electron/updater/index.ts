@@ -5,6 +5,7 @@ import electronUpdater, { type UpdateDownloadedEvent } from "electron-updater";
 import path from "node:path";
 
 import { channel } from "../ipc/channel";
+import { exportTauriMigration } from "../migration";
 import { classifyUpdateError } from "./classify-error";
 import { detectUpdateMode, disableAutoUpdate } from "./update-mode";
 
@@ -20,6 +21,7 @@ export async function downloadUpdate() {
 export async function quitAndInstall() {
   if ((await detectUpdateMode()) !== "auto") return false;
   phase = "installing";
+  await exportTauriMigration();
   autoUpdater.quitAndInstall(true, true);
   return true;
 }
@@ -80,11 +82,16 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
 
   autoUpdater.on("update-downloaded", (info: UpdateDownloadedEvent) => {
     phase = "downloaded";
+    void exportTauriMigration();
     getMainWindow()?.webContents.send(channel.app.updateMessage, {
       status: "downloaded",
       mode,
       downloadInfo: { filePath: info.downloadedFile },
     });
+  });
+
+  (autoUpdater as unknown as NodeJS.EventEmitter).on("before-quit-for-update", () => {
+    void exportTauriMigration();
   });
 
   const check = () => {

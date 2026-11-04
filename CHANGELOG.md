@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.16.1-autolyrics.7
+
+[compare changes](https://github.com/wood3n/biu/compare/v1.16.1-autolyrics.6...v1.16.1-autolyrics.7)
+
+### 🚀 新功能
+
+- 导出应用设置、用户信息与 B 站登录 Cookie 到 `tauri-migration.json`，支持无缝迁移至 Tauri 版
+
 ## v1.16.0
 
 [compare changes](https://github.com/wood3n/biu/compare/v1.15.0...v1.16.0)
