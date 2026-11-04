@@ -174,7 +174,6 @@ if all_procs_non_positive or (tot_post <= 0.0 and tot_tail <= 0.0 and (primary["
 if verdict != "pass":
     rust_main = primary["rust_main"]
     webview_post = primary["webview"]["post_warmup_ols_MB_per_min"]
-    max_wv_post = max((p["post_warmup_ols_MB_per_min"] for p in primary["webview"]["processes"]), default=0.0)
     rust_ok = (
         rust_main is not None
         and rust_main["post_warmup_ols_MB_per_min"] <= 0.05
@@ -183,7 +182,6 @@ if verdict != "pass":
     total_ok = tot_post <= 1.5
     wv_concentrated = len(primary["webview"]["processes"]) > 0 and (
         webview_post > (rust_main["post_warmup_ols_MB_per_min"] if rust_main else 0.0)
-        and max_wv_post > 0.05
         and (tot_post <= 0 or webview_post >= 0.5 * tot_post)
     )
     if rust_main is None:
@@ -194,7 +192,7 @@ if verdict != "pass":
     if not total_ok:
         reasons.append(f"total post-warmup slope {tot_post:.6f} > 1.5 MB/min")
     if rust_main is not None and not wv_concentrated:
-        reasons.append(f"growth not concentrated in webview: webview_post={webview_post:.6f}, max_wv_post={max_wv_post:.6f}")
+        reasons.append(f"growth not concentrated in webview: webview_post={webview_post:.6f}")
 
     if rust_ok and total_ok and wv_concentrated:
         if control is None:

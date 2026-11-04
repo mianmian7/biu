@@ -64,6 +64,25 @@ fn fixture(name: &str) -> Result<std::path::PathBuf, String> {
             .join(name),
     )
 }
+// WebView2 opens media with `bytes=0-`; a custom protocol response must stay bounded.
+fn capped_remote_range(range: Option<&str>) -> String {
+    const CHUNK: u64 = 1024 * 1024;
+    let Some(value) = range else {
+        return format!("bytes=0-{}", CHUNK - 1);
+    };
+    let parsed = value
+        .strip_prefix("bytes=")
+        .and_then(|spec| spec.split_once('-'))
+        .and_then(|(start, end)| Some((start.parse::<u64>().ok()?, end)));
+    let Some((start, end)) = parsed else {
+        return value.to_string();
+    };
+    let last = start + CHUNK - 1;
+    format!(
+        "bytes={start}-{}",
+        end.parse::<u64>().map_or(last, |end| end.min(last))
+    )
+}
 fn bounds(range: Option<&str>, len: u64) -> Result<(u64, u64), String> {
     // A bounded 1 MiB response: custom protocols expose Response<Vec<u8>>, not a stream.
     // A server may return a smaller satisfiable range than requested (RFC 9110).
@@ -134,7 +153,7 @@ async fn media(
         }
         let r = client
             .get(remote)
-            .header("Range", range.unwrap_or("bytes=0-1048575"))
+            .header("Range", capped_remote_range(range))
             .header("Referer", "https://www.bilibili.com/")
             .send()
             .await
@@ -145,7 +164,7 @@ async fn media(
             client
                 .get("http://127.0.0.1:18765/aac.m4a")
                 .header("Referer", "https://www.bilibili.com/")
-                .header("Range", range.unwrap_or("bytes=0-1048575"))
+                .header("Range", capped_remote_range(range))
                 .send()
                 .await
                 .map_err(|e| e.to_string())?
@@ -839,6 +858,20 @@ mod tests {
         assert_eq!(
             &bytes[split + 4..],
             &fs::read(fixture("aac.m4a").unwrap()).unwrap()[100..200]
+        );
+    }
+    #[test]
+    fn remote_ranges_stay_within_one_chunk() {
+        assert_eq!(capped_remote_range(None), "bytes=0-1048575");
+        assert_eq!(capped_remote_range(Some("bytes=0-")), "bytes=0-1048575");
+        assert_eq!(
+            capped_remote_range(Some("bytes=917504-")),
+            "bytes=917504-1966079"
+        );
+        assert_eq!(capped_remote_range(Some("bytes=0-1445")), "bytes=0-1445");
+        assert_eq!(
+            capped_remote_range(Some("bytes=0-9999999")),
+            "bytes=0-1048575"
         );
     }
     #[test]

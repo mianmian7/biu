@@ -7,6 +7,7 @@ root=args.root.resolve();out=root/'evidence';out.mkdir(exist_ok=True)
 env=os.environ|{'BIU_SPIKE_FIXTURES':'1','BIU_MODE':args.mode,'BIU_SOAK_SECONDS':str(args.seconds),'BIU_FIXTURES':str(root/'m0/fixtures'),'BIU_LOG':str(out/f'{args.name}.jsonl'),'WEBKIT_DISABLE_COMPOSITING_MODE':'1','G_MESSAGES_DEBUG':''}
 Path(env['BIU_LOG']).write_text('')
 if args.binary:env['APPIMAGE_EXTRACT_AND_RUN']='1'
+if args.mode=='controls':env['BIU_NATIVE_MEDIA']='1'
 serverlog=(out/f'{args.name}-server.jsonl').open('w');serverlog.close()
 server=None if args.reuse_server else subprocess.Popen(['python3',str(root/'scripts/fixture_server.py'),'--fixtures',str(root/'m0/fixtures'),'--log',str(out/f'{args.name}-server.jsonl')])
 wm=subprocess.Popen(['openbox'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -32,10 +33,10 @@ try:
         while app.poll() is None and time.monotonic()-start<args.seconds+120:
             elapsed=time.monotonic()-start
             if elapsed-last>=10:
-                pids=descendants(app.pid);rss=0;cpu=0
+                pids=descendants(app.pid);rss=0;cpu=0;processes=[]
                 for pid in pids:
                     try:
-                        s=Path(f'/proc/{pid}/stat').read_text();v=s[s.rindex(')')+2:].split();rss+=int(v[21])*os.sysconf('SC_PAGE_SIZE');cpu+=int(v[11])+int(v[12])
+                        s=Path(f'/proc/{pid}/stat').read_text();v=s[s.rindex(')')+2:].split();size=int(v[21])*os.sysconf('SC_PAGE_SIZE');rss+=size;cpu+=int(v[11])+int(v[12]);processes.append({'pid':pid,'name':s[s.index('(')+1:s.rindex(')')],'rss_bytes':size})
                     except (OSError,ValueError,IndexError):pass
                 bus=subprocess.run(['dbus-send','--session','--print-reply','--dest=org.freedesktop.DBus','/org/freedesktop/DBus','org.freedesktop.DBus.ListNames'],capture_output=True,text=True)
                 names=[s.strip() for s in bus.stdout.splitlines() if 'mpris' in s.lower()]
@@ -46,7 +47,7 @@ try:
                             if method.endswith('GetAll'):command+=['string:org.mpris.MediaPlayer2.Player']
                             result=subprocess.run(command,capture_output=True,text=True,timeout=5);dbuslog.write(result.stdout+result.stderr);time.sleep(1)
                     native_tested=True
-                samples.write(json.dumps({'seconds':elapsed,'rss_bytes':rss,'cpu_ticks':cpu,'pids':len(pids),'mpris':names,'unix_seconds':time.time()})+'\n');samples.flush();last=elapsed
+                samples.write(json.dumps({'seconds':elapsed,'rss_bytes':rss,'cpu_ticks':cpu,'pids':len(pids),'app_pid':app.pid,'processes':processes,'mpris':names,'unix_seconds':time.time()})+'\n');samples.flush();last=elapsed
             time.sleep(1)
         if app.poll() is None:app.terminate();app.wait(timeout=10)
     print(json.dumps({'exit':app.returncode,'elapsed_seconds':time.monotonic()-start,'name':args.name}))
