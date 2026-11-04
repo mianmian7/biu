@@ -2,7 +2,7 @@
 
 owner = Claude（osa-a1）
 
-状态：待用户批准。批准前不派执行线程，不改代码。
+状态：已批准（步骤 2–4、6.1/6.2 已按此执行）。2026-11-04 owner 修订：步骤 1 改在 GitHub macOS runner 上执行；O1 改在 osa-a1 生成；5.1/5.2 改为自建 keychain 导入。用户当天授权 Claude 全权推进。
 
 ## 决策
 
@@ -62,7 +62,7 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
 
 ## owner 前置步骤（只有 owner 做，执行者不碰 secret）
 
-- [ ] O1. 在 mac 上生成自签名代码签名证书，有效期 20 年，CN 设为 `Biu Self-Signed Code Signing`。CN 不能以 `Developer ID` / `Apple` 开头。
+- [x] O1. 在 mac 上生成自签名代码签名证书，有效期 20 年，CN 设为 `Biu Self-Signed Code Signing`。CN 不能以 `Developer ID` / `Apple` 开头。
   ```bash
   mkdir -m 700 ~/biu-codesign && cd ~/biu-codesign
   openssl req -x509 -newkey rsa:3072 -nodes -days 7300 -keyout key.pem -out cert.pem \
@@ -73,14 +73,18 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
   openssl pkcs12 -export -legacy -inkey key.pem -in cert.pem -name "Biu Self-Signed Code Signing" -out biu-codesign.p12   # 交互输入导出密码
   openssl x509 -in cert.pem -outform DER -out biu-codesign.cer
   ```
-- [ ] O2. 把 `biu-codesign.p12` 和导出密码存进密码管理器（证书唯一备份）。
-- [ ] O3. 设置仓库 secret（交互输入，密钥不出现在命令参数里）：
+  - 结果（2026-11-04，Claude（osa-a1））：因 mac 中毒，改在 osa-a1 用同一 openssl 参数生成（rsa:3072，有效至 2046-10-30，SHA1 95:80:DF:08:0E:5D:6F:3D:14:70:E9:70:CE:D9:66:28:6A:52:9B:3C）。p12 与导出密码在 osa-a1 `~/.config/biu-codesign/`（0700/0600），key.pem 已删。
+- [ ] O2.（**仍待用户**：把 osa-a1 `~/.config/biu-codesign/biu-codesign.p12` 和 `p12-password.txt` 存进密码管理器，之后让 Claude 删除这两个文件）把 `biu-codesign.p12` 和导出密码存进密码管理器（证书唯一备份）。
+- [x] O3. 设置仓库 secret（交互输入，密钥不出现在命令参数里）：
   ```bash
   base64 -i biu-codesign.p12 | gh secret set BIU_MAC_CERT_P12 -R mianmian7/biu
   gh secret set BIU_MAC_CERT_PASSWORD -R mianmian7/biu   # 交互粘贴
   ```
-- [ ] O4. 把**公钥证书** `biu-codesign.cer` 交给执行者，提交为 `plugins/mac/biu-codesign.cer`。公钥证书不是机密。`key.pem` 不交给执行者，O2 完成后删除。
-- [ ] O5. 步骤 1 需要一张测试证书，执行者在 mac 上另外生成一张临时证书（CN 设为 `Biu Test Signing`），不要用 O1 的正式证书。
+  - 结果（2026-11-04，Claude（osa-a1））：`BIU_MAC_CERT_P12`（base64）与 `BIU_MAC_CERT_PASSWORD` 已从 stdin 写入 mianmian7/biu。
+- [x] O4. 把**公钥证书** `biu-codesign.cer` 交给执行者，提交为 `plugins/mac/biu-codesign.cer`。公钥证书不是机密。`key.pem` 不交给执行者，O2 完成后删除。
+  - 结果（2026-11-04，Claude（osa-a1））：`plugins/mac/biu-codesign.cer` 已提交。
+- [x] O5. 步骤 1 需要一张测试证书，执行者在 mac 上另外生成一张临时证书（CN 设为 `Biu Test Signing`），不要用 O1 的正式证书。
+  - 结果（2026-11-04，Claude（osa-a1））：spike 在 CI job 内临时生成 `Biu Test Signing`（30 天，job 结束丢弃）。
 
 ## 执行步骤
 
@@ -91,18 +95,22 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
 
 ### 1. Spike：在 mac 本机验证自签名证书 + Squirrel 可行（决策闸门）
 
-- [ ] 1.1 在 mac 上生成临时证书 `Biu Test Signing`（参照 O1 的命令），导入 login keychain，再用 `security add-trusted-cert -r trustRoot -p codeSign -k ~/Library/Keychains/login.keychain-db biu-test.cer` 设为代码签名信任（会弹系统授权框，由 mac 上的用户确认）。确认 `security find-identity -v -p codesigning` 中出现这张证书。
-- [ ] 1.2 先完成步骤 2、3 的代码改动（可以在本地分支上做）。然后在本地工作区临时把 `package.json` 的 version 改为 `1.16.1-autolyrics.90`，执行 `BIU_UPDATE_FEED_URL=http://127.0.0.1:8765 CSC_NAME="Biu Test Signing" pnpm build`，得到版本 A；把 version 改为 `.91` 再构建，得到版本 B。不要提交 version 改动。
-- [ ] 1.3 检查 A 的签名：`codesign -dv --verbose=2 dist/.../Biu.app` 显示 `Authority=Biu Test Signing`，`codesign -d -r- ...` 包含 `certificate leaf = H"`，`codesign --verify --deep --strict` 通过。
-- [ ] 1.4 把 A 的 dmg 装到 `/Applications`（先用 `ditto` 备份现有 `Biu.app` 到 `~/biu-backup/`）。在 B 的 artifacts 目录里执行 `python3 -m http.server 8765 --bind 127.0.0.1`，然后启动 A。
-- [ ] 1.5 预期结果：
+- [x] 1.1 在 mac 上生成临时证书 `Biu Test Signing`（参照 O1 的命令），导入 login keychain，再用 `security add-trusted-cert -r trustRoot -p codeSign -k ~/Library/Keychains/login.keychain-db biu-test.cer` 设为代码签名信任（会弹系统授权框，由 mac 上的用户确认）。确认 `security find-identity -v -p codesigning` 中出现这张证书。
+- [x] 1.2 先完成步骤 2、3 的代码改动（可以在本地分支上做）。然后在本地工作区临时把 `package.json` 的 version 改为 `1.16.1-autolyrics.90`，执行 `BIU_UPDATE_FEED_URL=http://127.0.0.1:8765 CSC_NAME="Biu Test Signing" pnpm build`，得到版本 A；把 version 改为 `.91` 再构建，得到版本 B。不要提交 version 改动。
+- [x] 1.3 检查 A 的签名：`codesign -dv --verbose=2 dist/.../Biu.app` 显示 `Authority=Biu Test Signing`，`codesign -d -r- ...` 包含 `certificate leaf = H"`，`codesign --verify --deep --strict` 通过。
+- [x] 1.4 把 A 的 dmg 装到 `/Applications`（先用 `ditto` 备份现有 `Biu.app` 到 `~/biu-backup/`）。在 B 的 artifacts 目录里执行 `python3 -m http.server 8765 --bind 127.0.0.1`，然后启动 A。
+- [x] 1.5 预期结果：
   - A 自动下载 B，`main.log` 出现 `Proxy server for native Squirrel.Mac` 和 `nativeUpdater.update-downloaded`；
   - 用 Cmd+Q 退出后重新打开，`defaults read /Applications/Biu.app/Contents/Info CFBundleShortVersionString` 输出 `1.16.1-autolyrics.91`；
   - 全程没有 App Management / Gatekeeper / 钥匙串弹窗；
   - 再构建一个 `.92`，测试「立即重启更新」按钮，确认更新后自动重启。
-- [ ] 1.6 验证 manual 降级：把 A 换成一个 ad-hoc 签名的构建（不带 `CSC_NAME`，并删掉临时证书的信任），确认它进入 manual 模式，日志里没有 Squirrel 报错。
+- [x] 1.6 验证 manual 降级：把 A 换成一个 ad-hoc 签名的构建（不带 `CSC_NAME`，并删掉临时证书的信任），确认它进入 manual 模式，日志里没有 Squirrel 报错。
 - [ ] 1.7 如果签名阶段因为 timestamp 失败，在 `mac` 配置里加 `timestamp: "none"` 后重试。如果 hardened runtime 导致启动失败，改成 `hardenedRuntime: false` 后重试。两处改动都要记录在结果里。
-- [ ] 1.8 清理：恢复 `/Applications/Biu.app` 备份，删除临时证书、信任设置和测试缓存（`~/Library/Caches/biu-updater`、`~/Library/Caches/com.biu.wood3n.ShipIt`）。
+- [x] 1.8 清理：恢复 `/Applications/Biu.app` 备份，删除临时证书、信任设置和测试缓存（`~/Library/Caches/biu-updater`、`~/Library/Caches/com.biu.wood3n.ShipIt`）。
+  - 步骤 1 结果（2026-11-04，Claude（osa-a1））：mac 不可用，改在 GitHub Actions macos-26 arm64 上执行（分支 `spike/mac-squirrel`，workflow `mac-squirrel-spike.yml`，运行 41775657740 通过）。临时证书 → A=.90、B=.91 两次完整构建 → A 签名 `Authority=Biu Test Signing`、`designated => identifier "com.biu.wood3n" and certificate leaf = H"…"`、`--verify --deep --strict` 通过 → dmg 装到 /Applications → 本地 generic feed → 日志 `mode=auto`、`Found version 1.16.1-autolyrics.91`、`has been downloaded` → 退出后 ShipIt `Installation completed successfully`，版本变为 .91，B 校验通过；正常退出后不自动重开（`autoRunAppAfterInstall` 只作用于「立即重启」）。ad-hoc 重签的 A：`mode=manual`，日志无 Squirrel 活动，版本不变。timestamp 与 hardened runtime 都不需要改（1.7 不适用）。runner 是一次性环境，1.8 无需清理。
+  - 发现 1：electron-builder 用 `CSC_LINK` 自建临时 keychain 时 `security set-key-partition-list` 报 `SecKeychainUnlock` 失败，构建中断。5.1/5.2 改为 CI 自建 keychain 导入 p12，只传 `CSC_NAME`。
+  - 发现 2：generic provider 下带预发布后缀的版本，electron-builder 生成 `autolyrics-mac.yml` 而非 `latest-mac.yml`（`PublishManager.getResolvedPublishConfig` 的 channelFromAppVersion）。github provider 不受影响，只影响本地 feed 测试。
+  - 未覆盖：「立即重启更新」按钮（需 UI 操作，留给 6.3）、真实 quarantine/Gatekeeper 首次打开、x64 包的安装。
 - **闸门**：1.5 或 1.6 不通过时，停止执行，并报告失败步骤、`main.log` 片段和 `codesign` 输出。不要自行改用 Plan B。
 
 ### 2. 主进程：更新模式、开关、错误分类
@@ -155,19 +163,20 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
 
 ### 5. CI（`.github/workflows/release.yml`，只改 build job）
 
-- [ ] 5.1 在 `Install dependencies` 之后新增一步，条件 `if: runner.os == 'macOS'`：
+- [x] 5.1 在 `Install dependencies` 之后新增一步，条件 `if: runner.os == 'macOS'`：
   ```bash
   sudo security add-trusted-cert -d -r trustRoot -p codeSign \
     -k /Library/Keychains/System.keychain plugins/mac/biu-codesign.cer
   ```
-- [ ] 5.2 `Build & Publish` 的 env 增加以下三项，只在 mac 上生效，避免 Windows 拿 `CSC_LINK` 去签 exe：
+- [x] 5.2 `Build & Publish` 的 env 增加以下三项，只在 mac 上生效，避免 Windows 拿 `CSC_LINK` 去签 exe：
   ```yaml
   CSC_LINK: ${{ runner.os == 'macOS' && secrets.BIU_MAC_CERT_P12 || '' }}
   CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.BIU_MAC_CERT_PASSWORD || '' }}
   CSC_NAME: ${{ runner.os == 'macOS' && 'Biu Self-Signed Code Signing' || '' }}
   ```
-- [ ] 5.3 在 `Build & Publish` 之后新增一步签名守卫，条件 `if: runner.os == 'macOS'`：对 `dist/artifacts/mac/Biu.app` 和 `dist/artifacts/mac-arm64/Biu.app`，`codesign -dv --verbose=2` 的输出必须含 `Authority=Biu Self-Signed Code Signing`，`codesign -d -r-` 的输出必须含 `certificate leaf = H"`，否则 `exit 1`。这样 publish job 不会把 ad-hoc 包发布成 Latest。
-- [ ] 5.4 publish job 不改。
+- [x] 5.3 在 `Build & Publish` 之后新增一步签名守卫，条件 `if: runner.os == 'macOS'`：对 `dist/artifacts/mac/Biu.app` 和 `dist/artifacts/mac-arm64/Biu.app`，`codesign -dv --verbose=2` 的输出必须含 `Authority=Biu Self-Signed Code Signing`，`codesign -d -r-` 的输出必须含 `certificate leaf = H"`，否则 `exit 1`。这样 publish job 不会把 ad-hoc 包发布成 Latest。
+- [x] 5.4 publish job 不改。
+  - 5.x 结果（2026-11-04，Claude（osa-a1））：按发现 1 实现为 `Import Mac signing certificate`（信任 `.cer`，自建 keychain 导入 secret 中的 p12，缺 secret 时失败）、`Build & Publish` 只在 mac 设 `CSC_NAME`、`Verify Mac signature` 守卫（Authority + certificate leaf + strict verify）。还没在 tag 构建中实跑，留给 7.2 验收。
 
 ### 6. 测试
 
