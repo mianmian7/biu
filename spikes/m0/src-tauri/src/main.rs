@@ -437,8 +437,9 @@ fn lyrics_set_state(app: tauri::AppHandle, state: Option<String>) -> Result<Stri
     apply_lyrics_state(&app, next)?;
     Ok(if next { "locked" } else { "unlocked" }.into())
 }
+// Must stay async: a sync command runs on the main thread, and building a window there deadlocks on WebView2.
 #[tauri::command]
-fn lyrics(app: tauri::AppHandle) -> Result<(), String> {
+async fn lyrics(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("lyrics") {
         let _ = w.show();
         return Ok(());
@@ -743,13 +744,17 @@ fn main() {
                 native_controls(app.handle().clone());
             }
             if let Ok(proxy) = std::env::var("BIU_WEBVIEW_PROXY") {
-                tauri::WebviewWindowBuilder::new(
+                let builder = tauri::WebviewWindowBuilder::new(
                     app,
                     "proxy",
                     tauri::WebviewUrl::App("proxy.html".into()),
                 )
-                .proxy_url(proxy.parse()?)
-                .build()?;
+                .proxy_url(proxy.parse()?);
+                // WebView2 refuses different environment options on one user data folder.
+                #[cfg(windows)]
+                let builder =
+                    builder.data_directory(std::env::temp_dir().join("biu-m0-proxy-webview"));
+                builder.build()?;
             }
             let _ = app.emit("ready", ());
             Ok(())

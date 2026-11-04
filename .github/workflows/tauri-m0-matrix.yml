@@ -167,7 +167,7 @@ jobs:
       - name: Install Linux Tauri build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config patchelf libfuse2
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config patchelf libfuse2 gstreamer1.0-libav gstreamer1.0-plugins-base gstreamer1.0-plugins-good
 
       - run: rustup default stable && rustc --version && uname -a
       - run: npm ci --ignore-scripts --no-audit --no-fund

@@ -126,7 +126,8 @@ def make_isolated_gst_no_libav():
     isolated = root / "m0/runtime/gst-no-libav"
     isolated.mkdir(parents=True, exist_ok=True)
     for so in plugin_Dir.glob("*.so"):
-        if "libav" not in so.name:
+        # Also drop other AAC decoders, or the missing-decoder path is never exercised.
+        if not any(k in so.name for k in ("libav", "fdkaac", "faad", "voaacenc")):
             target = isolated / so.name
             if not target.exists():
                 target.symlink_to(so)
@@ -259,6 +260,10 @@ try:
             missing_ms = md[-1]["ms"]
         else:
             failure_reasons.append(f"missing_decoder check failed: rc={rc}, events={md}")
+        # Fedora may decode AAC without libav; record which elements exist instead of guessing.
+        dep_result["aac_decoders_installed"] = sh(
+            "LC_ALL=C gst-inspect-1.0 | grep -iE 'aac.*dec|dec.*aac'", check=False
+        ).stdout.splitlines()
 
         # Step 3: AAC and FLAC playback with gst-libav installed
         rc, out, evs = run_harness(f"s3-{distro_slug}-playback", "full", 35, bin_path)
