@@ -2,7 +2,7 @@ use hmac::{Hmac, Mac};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest_cookie_store::CookieStoreMutex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -552,19 +552,6 @@ pub async fn proxy_set(
     state.update_proxy(Some(proxy_settings))
 }
 
-#[allow(dead_code)]
 pub fn parse_proxy_settings_value(val: Option<Value>) -> Option<ProxySettings> {
     val.and_then(|v| serde_json::from_value(v).ok())
-}
-
-#[allow(dead_code)]
-pub fn redact_url_query(u: &Url) -> String {
-    let mut clean = u.clone();
-    clean.set_query(None);
-    clean.to_string()
-}
-
-#[allow(dead_code)]
-pub fn empty_json() -> Value {
-    json!({})
 }

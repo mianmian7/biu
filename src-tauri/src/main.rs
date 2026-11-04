@@ -10,7 +10,7 @@ use bili::{
 };
 use media::{media_base, serve_http, MediaBase};
 use std::sync::Arc;
-use store::{get_close_window_option, get_saved_proxy_settings, store_clear, store_get, store_set};
+use store::{get_saved_proxy_settings, store_clear, store_get, store_set};
 use tauri::{AppHandle, Manager, Runtime};
 
 // Must stay async: a sync command runs on the main thread, and building a window there deadlocks on WebView2.
@@ -39,13 +39,7 @@ async fn ensure_main_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
 
 #[tauri::command]
 fn window_close<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    let opt = get_close_window_option(&app);
-    if opt == "hide" {
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.hide();
-            return Ok(());
-        }
-    }
+    // Hiding needs a tray to bring the window back; the tray arrives in step 2.
     app.exit(0);
     Ok(())
 }
@@ -75,7 +69,12 @@ fn main() {
         }))
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_log::Builder::new().build())
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                // Lower levels make cookie_store log Set-Cookie values, including login cookies.
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             store_get,
@@ -120,19 +119,6 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 inject_auth_cookies(auth_state).await;
             });
-
-            if let Some(main_win) = app.get_webview_window("main") {
-                let app_handle = app.handle().clone();
-                let win_clone = main_win.clone();
-                main_win.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        if get_close_window_option(&app_handle) == "hide" {
-                            api.prevent_close();
-                            let _ = win_clone.hide();
-                        }
-                    }
-                });
-            }
 
             Ok(())
         })

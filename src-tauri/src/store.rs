@@ -198,18 +198,6 @@ pub fn store_clear<R: Runtime>(app: AppHandle<R>, name: String) -> Result<bool, 
     Ok(true)
 }
 
-pub fn get_close_window_option<R: Runtime>(app: &AppHandle<R>) -> String {
-    read_store_object(app, "app-settings")
-        .ok()
-        .and_then(|v| {
-            v.get("appSettings")
-                .and_then(|s| s.get("closeWindowOption"))
-                .and_then(|c| c.as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "hide".into())
-}
-
 pub fn get_saved_proxy_settings<R: Runtime>(app: &AppHandle<R>) -> Option<Value> {
     read_store_object(app, "app-settings")
         .ok()

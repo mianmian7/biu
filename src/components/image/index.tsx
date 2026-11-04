@@ -13,11 +13,13 @@ interface Props extends ImageProps {
 
 const Image = ({ params, width, height, src, className, emptyPlaceholder, ...rest }: Props) => {
   const [isError, setIsError] = useState(false);
+  const [useWebp, setUseWebp] = useState(false);
   const formatSrc = formatUrlProtocol(src);
   const finalSrc =
     params && formatSrc && formatSrc.includes("/bfs/") && !formatSrc.includes("@")
       ? `${formatSrc}@${params}`
       : formatSrc;
+  const isAvif = finalSrc?.endsWith(".avif");
 
   if (!src || isError) {
     return (
@@ -34,8 +36,13 @@ const Image = ({ params, width, height, src, className, emptyPlaceholder, ...res
     <HeroImage
       width={width}
       height={height}
-      src={finalSrc}
+      // WebKitGTK builds without AVIF cannot decode these thumbnails.
+      src={useWebp ? finalSrc?.replace(/\.avif$/, ".webp") : finalSrc}
       onError={() => {
+        if (isAvif && !useWebp) {
+          setUseWebp(true);
+          return;
+        }
         setIsError(true);
       }}
       className={twMerge("object-cover", className)}
