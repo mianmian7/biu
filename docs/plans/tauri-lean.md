@@ -95,6 +95,29 @@ owner = Claude（osa-a1）
 - **签名密钥：** Tauri updater 私钥在 osa-a1 的 `~/.config/biu/tauri-updater.key`（0600），已存为仓库 secret `TAURI_SIGNING_PRIVATE_KEY`（密码为空）。私钥丢失后 Tauri 版无法自动更新。
 - **发布权限：** 执行者不推 tag、不发 release。owner 测完后发布 `.7`，再发 `2.0.0`。
 
+## 第 4 步审查修复（owner 2026-11-05 补充）
+
+Sol 审查 `8eaf2533` 和桥接版 `1a835bb6`，结论“暂不建议发布”。按用户 2026-11-05 的授权，以下修复直接执行。
+
+**升级链设计（取代上节“Electron 版直接升级到 Tauri 版”）：** electron-updater 6.6.2 的 `GitHubProvider.getLatestVersion` 返回 `{ tag, ...yml }`，yml 里的 `tag` 字段决定从哪个 release 下载安装包。
+
+- Tauri release 里的 `latest*.yml` 复制自 `.7` release，并加一行 `tag: v1.16.1-autolyrics.7`。`.6` 及更早的 Electron 版读到它，升级到桥接版。
+- Tauri release 另带 `tauri*.yml`（`tauri.yml` win x64、`tauri-arm64.yml` win arm64、`tauri-mac.yml`、`tauri-linux.yml`、`tauri-linux-arm64.yml`），指向 Tauri 安装包。
+- 桥接版设 `autoUpdater.channel = "tauri"`（win arm64 设 `"tauri-arm64"`，用 `app.runningUnderARM64Translation` 识别），随后把 `allowDowngrade` 和 `allowPrerelease` 设回 `false`。频道文件不存在时按“没有更新”处理，不弹错误。
+- `.7` release 发布后不设为 latest。随后发 `2.0.0`，设为 latest。
+
+**清单：**
+
+- [ ] 版本改为 `2.0.0`；`release.yml` 构建前校验 tag、`package.json`、`tauri.conf.json`、`Cargo.toml` 一致。（owner）
+- [ ] 升级链：feed 脚本按上面的设计生成文件，并用 electron-updater 6.6.2 源码测试 `.6 → .7` 与 `.7 → 2.0.0` 的选版和下载 URL。（owner）
+- [ ] updater：去掉 `pending_update` 的双重加锁；下载好的字节和对应 `Update` 绑定，下载后冻结，重新检查不覆盖。（owner）
+- [ ] 迁移：每项单独记录完成状态，失败项下次启动重试；cookie 按原 domain、path、secure、httpOnly 导入；歌词缓存保留来源字段；桥接版另导出 renderer `localStorage`（含 `refresh_token`、播放列表），Tauri 版首次启动在 store 初始化前写回缺失的键。（owner）
+- [ ] 桥接版：退出和自动安装前串行完成一次导出。（owner）
+- [ ] 下载：分块续传每次重试按文件实际长度重算 Range，校验 `206` 和 `Content-Range`；内部失败与取消分开；暂停、恢复、取消等待旧 worker 退出，加 generation 校验和读取空闲超时；ffmpeg 并行读 stdout/stderr，加超时和 kill；同名并发下载用任务独有的临时文件，提交时不覆盖已有文件；文件名按字节截断并处理 Windows 保留名。（Gemini 4 Argon）
+- [ ] 重定向：`bili_request`、歌词和自动歌词的 HTTP 客户端每一跳都检查 host 白名单。（owner）
+- [ ] 代码逻辑审查（GPT-6.1-Sol）。
+- [ ] Mac 实机静音冒烟：`.6 → .7 → 2.0.0`，设置和登录都在。（owner）
+
 ## 分工
 
 | 步骤 | 执行 | 审查 |
