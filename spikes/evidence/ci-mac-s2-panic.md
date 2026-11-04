@@ -46,3 +46,9 @@ seek 取消旧 Range 请求后，WebKit 停掉该 `WKURLSchemeTask`；wry 0.57.1
 - Mac 自定义协议本身可用：unwind 组 10 次 seek、1789 次 206 Range、20 轮 soak reload、600 s soak 均完成。
 - M0 工程已删掉 `[profile.release] panic = "abort"`。正式工程（M1 起）在 macOS 上禁止 `panic = "abort"`。
 - 未覆盖：3600 s soak 与内存斜率（runner 未跑满 60 min）、体积增量（unwind 多出的 landing pad，待 S4 重测）。
+
+## 补测：panic=unwind 下 3600 s soak 与 S4（运行 41775659926，提交 5630de32）
+
+- S2：exit 0，`complete`。10 次 seek 恢复 606/471/304/482/466/453/471/477/382/475 ms（均 ≤1500 ms）；10158 次 Range；110 次 url_refresh；soak 3600 s、120 轮 reload-and-range。
+- 内存（app 进程树 + 启动后新出现的 WebKit XPC：Networking、2×WebContent、GPU；10 s 采样 357 点）：起点 17 MB，最大 428 MB，结束 427 MB。600 s warmup 后 OLS **+1.03 MB/min**，最后 30 min **+0.57 MB/min**。按预设规则（两段均 ≤0）**不通过，记待定**。runner 无音频设备、无真实 CDN，结论只代表本夹具。
+- S4：`Biu M0_0.0.1_aarch64.dmg` **3.89 MiB（≈4.08 MB）**，满足 ≤8 MB；`.app` 被 dmg 打包步骤清理，未取得本次 `.app` 字节数。
