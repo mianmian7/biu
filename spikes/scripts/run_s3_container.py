@@ -154,8 +154,10 @@ try:
 
         # Install .deb dependencies EXCEPT gstreamer1.0-libav to test missing-decoder first
         sh(
-            "DEBIAN_FRONTEND=noninteractive apt-get install -y libwebkit2gtk-4.1-0 libayatana-appindicator3-1 libgtk-3-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-tools"
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libwebkit2gtk-4.1-0 libayatana-appindicator3-1 libgtk-3-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-tools"
         )
+        if sh("dpkg -s gstreamer1.0-libav", check=False).returncode == 0:
+            failure_reasons.append("gstreamer1.0-libav was already installed before the missing-decoder check")
         debs = sorted(bundle_dir.rglob("*.deb"))
         if not debs:
             raise RuntimeError(f"No .deb found in {bundle_dir}")
@@ -175,7 +177,7 @@ try:
             failure_reasons.append(f"missing_decoder check failed: rc={rc}, events={md}")
 
         # Step 2: apt install ./*.deb and verify gstreamer1.0-libav is pulled in
-        apt_res = sh(f"DEBIAN_FRONTEND=noninteractive apt-get install -y '{deb}'", check=False)
+        apt_res = sh(f"DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends '{deb}'", check=False)
         dpkg_res = sh("dpkg -s gstreamer1.0-libav", check=False)
         libav_installed = dpkg_res.returncode == 0 and "Status: install ok installed" in dpkg_res.stdout
         dep_result = {
@@ -209,7 +211,7 @@ try:
 
         # Install test harness tools (ffmpeg-free is in default Fedora repos)
         sh(
-            "dnf install -y python3 xorg-x11-server-Xvfb dbus-x11 openbox ffmpeg-free cpio rpm WebKitGTK4.1 gtk3 libayatana-appindicator-gtk3 gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good",
+            "dnf install -y --skip-unavailable python3 xorg-x11-server-Xvfb xorg-x11-xauth dbus-x11 openbox ffmpeg-free cpio rpm webkit2gtk4.1 gtk3 libayatana-appindicator-gtk3 gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good",
             check=False,
         )
         gen_fixtures()
@@ -277,6 +279,7 @@ try:
         pacman_pkgs = [
             "python",
             "xorg-server-xvfb",
+            "xorg-xauth",
             "dbus",
             "openbox",
             "ffmpeg",
@@ -291,39 +294,30 @@ try:
         pac_base = sh(["pacman", "-Syu", "--noconfirm", *pacman_pkgs], check=False)
         gen_fixtures()
 
-        # Extract AppImage to test binary without bundled gst-libav first, or run AppImage with isolated GST env
-        iso_env = make_isolated_gst_no_libav()
-        iso_env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
-        rc, out, evs = run_harness(f"s3-{distro_slug}-missing", "missing", 5, appimage, extra_env=iso_env)
-        md = [e for e in evs if e.get("event") == "missing_decoder"]
-        if md and md[-1].get("detected") and md[-1].get("ms", 9999) <= 3000 and md[-1].get("updates") == 0:
-            missing_ms = md[-1]["ms"]
-        else:
-            failure_reasons.append(f"missing_decoder check failed: rc={rc}, events={md}")
-
-        # Install gst-libav on Arch and test playback via AppImage (--appimage-extract-and-run)
-        pac_libav = sh(["pacman", "-S", "--noconfirm", "gst-libav"], check=False)
-        dep_result = {
-            "manager": "pacman",
-            "artifact": appimage.name,
-            "run_flag": "--appimage-extract-and-run",
-            "pacman_packages": pacman_pkgs + ["gst-libav"],
-            "pacman_base_exit": pac_base.returncode,
-            "pacman_gst_libav_exit": pac_libav.returncode,
-        }
-        if pac_base.returncode != 0 or pac_libav.returncode != 0:
-            failure_reasons.append(f"pacman install failed: base={pac_base.returncode}, libav={pac_libav.returncode}")
-
-        # Create a wrapper script that passes --appimage-extract-and-run
+        # bundleMediaFramework ships its own GStreamer plugins, so the AppImage must play
+        # without the system gst-libav and the missing-decoder check does not apply.
         wrapper = Path("/tmp/run-appimage.sh")
         wrapper.write_text(f"#!/usr/bin/env bash\nexec '{appimage}' --appimage-extract-and-run \"$@\"\n")
         wrapper.chmod(0o755)
-
+        libav_present = sh("pacman -Q gst-libav", check=False).returncode == 0
         rc, out, evs = run_harness(f"s3-{distro_slug}-playback", "full", 35, wrapper)
         aac_ev = [e for e in evs if e.get("event") == "aac_playing"]
         flac_ev = [e for e in evs if e.get("event") == "flac_playing"]
         aac_ok = bool(aac_ev and aac_ev[0].get("duration", 0) >= 300)
         flac_ok = bool(flac_ev and flac_ev[0].get("time", 0) > 0)
+        dep_result = {
+            "manager": "pacman",
+            "artifact": appimage.name,
+            "run_flag": "--appimage-extract-and-run",
+            "pacman_packages": pacman_pkgs,
+            "pacman_base_exit": pac_base.returncode,
+            "system_gst_libav_present": libav_present,
+            "missing_decoder_check": "not applicable: AppImage bundles media plugins",
+        }
+        if pac_base.returncode != 0:
+            failure_reasons.append(f"pacman install failed: base={pac_base.returncode}")
+        if libav_present:
+            failure_reasons.append("gst-libav was present, so the AppImage self-contained check is invalid")
         if not aac_ok or not flac_ok or any(e.get("event") == "failure" for e in evs):
             failure_reasons.append(f"playback failed: rc={rc}, aac={aac_ok}, flac={flac_ok}")
     else:

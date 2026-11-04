@@ -11,10 +11,6 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   web-dist:
     runs-on: ubuntu-24.04
@@ -39,14 +35,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      # pluginElectron would run electron-builder; S4 only needs the web output.
       - name: Build web frontend (dist/web)
-        run: npx rsbuild build --config-loader native -c /dev/null --entry ./src/index.tsx
-
-      - name: Fallback to full pnpm build if needed
-        if: failure()
         run: |
-          pnpm install --frozen-lockfile
-          pnpm build || test -f dist/web/index.html
+          sed -i '/pluginElectron/d' rsbuild.config.ts
+          pnpm exec rsbuild build
 
       - name: Verify dist/web is non-empty
         run: |
@@ -360,8 +353,8 @@ jobs:
         run: bash scripts/prepare_linux.sh
 
       - name: Build release binary
-        working-directory: spikes/m0/src-tauri
-        run: cargo build --release
+        working-directory: spikes/m0
+        run: CI=true ../node_modules/.bin/tauri build --ci --no-bundle
 
       - name: Run 3600 s HTTP fallback soak under xvfb
         run: |
@@ -438,6 +431,8 @@ jobs:
         container: ["ubuntu:24.04", "fedora:41", "fedora:latest", "archlinux:latest"]
     container:
       image: ${{ matrix.container }}
+    env:
+      WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
     steps:
       - name: Bootstrap git, ca-certificates, and python3 in container
         run: |

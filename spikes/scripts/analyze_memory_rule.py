@@ -57,8 +57,8 @@ def analyze_series(rows, warmup: float, tail_window: float):
     if len(total_post) < 2 or len(total_tail) < 2:
         sys.exit(f"ERROR: insufficient post-warmup samples (max_sec={max_sec}, post={len(total_post)}, tail={len(total_tail)})")
 
-    first_pids = rows[0].get("pids") or []
-    main_pid = rows[0].get("app_pid") or (first_pids[0] if first_pids else 0)
+    first_pids = rows[0].get("pids")
+    main_pid = rows[0].get("app_pid") or (first_pids[0] if isinstance(first_pids, list) and first_pids else 0)
 
     by_proc = {}
     for r in rows:
@@ -186,11 +186,14 @@ if verdict != "pass":
         and max_wv_post > 0.05
         and (tot_post <= 0 or webview_post >= 0.5 * tot_post)
     )
-    if not rust_ok:
+    if rust_main is None:
+        verdict = "needs_process_breakdown"
+        reasons.append("memory log has process-tree totals only; rule 2 cannot be evaluated")
+    elif not rust_ok:
         reasons.append(f"rust_main slope condition failed: {rust_main}")
     if not total_ok:
         reasons.append(f"total post-warmup slope {tot_post:.6f} > 1.5 MB/min")
-    if not wv_concentrated:
+    if rust_main is not None and not wv_concentrated:
         reasons.append(f"growth not concentrated in webview: webview_post={webview_post:.6f}, max_wv_post={max_wv_post:.6f}")
 
     if rust_ok and total_ok and wv_concentrated:

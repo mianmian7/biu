@@ -17,15 +17,16 @@ assert all(not r['paused'] and r['error'] is None for r in events if r['event']=
 reloads=[r for r in events if r['event']=='soak_reload'];assert len(reloads)>=120
 all_range=[r for r in events if r['event'] in ('http_range','range') and r.get('range') is not None and r.get('status')==206 and r.get('bytes',0)>0]
 assert all_range,'no Range/206 events recorded'
+# Custom-scheme requests always send a default Range upstream, so only HTTP has a Range-less fresh load.
+http_transport=any(r['event']=='http_range' for r in events)
 traffic=[]
 for reload in reloads:
     n=reload['round'];transfers=[r for r in events if r['event'] in ('http_range','range') and r.get('round')==n]
     ranged=[r for r in transfers if r['range'] is not None]
     requests=[r for r in upstream if r.get('round')==str(n)]
-    if transfers:
-        assert ranged and all(r['status']==206 and r['bytes']>0 for r in ranged),(n,ranged)
+    assert ranged and all(r['status']==206 and r['bytes']>0 for r in ranged),(n,ranged)
     assert any(r['range'] is not None for r in requests),(n,'no upstream Range')
-    assert any(r['range'] is None for r in requests) or all(r['range'] is not None for r in requests),(n,'no upstream requests')
+    assert not http_transport or any(r['range'] is None for r in requests),(n,'no fresh upstream load')
     traffic.append({'round':n,'wall_time_ms':reload['wall_time_ms'],'target':reload['target'],'seek_ms':reload['ms'],'upstream_requests':len(requests),'upstream_range_requests':sum(r['range'] is not None for r in requests),'transfers':[{k:r[k] for k in ['range','status','bytes','ms']} for r in transfers]})
 origin=start['wall_time_ms']/1000
 samples=[{'soak_seconds':r['unix_seconds']-origin,**r} for r in memory]

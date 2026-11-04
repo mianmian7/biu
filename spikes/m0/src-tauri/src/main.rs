@@ -486,10 +486,12 @@ fn lyrics(app: tauri::AppHandle) -> Result<(), String> {
             }
             if locked.load(Ordering::Relaxed) && w.is_visible().unwrap_or(false) {
                 if let (Ok(cursor), Ok(pos)) = (w.cursor_position(), w.outer_position()) {
+                    // cursor and window positions are physical pixels; the region is logical.
+                    let scale = w.scale_factor().unwrap_or(1.0);
                     let hit = cursor.x >= pos.x as f64
-                        && cursor.x < pos.x as f64 + 100.
+                        && cursor.x < pos.x as f64 + 100. * scale
                         && cursor.y >= pos.y as f64
-                        && cursor.y < pos.y as f64 + 60.;
+                        && cursor.y < pos.y as f64 + 60. * scale;
                     let was_hovered = hovered.swap(hit, Ordering::Relaxed);
                     if hit != was_hovered {
                         let t0 = Instant::now();
