@@ -930,10 +930,26 @@ pub struct FullMediaDownloadTask {
     #[serde(default)]
     pub chunks: Vec<MediaDownloadChunk>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 impl FullMediaDownloadTask {
+    pub fn compute_stream_id(&self, audio_total_bytes: u64, video_total_bytes: u64) -> String {
+        format!(
+            "a:{}:{}:{}:{}|v:{}:{}:{}:{}",
+            audio_total_bytes,
+            self.audio_codecs.as_deref().unwrap_or(""),
+            self.audio_bandwidth.unwrap_or(0),
+            url_stream_key(self.audio_url.as_deref()),
+            video_total_bytes,
+            self.video_resolution.as_deref().unwrap_or(""),
+            self.video_frame_rate.as_deref().unwrap_or(""),
+            url_stream_key(self.video_url.as_deref()),
+        )
+    }
+
     pub fn to_public_task(&self) -> MediaDownloadTask {
         MediaDownloadTask {
             id: self.id.clone(),
@@ -969,6 +985,20 @@ impl FullMediaDownloadTask {
         };
         copy
     }
+}
+
+fn url_stream_key(url_str: Option<&str>) -> String {
+    let Some(s) = url_str.filter(|s| !s.is_empty()) else {
+        return String::new();
+    };
+    let Ok(parsed) = Url::parse(s) else {
+        return String::new();
+    };
+    parsed
+        .path_segments()
+        .and_then(|mut segs| segs.next_back())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn value_id_to_string(val: &Option<Value>) -> Option<String> {
@@ -1440,6 +1470,7 @@ impl DownloadManager {
             audio_temp_path: None,
             video_temp_path: None,
             chunks: Vec::new(),
+            stream_id: None,
             error: None,
         };
 
@@ -1736,7 +1767,17 @@ impl DownloadManager {
         generation: u64,
     ) -> Result<(), String> {
         // 1. Check if URLs need refreshing
-        let (need_urls, task_id) = {
+        let (
+            need_urls,
+            task_id,
+            prev_stream_id,
+            prev_audio_total,
+            prev_video_total,
+            prev_audio_codecs,
+            prev_audio_bw,
+            prev_video_res,
+            prev_video_fr,
+        ) = {
             let t = task_arc.lock().unwrap();
             let need = if t.output_file_type == "audio" {
                 !is_url_valid(t.audio_url.as_deref())
@@ -1744,7 +1785,17 @@ impl DownloadManager {
                 !is_url_valid(t.video_url.as_deref())
                     || (t.audio_codecs.is_some() && !is_url_valid(t.audio_url.as_deref()))
             };
-            (need, t.id.clone())
+            (
+                need,
+                t.id.clone(),
+                t.stream_id.clone(),
+                t.audio_total_bytes,
+                t.video_total_bytes,
+                t.audio_codecs.clone(),
+                t.audio_bandwidth,
+                t.video_resolution.clone(),
+                t.video_frame_rate.clone(),
+            )
         };
 
         if need_urls {
@@ -1814,6 +1865,28 @@ impl DownloadManager {
         } else {
             PathBuf::from(&temp_dir_str)
         };
+
+        let (new_stream_id, stream_changed) = {
+            let t = task_arc.lock().unwrap();
+            let new_id = t.compute_stream_id(audio_total_bytes, video_total_bytes);
+            let changed = if let Some(ref prev_id) = prev_stream_id {
+                prev_id != &new_id
+            } else if prev_audio_total > 0 || prev_video_total > 0 {
+                prev_audio_total != audio_total_bytes
+                    || prev_video_total != video_total_bytes
+                    || prev_audio_codecs != t.audio_codecs
+                    || prev_audio_bw != t.audio_bandwidth
+                    || prev_video_res != t.video_resolution
+                    || prev_video_fr != t.video_frame_rate
+            } else {
+                false
+            };
+            (new_id, changed)
+        };
+
+        if stream_changed && temp_dir_path.exists() {
+            let _ = fs::remove_dir_all(&temp_dir_path);
+        }
         fs::create_dir_all(&temp_dir_path).map_err(|e| e.to_string())?;
 
         let mut chunks = Vec::new();
@@ -1832,6 +1905,7 @@ impl DownloadManager {
             t.total_bytes = total_bytes;
             t.audio_total_bytes = audio_total_bytes;
             t.video_total_bytes = video_total_bytes;
+            t.stream_id = Some(new_stream_id);
             t.temp_dir = temp_dir_path.to_string_lossy().into_owned();
             if audio_total_bytes > 0 {
                 t.audio_temp_path = Some(
@@ -1852,6 +1926,7 @@ impl DownloadManager {
             t.chunks = chunks.clone();
             t.downloaded_bytes = 0;
         }
+        self.save_to_disk();
 
         // 3. Check existing chunk files & queue pending chunks (concurrency = 5)
         let chunk_sem = Arc::new(Semaphore::new(CHUNK_CONCURRENCY));
@@ -2396,72 +2471,96 @@ impl DownloadManager {
             return Ok(());
         }
 
+        let expected_total_len: u64 = chunks.iter().map(|c| c.end - c.start + 1).sum();
+
         let mut start_index = 0usize;
         if dest_path.exists() {
             let merged_size = fs::metadata(dest_path).map(|m| m.len()).unwrap_or(0);
-            let mut accumulated = 0u64;
-            for (i, c) in chunks.iter().enumerate() {
-                let c_size = c.end - c.start + 1;
-                if merged_size >= accumulated + c_size {
-                    accumulated += c_size;
-                    start_index = i + 1;
-                } else {
-                    if let Ok(f) = OpenOptions::new().write(true).open(dest_path) {
-                        if f.set_len(accumulated).is_err() {
+            if merged_size > expected_total_len {
+                let _ = fs::remove_file(dest_path);
+            } else {
+                let mut accumulated = 0u64;
+                for (i, c) in chunks.iter().enumerate() {
+                    let c_size = c.end - c.start + 1;
+                    if merged_size >= accumulated + c_size {
+                        accumulated += c_size;
+                        start_index = i + 1;
+                    } else {
+                        if let Ok(f) = OpenOptions::new().write(true).open(dest_path) {
+                            if f.set_len(accumulated).is_err() {
+                                let _ = fs::remove_file(dest_path);
+                                start_index = 0;
+                            }
+                        } else {
                             let _ = fs::remove_file(dest_path);
                             start_index = 0;
                         }
-                    } else {
-                        let _ = fs::remove_file(dest_path);
-                        start_index = 0;
+                        break;
                     }
-                    break;
                 }
             }
         }
 
-        if start_index >= chunks.len() || stop_flag.load(Ordering::SeqCst) {
+        if stop_flag.load(Ordering::SeqCst) {
             return Ok(());
         }
 
-        let mut out_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dest_path)
-            .map_err(|e| e.to_string())?;
+        if start_index < chunks.len() {
+            let mut out_file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dest_path)
+                .map_err(|e| e.to_string())?;
 
-        let mut buf = vec![0u8; 64 * 1024];
-        for c in chunks.iter().skip(start_index) {
-            if stop_flag.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-            let chunk_path = temp_dir.join(&c.name);
-            let mut in_file = fs::File::open(&chunk_path).map_err(|e| e.to_string())?;
-            loop {
+            let mut buf = vec![0u8; 64 * 1024];
+            for c in chunks.iter().skip(start_index) {
                 if stop_flag.load(Ordering::SeqCst) {
                     return Ok(());
                 }
-                let n = in_file.read(&mut buf).map_err(|e| e.to_string())?;
-                if n == 0 {
-                    break;
+                let chunk_path = temp_dir.join(&c.name);
+                let expected_chunk_len = c.end - c.start + 1;
+                let actual_chunk_len = fs::metadata(&chunk_path).map(|m| m.len()).unwrap_or(0);
+                if actual_chunk_len != expected_chunk_len {
+                    return Err(format!(
+                        "chunk {} size mismatch before merge: got {actual_chunk_len} bytes, expected {expected_chunk_len}",
+                        c.name
+                    ));
                 }
-                out_file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-                *merged_bytes += n as u64;
-                let pub_t = {
-                    let mut t = task_arc.lock().unwrap();
-                    t.merge_progress = if total_bytes > 0 {
-                        ((*merged_bytes as f64 / total_bytes as f64) * 100.0)
-                            .round()
-                            .min(100.0) as u32
-                    } else {
-                        0
+                let mut in_file = fs::File::open(&chunk_path).map_err(|e| e.to_string())?;
+                loop {
+                    if stop_flag.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    let n = in_file.read(&mut buf).map_err(|e| e.to_string())?;
+                    if n == 0 {
+                        break;
+                    }
+                    out_file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+                    *merged_bytes += n as u64;
+                    let pub_t = {
+                        let mut t = task_arc.lock().unwrap();
+                        t.merge_progress = if total_bytes > 0 {
+                            ((*merged_bytes as f64 / total_bytes as f64) * 100.0)
+                                .round()
+                                .min(100.0) as u32
+                        } else {
+                            0
+                        };
+                        t.to_public_task()
                     };
-                    t.to_public_task()
-                };
-                self.emit_task_update_if_gen(app, pub_t, generation, false);
+                    self.emit_task_update_if_gen(app, pub_t, generation, false);
+                }
             }
+            out_file.flush().map_err(|e| e.to_string())?;
         }
-        out_file.flush().map_err(|e| e.to_string())?;
+
+        let final_merged_len = fs::metadata(dest_path).map(|m| m.len()).unwrap_or(0);
+        if final_merged_len != expected_total_len {
+            let _ = fs::remove_file(dest_path);
+            return Err(format!(
+                "merged {chunk_type}.m4s length mismatch: got {final_merged_len} bytes, expected {expected_total_len}"
+            ));
+        }
         Ok(())
     }
 
@@ -3271,6 +3370,7 @@ mod tests {
                 end: 999,
                 done: false,
             }],
+            stream_id: None,
             error: None,
         };
         let task_arc = Arc::new(Mutex::new(task));
@@ -3386,6 +3486,7 @@ mod tests {
             audio_temp_path: None,
             video_temp_path: None,
             chunks: Vec::new(),
+            stream_id: None,
             error: None,
         };
         let task_ok_arc = Arc::new(Mutex::new(task_ok));
@@ -3478,6 +3579,7 @@ mod tests {
             audio_temp_path: None,
             video_temp_path: None,
             chunks: Vec::new(),
+            stream_id: None,
             error: None,
         };
         let task_arc = Arc::new(Mutex::new(task));
@@ -3621,6 +3723,7 @@ mod tests {
             audio_temp_path: None,
             video_temp_path: None,
             chunks: Vec::new(),
+            stream_id: None,
             error: None,
         };
         let task_arc = Arc::new(Mutex::new(task));
@@ -3739,6 +3842,122 @@ mod tests {
 
         srv.abort();
         slow_srv.abort();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn resume_clears_temp_dir_on_stream_identity_change_and_merge_verifies_total_length() {
+        let dir = std::env::temp_dir().join(format!("biu-dl-streamid-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 2048];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let req = String::from_utf8_lossy(&buf[..n]);
+                if req.starts_with("HEAD ") {
+                    let hdr = "HTTP/1.1 200 OK\r\nContent-Length: 400\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                } else {
+                    let body = vec![b'N'; 400];
+                    let hdr = "HTTP/1.1 206 Partial Content\r\nContent-Length: 400\r\nContent-Range: bytes 0-399/400\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                }
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        let mgr = DownloadManager::new(dir.join("downloads.json"));
+        let temp_dir = dir.join("temp");
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // Simulate old stream's chunk (same size 400 bytes, but old codec/bandwidth/stream_id)
+        fs::write(temp_dir.join("audio.part1"), vec![b'O'; 400]).unwrap();
+        fs::write(temp_dir.join("stale.tmp"), b"stale").unwrap();
+
+        let url = format!("http://{addr}/new_stream_30280.m4s?deadline=4102444800");
+        let task = FullMediaDownloadTask {
+            id: "t-stream-change".into(),
+            output_file_type: "audio".into(),
+            title: "Stream Change Test".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: Some(url),
+            audio_codecs: Some("flac".into()),
+            audio_bandwidth: Some(320000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 400,
+            audio_total_bytes: 400,
+            video_total_bytes: 0,
+            downloaded_bytes: 400,
+            download_progress: 100,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "downloadPaused".into(),
+            file_name: None,
+            temp_dir: temp_dir.to_string_lossy().into_owned(),
+            save_dir: dir.join("save").to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: Vec::new(),
+            stream_id: Some("a:400:aac:128000:old_stream_30216.m4s|v:0:::".into()),
+            error: None,
+        };
+        let task_arc = Arc::new(Mutex::new(task));
+        let gen = mgr.next_generation("t-stream-change");
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+        mgr.stage_download::<tauri::Wry>(None, &bili, &task_arc, &stop_flag, &stop_rx, gen)
+            .await
+            .unwrap();
+
+        // Stale file should be gone and audio.part1 re-downloaded with new stream's 'N' bytes
+        assert!(!temp_dir.join("stale.tmp").exists());
+        assert_eq!(
+            fs::read(temp_dir.join("audio.part1")).unwrap(),
+            vec![b'N'; 400]
+        );
+
+        // Corrupt audio.part1 size before merge to verify merge rejects mismatched length
+        fs::write(temp_dir.join("audio.part1"), vec![b'N'; 250]).unwrap();
+        let merge_err = mgr
+            .stage_merge::<tauri::Wry>(None, &task_arc, &stop_flag, gen)
+            .await
+            .unwrap_err();
+        assert!(
+            merge_err.contains("mismatch"),
+            "expected merge length mismatch error, got: {merge_err}"
+        );
+
+        // Restore valid chunk and verify merge succeeds and audio.m4s is 400 bytes
+        fs::write(temp_dir.join("audio.part1"), vec![b'N'; 400]).unwrap();
+        mgr.stage_merge::<tauri::Wry>(None, &task_arc, &stop_flag, gen)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read(temp_dir.join("audio.m4s")).unwrap(),
+            vec![b'N'; 400]
+        );
+
+        srv.abort();
         let _ = fs::remove_dir_all(&dir);
     }
 
