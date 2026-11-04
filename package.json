@@ -96,6 +96,7 @@
     "@rsbuild/plugin-svgr": "^1.2.4",
     "@tailwindcss/postcss": "^4.1.18",
     "@tailwindcss/typography": "^0.5.19",
+    "@tauri-apps/cli": "^2.12.4",
     "@testing-library/jest-dom": "^6.9.1",
     "@total-typescript/ts-reset": "^0.6.1",
     "@types/fluent-ffmpeg": "^2.1.28",

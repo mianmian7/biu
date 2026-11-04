@@ -2,8 +2,6 @@ import { defineConfig } from "@rsbuild/core";
 import { pluginReact } from "@rsbuild/plugin-react";
 import { pluginSvgr } from "@rsbuild/plugin-svgr";
 
-import { pluginElectron } from "./plugins/rsbuild-plugin-electron";
-
 export default defineConfig({
   output: {
     distPath: {
@@ -36,7 +34,6 @@ export default defineConfig({
         },
       },
     }),
-    pluginElectron(),
   ],
   dev: {
     writeToDisk: true,
