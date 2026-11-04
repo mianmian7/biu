@@ -1,0 +1,3 @@
+{
+  "bundle": { "targets": ["dmg"], "icon": ["icons/icon.icns"], "macOS": { "signingIdentity": "-" } }
+}

@@ -1,0 +1,65 @@
+name: Tauri M0 Mac S2
+
+# tauri-rewrite M0 S2：在 GitHub macOS runner 上复现自定义协议 SIGABRT，并对比 panic=abort / unwind。
+on:
+  push:
+    branches: [spike/tauri-m0-ci]
+  workflow_dispatch:
+
+jobs:
+  s2:
+    strategy:
+      fail-fast: false
+      matrix:
+        panic: [abort, unwind]
+    runs-on: macos-26
+    timeout-minutes: 75
+    env:
+      CI: "true"
+      RUST_BACKTRACE: full
+      CARGO_PROFILE_RELEASE_PANIC: ${{ matrix.panic }}
+      CARGO_PROFILE_RELEASE_STRIP: none
+      CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+    defaults:
+      run:
+        working-directory: spikes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: rustup default stable && rustc --version && sw_vers && uname -m
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build app bundle
+        working-directory: spikes/m0
+        run: ../node_modules/.bin/tauri build --ci --bundles app
+      - run: python3 scripts/make_fixtures_mac.py m0/fixtures && mkdir -p evidence m0/private
+      - name: S2 custom protocol (600 s soak)
+        run: |
+          python3 scripts/fixture_server.py --fixtures m0/fixtures --log evidence/server.jsonl &
+          sleep 2
+          cd m0
+          export BIU_SPIKE_FIXTURES=1 BIU_FIXTURES="$PWD/fixtures" BIU_LOG="$PWD/../evidence/s2-custom.jsonl"
+          export BIU_MODE=custom BIU_SOAK_SECONDS=600
+          set +e
+          ./src-tauri/target/release/bundle/macos/'Biu M0.app'/Contents/MacOS/biu-m0 > ../evidence/s2-custom-console.log 2>&1 &
+          APP=$!
+          ( sleep 900; kill -TERM $APP ) &
+          wait $APP; code=$?
+          echo "exit=$code" | tee ../evidence/s2-custom-exit.txt
+          grep -n -A60 'panicked\|cannot unwind\|NSException\|Terminating' ../evidence/s2-custom-console.log | head -150
+          python3 - <<'PY'
+          import json, collections
+          ev=[json.loads(l) for l in open('../evidence/s2-custom.jsonl')]
+          c=collections.Counter(e.get('event') for e in ev)
+          print(dict(c)); print('last', ev[-1] if ev else None)
+          PY
+          ls ~/Library/Logs/DiagnosticReports/ | grep -i biu && cp ~/Library/Logs/DiagnosticReports/*biu* ../evidence/ 2>/dev/null
+          true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2-evidence-panic-${{ matrix.panic }}
+          path: |
+            spikes/evidence
+            !spikes/evidence/*.m4a

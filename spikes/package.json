@@ -1,0 +1,5 @@
+{
+  "name": "biu-tauri-m0-spikes",
+  "private": true,
+  "devDependencies": { "@tauri-apps/cli": "^2.0.0" }
+}
