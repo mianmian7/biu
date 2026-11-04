@@ -1,25 +1,18 @@
 name: Tauri M0 Mac S2
 
-# tauri-rewrite M0 S2：在 GitHub macOS runner 上复现自定义协议 SIGABRT，并对比 panic=abort / unwind。
+# tauri-rewrite M0（Mac）：panic=unwind 下 S2 自定义协议 3600 s soak + 内存斜率，S4 dmg 体积。
 on:
   push:
     branches: [spike/tauri-m0-ci]
   workflow_dispatch:
 
 jobs:
-  s2:
-    strategy:
-      fail-fast: false
-      matrix:
-        panic: [abort, unwind]
+  mac:
     runs-on: macos-26
-    timeout-minutes: 75
+    timeout-minutes: 120
     env:
       CI: "true"
       RUST_BACKTRACE: full
-      CARGO_PROFILE_RELEASE_PANIC: ${{ matrix.panic }}
-      CARGO_PROFILE_RELEASE_STRIP: none
-      CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
     defaults:
       run:
         working-directory: spikes
@@ -30,36 +23,50 @@ jobs:
           node-version: 22
       - run: rustup default stable && rustc --version && sw_vers && uname -m
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build app bundle
+      - name: Build dmg (S4)
         working-directory: spikes/m0
-        run: ../node_modules/.bin/tauri build --ci --bundles app
-      - run: python3 scripts/make_fixtures_mac.py m0/fixtures && mkdir -p evidence m0/private
-      - name: S2 custom protocol (600 s soak)
+        run: ../node_modules/.bin/tauri build --ci --bundles dmg
+      - name: Sizes (S4)
         run: |
-          python3 scripts/fixture_server.py --fixtures m0/fixtures --log evidence/server.jsonl &
+          mkdir -p evidence
+          b=m0/src-tauri/target/release/bundle
+          python3 - "$b" <<'PY' | tee evidence/mac-sizes.json
+          import json, os, sys, hashlib
+          b = sys.argv[1]
+          dmg = [os.path.join(b, 'dmg', f) for f in os.listdir(os.path.join(b, 'dmg')) if f.endswith('.dmg')][0]
+          app = os.path.join(b, 'macos', 'Biu M0.app')
+          total = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(app) for f in fs if not os.path.islink(os.path.join(r, f)))
+          exe = os.path.join(app, 'Contents', 'MacOS', 'biu-m0')
+          print(json.dumps({'dmg': os.path.basename(dmg), 'dmg_bytes': os.path.getsize(dmg), 'dmg_mb': os.path.getsize(dmg) / 1e6,
+                            'app_bytes': total, 'exe_bytes': os.path.getsize(exe),
+                            'dmg_sha256': hashlib.sha256(open(dmg, 'rb').read()).hexdigest()}, indent=2))
+          PY
+      - run: python3 scripts/make_fixtures_mac.py m0/fixtures && mkdir -p m0/private
+      - name: S2 custom protocol 3600 s soak
+        run: |
+          python3 scripts/fixture_server.py --fixtures m0/fixtures --log evidence/mac-server.jsonl &
           sleep 2
+          ps -axo pid=,comm= | awk '/com.apple.WebKit./{print $1}' | python3 -c 'import sys,json;print(json.dumps([int(x) for x in sys.stdin.read().split()]))' > m0/private/webkit-baseline.json
           cd m0
-          export BIU_SPIKE_FIXTURES=1 BIU_FIXTURES="$PWD/fixtures" BIU_LOG="$PWD/../evidence/s2-custom.jsonl"
-          export BIU_MODE=custom BIU_SOAK_SECONDS=600
+          export BIU_SPIKE_FIXTURES=1 BIU_FIXTURES="$PWD/fixtures" BIU_LOG="$PWD/../evidence/mac-s2-custom.jsonl"
+          export BIU_MODE=custom BIU_SOAK_SECONDS=3600
           set +e
-          ./src-tauri/target/release/bundle/macos/'Biu M0.app'/Contents/MacOS/biu-m0 > ../evidence/s2-custom-console.log 2>&1 &
+          ./src-tauri/target/release/bundle/macos/'Biu M0.app'/Contents/MacOS/biu-m0 > ../evidence/mac-s2-custom-console.log 2>&1 &
           APP=$!
-          ( sleep 900; kill -TERM $APP ) &
+          python3 ../scripts/sample_memory_mac.py --pid $APP --baseline private/webkit-baseline.json --seconds 3900 --out ../evidence/mac-s2-custom-memory.jsonl &
+          ( sleep 4200; kill -TERM $APP ) &
           wait $APP; code=$?
-          echo "exit=$code" | tee ../evidence/s2-custom-exit.txt
-          grep -n -A60 'panicked\|cannot unwind\|NSException\|Terminating' ../evidence/s2-custom-console.log | head -150
+          echo "exit=$code" | tee ../evidence/mac-s2-custom-exit.txt
+          cd ..
+          python3 scripts/analyze_soak.py --events evidence/mac-s2-custom.jsonl --memory evidence/mac-s2-custom-memory.jsonl --server evidence/mac-server.jsonl --out evidence/mac-soak-analysis 2>&1 | tail -30
           python3 - <<'PY'
           import json, collections
-          ev=[json.loads(l) for l in open('../evidence/s2-custom.jsonl')]
-          c=collections.Counter(e.get('event') for e in ev)
-          print(dict(c)); print('last', ev[-1] if ev else None)
+          ev = [json.loads(l) for l in open('evidence/mac-s2-custom.jsonl')]
+          print(dict(collections.Counter(e.get('event') for e in ev))); print('last', ev[-1])
           PY
-          ls ~/Library/Logs/DiagnosticReports/ | grep -i biu && cp ~/Library/Logs/DiagnosticReports/*biu* ../evidence/ 2>/dev/null
           true
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: s2-evidence-panic-${{ matrix.panic }}
-          path: |
-            spikes/evidence
-            !spikes/evidence/*.m4a
+          name: mac-m0-evidence
+          path: spikes/evidence
