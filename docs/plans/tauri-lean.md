@@ -28,10 +28,14 @@ owner = Claude（osa-a1）
 
 ### 第 1 步：能听歌
 
-- [ ] `src-tauri/` 工程，复用 spike 的 HTTP 代理、依赖和窗口配置。
-- [ ] `src/platform/` 实现 `window.electron`，未做的方法返回明确错误。
-- [ ] 主窗口、存储、cookie、`bili_request`、扫码登录、播放。
-- [ ] CI 出三个包。
+- [x] `src-tauri/` 工程，复用 spike 的 HTTP 代理、依赖和窗口配置。
+  已建立 `src-tauri/`（`com.biu.wood3n`、无边框主窗、单实例、无 `panic=abort`、异步 `ensure_main_window`）并接入 `rsbuild` 前端构建。
+- [x] `src/platform/` 实现 `window.electron`，未做的方法返回明确错误。
+  已在 `src/platform/index.ts` 实现完整 `ElectronAPI` 类型兼容层，第 1 步方法走 Tauri `invoke`，其余 51 个第 2 步起方法返回明确「未实现」错误或警告且不触发白屏。
+- [x] 主窗口、存储、cookie、`bili_request`、扫码登录、播放。
+  已实现 `store_get/set/clear`、`bili_request`（6 个 axios 实例接入自定义 adapter，保留 WBI/极验拦截器与 Rust `cookies.json` 0600 持久化）、扫码登录与 loopback HTTP 音频代理（白名单校验 + `206 Partial Content` 流式 Range 转发 + `toMediaUrl()`）。
+- [x] CI 出三个包。
+  已新增 `.github/workflows/tauri-build.yml`，在 `feat/tauri` push 与 `workflow_dispatch` 时零 secrets 构建 macOS arm64 dmg（ad-hoc 签名，`CI=true`）、Windows x64 NSIS、Linux x64 deb 与含 `gst-libav` 的 AppImage，上传产物并打印字节数。
 - 用户验收：装上，登录，搜歌，播放，拖进度。
 
 ### 第 2 步：日常功能
