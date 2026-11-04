@@ -1259,7 +1259,11 @@ impl DownloadManager {
         if !receivers.is_empty() {
             let start = Instant::now();
             while start.elapsed() < timeout {
-                if receivers.iter().all(|rx| *rx.borrow()) {
+                // A dropped sender means the worker future ended without sending `true`.
+                if receivers
+                    .iter()
+                    .all(|rx| *rx.borrow() || rx.has_changed().is_err())
+                {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -1532,17 +1536,25 @@ impl DownloadManager {
         let stop_tx = Arc::new(stop_tx);
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
 
-        if let Some(prev) = self.workers.lock().unwrap().insert(
-            id.clone(),
-            WorkerControl {
-                generation,
-                stop_flag: stop_flag.clone(),
-                stop_tx: stop_tx.clone(),
-                done_rx,
-            },
-        ) {
-            prev.stop_flag.store(true, Ordering::SeqCst);
-            let _ = prev.stop_tx.send(true);
+        {
+            let mut workers = self.workers.lock().unwrap();
+            // `shutdown` sets the flag before it takes this lock, so a worker that gets past
+            // this check is in the map that `shutdown` stops.
+            if self.shut_down.load(Ordering::SeqCst) {
+                return;
+            }
+            if let Some(prev) = workers.insert(
+                id.clone(),
+                WorkerControl {
+                    generation,
+                    stop_flag: stop_flag.clone(),
+                    stop_tx: stop_tx.clone(),
+                    done_rx,
+                },
+            ) {
+                prev.stop_flag.store(true, Ordering::SeqCst);
+                let _ = prev.stop_tx.send(true);
+            }
         }
 
         let mgr = self.clone();
@@ -2235,9 +2247,16 @@ impl DownloadManager {
                     .and_then(|s| s.trim().parse::<u64>().ok());
                 let covers_whole_file =
                     chunk.start == 0 && (stream_total == 0 || expected_chunk_len == stream_total);
-                let ok_single_whole_200 = actual_offset == 0
-                    && covers_whole_file
-                    && content_len == Some(expected_chunk_len);
+                // A server that ignores Range sends the whole file. Accept it only when this
+                // chunk is the whole stream, and restart the chunk from byte 0.
+                let ok_single_whole_200 =
+                    covers_whole_file && content_len == Some(expected_chunk_len);
+                if ok_single_whole_200 && actual_offset > 0 {
+                    let mut t = task_arc.lock().unwrap();
+                    t.downloaded_bytes = t.downloaded_bytes.saturating_sub(accounted_bytes);
+                    accounted_bytes = 0;
+                    actual_offset = 0;
+                }
 
                 if !ok_single_whole_200 {
                     last_err = "server returned 200 OK instead of 206 Partial Content".to_string();
@@ -3471,7 +3490,9 @@ mod tests {
                     let hdr = "HTTP/1.1 200 OK\r\nContent-Length: 500\r\nConnection: close\r\n\r\n";
                     let _ = sock.write_all(hdr.as_bytes()).await;
                 } else {
-                    let body = vec![b'A'; 500];
+                    // `/short` answers with fewer bytes than HEAD announced.
+                    let len = if req.contains("/short") { 400 } else { 500 };
+                    let body = vec![b'A'; len];
                     let hdr = format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len()
@@ -3576,10 +3597,40 @@ mod tests {
             "multi-chunk 200 OK must fail: {multi_err}"
         );
 
-        // 3. actual_offset > 0 receiving 200 OK must fail and mark task failed (not cancelled)
+        // 3. A resumed whole-file single chunk (actual_offset > 0) restarts from byte 0 on 200 OK
+        let temp_resume = dir.join("temp_resume");
+        fs::create_dir_all(&temp_resume).unwrap();
+        fs::write(temp_resume.join("audio.part1"), vec![b'B'; 100]).unwrap();
+        {
+            let mut t = task_ok_arc.lock().unwrap();
+            t.temp_dir = temp_resume.to_string_lossy().into_owned();
+            t.chunks = Vec::new();
+            t.audio_total_bytes = 0;
+            t.total_bytes = 0;
+            t.downloaded_bytes = 0;
+            t.stream_id = None;
+        }
+        mgr.stage_download::<tauri::Wry>(
+            None,
+            &bili,
+            &task_ok_arc,
+            &stop_flag_ok,
+            &stop_rx_ok,
+            gen_ok,
+        )
+        .await
+        .expect("resumed whole-file single-chunk 200 OK should restart and succeed");
+        assert_eq!(
+            fs::read(temp_resume.join("audio.part1")).unwrap(),
+            vec![b'A'; 500]
+        );
+        assert_eq!(task_ok_arc.lock().unwrap().downloaded_bytes, 500);
+
+        // 4. A resumed chunk whose 200 body length does not match must fail and mark task
+        //    failed (not cancelled), leaving the partial file untouched
+        let url = format!("http://{addr}/short/audio.m4s?deadline=4102444800");
         let temp_fail = dir.join("temp_fail");
         fs::create_dir_all(&temp_fail).unwrap();
-        // Pre-populate 100 bytes on disk so actual_offset == 100 > 0
         fs::write(temp_fail.join("audio.part1"), vec![b'B'; 100]).unwrap();
 
         let task = FullMediaDownloadTask {
