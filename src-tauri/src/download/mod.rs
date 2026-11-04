@@ -2082,43 +2082,71 @@ impl DownloadManager {
             };
 
             let status_code = resp.status().as_u16();
-            if status_code != 206 {
-                if status_code == 200 {
-                    // Server ignored Range header; do not append full resource onto chunk
-                    last_err = "server returned 200 OK instead of 206 Partial Content".to_string();
-                } else {
-                    last_err = format!("HTTP {}", resp.status());
-                }
-                if attempt < 2 {
-                    let mut stop_rx_sleep = stop_rx.clone();
-                    let mut abort_rx_sleep = chunk_abort_rx.clone();
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
-                        _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
-                        _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
-                    }
-                }
-                continue;
-            }
-
-            // Validate Content-Range start matches req_start
-            let cr_valid = resp
-                .headers()
-                .get(reqwest::header::CONTENT_RANGE)
-                .and_then(|v| v.to_str().ok())
-                .and_then(parse_content_range_start)
-                .is_some_and(|(cr_start, cr_end)| cr_start == req_start && cr_end == chunk.end);
-
-            if !cr_valid {
-                let cr_raw = resp
+            if status_code == 206 {
+                // Validate Content-Range start matches req_start
+                let cr_valid = resp
                     .headers()
                     .get(reqwest::header::CONTENT_RANGE)
                     .and_then(|v| v.to_str().ok())
-                    .unwrap_or("<missing>");
-                last_err = format!(
-                    "invalid Content-Range {cr_raw} (expected bytes {req_start}-{})",
-                    chunk.end
-                );
+                    .and_then(parse_content_range_start)
+                    .is_some_and(|(cr_start, cr_end)| cr_start == req_start && cr_end == chunk.end);
+
+                if !cr_valid {
+                    let cr_raw = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_RANGE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("<missing>");
+                    last_err = format!(
+                        "invalid Content-Range {cr_raw} (expected bytes {req_start}-{})",
+                        chunk.end
+                    );
+                    if attempt < 2 {
+                        let mut stop_rx_sleep = stop_rx.clone();
+                        let mut abort_rx_sleep = chunk_abort_rx.clone();
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
+                            _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                            _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
+                        }
+                    }
+                    continue;
+                }
+            } else if status_code == 200 {
+                let stream_total = {
+                    let t = task_arc.lock().unwrap();
+                    if chunk.chunk_type == "audio" {
+                        t.audio_total_bytes
+                    } else {
+                        t.video_total_bytes
+                    }
+                };
+                let content_len = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.trim().parse::<u64>().ok());
+                let covers_whole_file =
+                    chunk.start == 0 && (stream_total == 0 || expected_chunk_len == stream_total);
+                let ok_single_whole_200 = actual_offset == 0
+                    && covers_whole_file
+                    && content_len == Some(expected_chunk_len);
+
+                if !ok_single_whole_200 {
+                    last_err = "server returned 200 OK instead of 206 Partial Content".to_string();
+                    if attempt < 2 {
+                        let mut stop_rx_sleep = stop_rx.clone();
+                        let mut abort_rx_sleep = chunk_abort_rx.clone();
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
+                            _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                            _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
+                        }
+                    }
+                    continue;
+                }
+            } else {
+                last_err = format!("HTTP {}", resp.status());
                 if attempt < 2 {
                     let mut stop_rx_sleep = stop_rx.clone();
                     let mut abort_rx_sleep = chunk_abort_rx.clone();
@@ -3294,7 +3322,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        // Server responds to HEAD with Content-Length: 500, but responds to GET Range with 200 OK (ignoring Range)
+        // Server responds to HEAD with Content-Length: 500, and responds to GET Range with 200 OK (ignoring Range)
         let srv = tokio::spawn(async move {
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else {
@@ -3324,8 +3352,102 @@ mod tests {
 
         let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
         let mgr = DownloadManager::new(dir.join("downloads.json"));
-
         let url = format!("http://{addr}/audio.m4s?deadline=4102444800");
+
+        // 1. Whole-file single chunk with actual_offset == 0 and Content-Length == 500 succeeds on 200 OK
+        let temp_ok = dir.join("temp_ok");
+        let task_ok = FullMediaDownloadTask {
+            id: "t-200-ok".into(),
+            output_file_type: "audio".into(),
+            title: "200 Whole File Single Chunk".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: Some(url.clone()),
+            audio_codecs: Some("aac".into()),
+            audio_bandwidth: Some(128000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 0,
+            audio_total_bytes: 0,
+            video_total_bytes: 0,
+            downloaded_bytes: 0,
+            download_progress: 0,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "downloading".into(),
+            file_name: None,
+            temp_dir: temp_ok.to_string_lossy().into_owned(),
+            save_dir: dir.join("save_ok").to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: Vec::new(),
+            error: None,
+        };
+        let task_ok_arc = Arc::new(Mutex::new(task_ok));
+        let gen_ok = mgr.next_generation("t-200-ok");
+        let stop_flag_ok = Arc::new(AtomicBool::new(false));
+        let (_stop_tx_ok, stop_rx_ok) = tokio::sync::watch::channel(false);
+        mgr.stage_download::<tauri::Wry>(
+            None,
+            &bili,
+            &task_ok_arc,
+            &stop_flag_ok,
+            &stop_rx_ok,
+            gen_ok,
+        )
+        .await
+        .expect("whole-file single-chunk 200 OK should succeed");
+        assert_eq!(
+            fs::read(temp_ok.join("audio.part1")).unwrap(),
+            vec![b'A'; 500]
+        );
+        assert!(task_ok_arc.lock().unwrap().chunks[0].done);
+
+        // 2. Multi-chunk (chunk does not cover full stream) receiving 200 OK must fail
+        let multi_chunk = MediaDownloadChunk {
+            chunk_type: "audio".into(),
+            name: "audio.part1".into(),
+            start: 0,
+            end: 249,
+            done: false,
+        };
+        task_ok_arc.lock().unwrap().audio_total_bytes = 500;
+        task_ok_arc.lock().unwrap().chunks = vec![multi_chunk.clone()];
+        let (_abort_tx, abort_rx) = tokio::sync::watch::channel(false);
+        let multi_err = mgr
+            .download_single_chunk::<tauri::Wry>(
+                None,
+                &bili,
+                &task_ok_arc,
+                &stop_flag_ok,
+                &stop_rx_ok,
+                &Arc::new(AtomicBool::new(false)),
+                &abort_rx,
+                gen_ok,
+                0,
+                &multi_chunk,
+                &url,
+                &dir.join("multi.part1"),
+                0,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            multi_err.contains("200 OK"),
+            "multi-chunk 200 OK must fail: {multi_err}"
+        );
+
+        // 3. actual_offset > 0 receiving 200 OK must fail and mark task failed (not cancelled)
+        let temp_fail = dir.join("temp_fail");
+        fs::create_dir_all(&temp_fail).unwrap();
+        // Pre-populate 100 bytes on disk so actual_offset == 100 > 0
+        fs::write(temp_fail.join("audio.part1"), vec![b'B'; 100]).unwrap();
+
         let task = FullMediaDownloadTask {
             id: "t-200-fail".into(),
             output_file_type: "audio".into(),
@@ -3350,7 +3472,7 @@ mod tests {
             convert_progress: 0,
             status: "waiting".into(),
             file_name: None,
-            temp_dir: dir.join("temp").to_string_lossy().into_owned(),
+            temp_dir: temp_fail.to_string_lossy().into_owned(),
             save_dir: dir.join("save").to_string_lossy().into_owned(),
             save_path: None,
             audio_temp_path: None,
@@ -3382,6 +3504,11 @@ mod tests {
         assert!(
             err_msg.contains("200 OK"),
             "expected error mentioning 200 OK, got: {err_msg}"
+        );
+        // Existing partial file must not have been overwritten with the 200 body
+        assert_eq!(
+            fs::read(temp_fail.join("audio.part1")).unwrap(),
+            vec![b'B'; 100]
         );
 
         let _ = fs::remove_dir_all(&dir);
