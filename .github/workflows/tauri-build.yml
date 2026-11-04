@@ -21,11 +21,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS arm64 hosted runners keep timing out in the queue; cross-compile on Intel instead.
           - name: macos-arm64
-            os: macos-15
+            os: macos-15-intel
+            target: aarch64-apple-darwin
             bundles: dmg
             artifact_name: biu-macos-arm64-dmg
-            bundle_glob: src-tauri/target/release/bundle/dmg/*.dmg
+            bundle_glob: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           - name: windows-x64
             os: windows-latest
             bundles: nsis
@@ -85,6 +87,7 @@ jobs:
       - name: Setup Rust stable
         run: |
           rustup default stable
+          if [ -n "${{ matrix.target }}" ]; then rustup target add "${{ matrix.target }}"; fi
           rustc --version
           cargo --version
 
@@ -95,7 +98,10 @@ jobs:
         env:
           CI: "true"
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: pnpm exec tauri build --ci --bundles "${{ matrix.bundles }}"
+        run: |
+          target_args=()
+          if [ -n "${{ matrix.target }}" ]; then target_args=(--target "${{ matrix.target }}"); fi
+          pnpm exec tauri build --ci --bundles "${{ matrix.bundles }}" "${target_args[@]}"
 
       - name: Print bundle byte sizes
         run: |
@@ -104,6 +110,7 @@ jobs:
 
           patterns = [
               "src-tauri/target/release/bundle/dmg/*.dmg",
+              "src-tauri/target/*/release/bundle/dmg/*.dmg",
               "src-tauri/target/release/bundle/nsis/*.exe",
               "src-tauri/target/release/bundle/deb/*.deb",
               "src-tauri/target/release/bundle/appimage/*.AppImage",
