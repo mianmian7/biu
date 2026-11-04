@@ -6,7 +6,8 @@
 
 ### 🚀 新功能
 
-- 导出应用设置、用户信息与 B 站登录 Cookie 到 `tauri-migration.json`，支持无缝迁移至 Tauri 版
+- 导出应用设置、用户信息、B 站登录 Cookie 和播放列表等本地数据到 `tauri-migration.json`，支持无缝迁移至 Tauri 版
+- 自动更新改为升级到 Tauri 版（读取 `tauri*.yml`），退出前先完成导出
 
 ## v1.16.0
 

@@ -1,4 +1,4 @@
-import { BrowserWindow } from "electron";
+import { app, BrowserWindow } from "electron";
 import isDev from "electron-is-dev";
 import log from "electron-log";
 import electronUpdater, { type UpdateDownloadedEvent } from "electron-updater";
@@ -12,6 +12,25 @@ import { detectUpdateMode, disableAutoUpdate } from "./update-mode";
 const { autoUpdater } = electronUpdater;
 let phase: "checking" | "downloading" | "downloaded" | "installing" = "checking";
 let checkForUpdatesInterval: NodeJS.Timeout | null = null;
+
+/** True once an update install has started; the quit path must not delay it. */
+export function isInstallingUpdate() {
+  return phase === "installing";
+}
+
+/**
+ * The bridge's next update is the Tauri app, listed in the release's tauri*.yml
+ * (latest*.yml there send older Electron clients to this bridge). Windows ARM64 gets its
+ * own feed because NsisUpdater installs the first exe it finds; an x64 build running
+ * under emulation still picks the arm64 Tauri installer.
+ */
+export function tauriUpdateChannel(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+  underArm64Translation = Boolean(app?.runningUnderARM64Translation),
+) {
+  return platform === "win32" && (arch === "arm64" || underArm64Translation) ? "tauri-arm64" : "tauri";
+}
 
 export async function downloadUpdate() {
   phase = "downloading";
@@ -33,6 +52,9 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
   autoUpdater.autoDownload = mode === "auto";
   autoUpdater.autoInstallOnAppQuit = mode === "auto";
   autoUpdater.autoRunAppAfterInstall = true;
+  autoUpdater.channel = tauriUpdateChannel();
+  // The channel setter turns allowDowngrade on; reset both after it.
+  autoUpdater.allowDowngrade = false;
   autoUpdater.allowPrerelease = false;
 
   if (isDev) {
@@ -91,7 +113,7 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
   });
 
   (autoUpdater as unknown as NodeJS.EventEmitter).on("before-quit-for-update", () => {
-    void exportTauriMigration();
+    phase = "installing";
   });
 
   const check = () => {

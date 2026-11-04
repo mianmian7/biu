@@ -10,13 +10,13 @@ import { applyProxySettings } from "./ipc/app";
 import { channel } from "./ipc/channel";
 import { quitAndSaveTasks } from "./ipc/download";
 import { registerIpcHandlers } from "./ipc/index";
+import { exportTauriMigration, setMigrationWindowGetter } from "./migration";
 import { destroyMiniPlayer } from "./mini-player";
-import { exportTauriMigration } from "./migration";
 import { injectAuthCookie } from "./network/cookie";
 import { installWebRequestInterceptors } from "./network/interceptor";
 import { registerAllShortcuts, unregisterAllShortcuts } from "./shortcut";
 import { appSettingsStore } from "./store";
-import { autoUpdater, setupAutoUpdater, stopCheckForUpdates } from "./updater";
+import { autoUpdater, isInstallingUpdate, setupAutoUpdater, stopCheckForUpdates } from "./updater";
 import { getWindowIcon } from "./utils";
 import { setupWindowsThumbar } from "./windows/thumbar";
 import { createTray, destroyTray } from "./windows/tray"; // 托盘功能
@@ -156,6 +156,12 @@ if (!gotTheLock) {
     }
 
     createWindow();
+    setMigrationWindowGetter(() => mainWindow);
+    // localStorage can only be read while the main window is alive, so keep the export fresh.
+    mainWindow?.webContents.once("did-finish-load", () => {
+      setTimeout(() => void exportTauriMigration(), 10_000);
+    });
+    setInterval(() => void exportTauriMigration(), 10 * 60 * 1000);
     injectAuthCookie().finally(() => {
       void exportTauriMigration();
     });
@@ -200,9 +206,19 @@ if (!gotTheLock) {
 
   app.on("activate", () => mainWindow?.show());
 
-  app.on("before-quit", () => {
+  // Electron does not wait for async before-quit work, so hold the first quit until the
+  // migration export is written (at most 5 s), then quit again. autoInstallOnAppQuit
+  // installs on the following "quit" event, so it sees the fresh export.
+  let quitExportDone = false;
+  app.on("before-quit", event => {
     (app as any).quitting = true;
-    void exportTauriMigration();
+    if (quitExportDone || isInstallingUpdate()) return;
+    event.preventDefault();
+    const timeout = new Promise(resolve => setTimeout(resolve, 5000));
+    void Promise.race([exportTauriMigration(), timeout]).finally(() => {
+      quitExportDone = true;
+      app.quit();
+    });
   });
 
   app.on("will-quit", () => {
@@ -211,8 +227,6 @@ if (!gotTheLock) {
     } catch (err) {
       log.error("[main] quitAndSaveTasks failed:", err);
     }
-
-    void exportTauriMigration();
 
     try {
       destroyTray();

@@ -10,6 +10,7 @@ import {
   exportTauriMigration,
   filterAndFormatBilibiliCookies,
   isBilibiliDomain,
+  parseLocalStorageDump,
   TAURI_MIGRATION_FILE,
   writeTauriMigrationFileAtomic,
 } from "../electron/migration";
@@ -157,5 +158,23 @@ describe("tauri migration export", () => {
   it("catches errors and returns null without throwing when export fails", async () => {
     const result = await exportTauriMigration();
     expect(result).toBeNull();
+  });
+
+  it("keeps only string localStorage entries and includes them in the payload", () => {
+    expect(parseLocalStorageDump('{"user-token":"{}","n":null,"x":"1"}')).toEqual({ "user-token": "{}", x: "1" });
+    expect(parseLocalStorageDump("[1]")).toBeNull();
+    expect(parseLocalStorageDump(undefined)).toBeNull();
+    const payload = buildTauriMigrationPayload({
+      appVersion: "1.16.1-autolyrics.7",
+      stores: {},
+      cookies: [],
+      localStorage: { "user-token": "{}" },
+    });
+    expect(payload.localStorage).toEqual({ "user-token": "{}" });
+  });
+
+  it("runs exports one after another", async () => {
+    const results = await Promise.all([exportTauriMigration(), exportTauriMigration()]);
+    expect(results).toEqual([null, null]);
   });
 });

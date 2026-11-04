@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ mode: "auto", warn: vi.fn(), updater: undefined as unknown }));
-vi.mock("electron", () => ({}));
+vi.mock("electron", () => ({ app: { runningUnderARM64Translation: false } }));
 vi.mock("electron-is-dev", () => ({ default: false }));
 vi.mock("electron-log", () => ({ default: { warn: mocks.warn, transports: { file: {} } } }));
 vi.mock("electron-updater", () => ({
@@ -42,6 +42,20 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("updater lifecycle", () => {
+  it("reads the Tauri feed (tauri*.yml) without allowing downgrade or prereleases", async () => {
+    const { setupAutoUpdater, stopCheckForUpdates, tauriUpdateChannel } = await import("../../electron/updater");
+    await setupAutoUpdater({ getMainWindow: () => null });
+    expect((updater as unknown as { channel: string }).channel).toBe(tauriUpdateChannel());
+    expect((updater as unknown as { allowDowngrade: boolean }).allowDowngrade).toBe(false);
+    expect(updater.allowPrerelease).toBe(false);
+    expect(tauriUpdateChannel("darwin", "arm64", false)).toBe("tauri");
+    expect(tauriUpdateChannel("linux", "arm64", false)).toBe("tauri");
+    expect(tauriUpdateChannel("win32", "x64", false)).toBe("tauri");
+    expect(tauriUpdateChannel("win32", "arm64", false)).toBe("tauri-arm64");
+    expect(tauriUpdateChannel("win32", "x64", true)).toBe("tauri-arm64");
+    stopCheckForUpdates();
+  });
+
   it("skips hourly checks after downloading", async () => {
     const { setupAutoUpdater, stopCheckForUpdates } = await import("../../electron/updater");
     await setupAutoUpdater({ getMainWindow: () => null });
