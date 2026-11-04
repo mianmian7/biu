@@ -2,7 +2,9 @@ import { app, ipcMain, session } from "electron";
 import isDev from "electron-is-dev";
 import log from "electron-log";
 
-import { autoUpdater } from "../updater";
+import { autoUpdater, downloadUpdate, quitAndInstall } from "../updater";
+import { classifyUpdateError } from "../updater/classify-error";
+import { detectUpdateMode } from "../updater/update-mode";
 import { channel } from "./channel";
 
 export const applyProxySettings = async (proxySettings?: ProxySettings) => {
@@ -57,6 +59,9 @@ export function registerAppHandlers() {
         isUpdateAvailable: false,
       };
     } catch (error) {
+      if (classifyUpdateError(error) === "unpublished") {
+        return { isUpdateAvailable: false, notice: "新版本正在发布，请几分钟后再试" };
+      }
       return {
         isUpdateAvailable: false,
         error: String(error instanceof Error ? error?.message : "无法获取更新信息"),
@@ -65,12 +70,12 @@ export function registerAppHandlers() {
   });
 
   ipcMain.handle(channel.app.downloadUpdate, async () => {
-    await autoUpdater.downloadUpdate();
+    await downloadUpdate();
   });
 
-  ipcMain.handle(channel.app.quitAndInstall, async () => {
-    return autoUpdater.quitAndInstall();
-  });
+  ipcMain.handle(channel.app.getUpdateMode, () => detectUpdateMode());
+
+  ipcMain.handle(channel.app.quitAndInstall, () => quitAndInstall());
 
   ipcMain.handle(channel.app.isDev, async () => {
     return isDev;

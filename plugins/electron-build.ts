@@ -83,12 +83,14 @@ export async function buildElectron() {
         artifactName: "${productName}-${version}-linux-${arch}.${ext}",
         extraResources: [{ from: "electron/ffmpeg/ffmpeg-linux", to: "electron/ffmpeg/ffmpeg-linux" }],
       },
-      publish: {
-        provider: "github",
-        owner,
-        repo,
-        releaseType: null,
-      },
+      publish: process.env.BIU_UPDATE_FEED_URL
+        ? { provider: "generic", url: process.env.BIU_UPDATE_FEED_URL }
+        : {
+            provider: "github",
+            owner,
+            repo,
+            releaseType: null,
+          },
     },
   })
     .then(result => {
@@ -96,5 +98,6 @@ export async function buildElectron() {
     })
     .catch(error => {
       logger.error(error);
+      throw error;
     });
 }

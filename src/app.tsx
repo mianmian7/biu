@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useHref, useNavigate, useRoutes } from "react-router";
 
-import { HeroUIProvider, ToastProvider } from "@heroui/react";
+import { addToast, Button, HeroUIProvider, ToastProvider } from "@heroui/react";
 import moment from "moment";
 
 import { getCookitFromBSite } from "./common/utils/cookie";
@@ -147,6 +147,43 @@ export function App() {
     });
 
     return () => {
+      removeListener();
+    };
+  }, [setUpdate]);
+
+  useEffect(() => {
+    let active = true;
+    window.electron
+      .getUpdateMode()
+      .then(mode => {
+        if (active) useAppUpdateStore.getState().setMode(mode);
+      })
+      .catch(error => console.warn("[updater] could not read mode", error));
+    const removeListener = window.electron.onDownloadAppProgress(info => {
+      const previous = useAppUpdateStore.getState();
+      previous.setDownload(info);
+      if (
+        info.status === "downloaded" &&
+        previous.downloadStatus !== "downloaded" &&
+        useAppUpdateStore.getState().mode === "auto"
+      ) {
+        addToast({
+          title: "新版本已下载，退出时自动安装",
+          endContent: (
+            <Button
+              size="sm"
+              onPress={() => {
+                void window.electron.quitAndInstall();
+              }}
+            >
+              立即重启
+            </Button>
+          ),
+        });
+      }
+    });
+    return () => {
+      active = false;
       removeListener();
     };
   }, []);

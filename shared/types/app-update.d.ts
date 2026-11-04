@@ -1,3 +1,5 @@
+type AppUpdateMode = "auto" | "manual";
+
 interface AppUpdateReleaseInfo {
   /** 最新版本 */
   latestVersion?: string;
@@ -7,6 +9,7 @@ interface AppUpdateReleaseInfo {
 
 interface CheckAppUpdateResult extends AppUpdateReleaseInfo {
   isUpdateAvailable?: boolean;
+  notice?: string;
   error?: string;
 }
 
@@ -27,6 +30,7 @@ interface DownloadInfo {
 
 interface DownloadAppMessage {
   status: DownloadAppUpdateStatus;
+  mode?: AppUpdateMode;
   processInfo?: DownloadAppProgressInfo;
   downloadInfo?: DownloadInfo;
   error?: string;

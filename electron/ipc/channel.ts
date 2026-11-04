@@ -68,6 +68,7 @@ export const channel = {
   app: {
     getVersion: "app:get-version",
     checkUpdate: "app:check-update",
+    getUpdateMode: "app:get-update-mode",
     onUpdateAvailable: "app:on-update-available",
     downloadUpdate: "app:download-update",
     updateMessage: "app:update-message",

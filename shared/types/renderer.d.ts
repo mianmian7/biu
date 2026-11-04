@@ -85,8 +85,8 @@ declare global {
     getAppVersion: () => Promise<string>;
     /** 判断是否为开发模式 */
     isDev: () => Promise<boolean>;
-    /** 是否支持自动更新 */
-    isSupportAutoUpdate: () => boolean;
+    /** 获取更新模式 */
+    getUpdateMode: () => Promise<AppUpdateMode>;
     /** 检查更新 */
     checkAppUpdate: () => Promise<CheckAppUpdateResult>;
     /** 监听应用更新下载进度 */
@@ -96,7 +96,7 @@ declare global {
     /** 监听应用更新下载进度 */
     onDownloadAppProgress: (cb: (payload: DownloadAppMessage) => void) => VoidFunction;
     /** 安装更新 */
-    quitAndInstall: () => Promise<void>;
+    quitAndInstall: () => Promise<boolean>;
     /** 切换 mini/主窗口 */
     toggleMiniPlayer: () => Promise<void>;
     /** 同步桌面歌词状态与展示内容（主窗口 -> 主进程 -> 桌面歌词窗口） */
