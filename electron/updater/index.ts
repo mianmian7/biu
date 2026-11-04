@@ -42,30 +42,39 @@ export async function downloadUpdate() {
  * Installs the update only after a migration export has just succeeded, so the Tauri app
  * always finds the current login and settings. On failure the update stays downloaded.
  */
-async function installAfterExport(relaunch: boolean): Promise<boolean> {
+export async function quitAndInstall() {
+  if ((await detectUpdateMode()) !== "auto") return false;
   const previousPhase = phase;
   phase = "installing";
   const exported = await exportTauriMigrationWithin(10_000);
   if (!exported) {
-    phase = previousPhase;
+    // The error handler may have changed the phase meanwhile; only undo our own change.
+    if (phase === "installing") phase = previousPhase;
     log.warn("[updater] migration export failed, update not installed this time");
     return false;
   }
   // Mac closes every window before installing; a hide-on-close window would block it.
   (app as unknown as { quitting?: boolean }).quitting = true;
-  autoUpdater.quitAndInstall(true, relaunch);
+  autoUpdater.quitAndInstall(true, true);
   return true;
 }
 
-export async function quitAndInstall() {
-  if ((await detectUpdateMode()) !== "auto") return false;
-  return installAfterExport(true);
+/**
+ * Install on a normal quit. Mac (Squirrel installs natively when the process exits) and
+ * Windows (installer starts on the "quit" event) do it after main.ts's before-quit hold has
+ * exported. Linux stays off: AppImageUpdater runs the new AppImage synchronously on quit.
+ */
+export function installsOnQuit(platform: NodeJS.Platform = process.platform) {
+  return updateMode === "auto" && platform !== "linux";
 }
 
-/** Called on a normal quit: installs a downloaded update after a fresh export. */
-export async function installOnQuit() {
-  if (updateMode !== "auto" || phase !== "downloaded") return false;
-  return installAfterExport(false);
+/**
+ * Called by main.ts when the export before a normal quit failed. Windows checks the flag on
+ * "quit", so the update waits for a later run; Squirrel.Mac has already staged it and installs
+ * with the last successful export.
+ */
+export function skipInstallOnThisQuit() {
+  autoUpdater.autoInstallOnAppQuit = false;
 }
 
 async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => BrowserWindow | null }) {
@@ -74,9 +83,7 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
   let mode = await detectUpdateMode();
   updateMode = mode;
   autoUpdater.autoDownload = mode === "auto";
-  // electron-updater's own install-on-quit would not wait for the migration export;
-  // main.ts calls installOnQuit() instead.
-  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.autoInstallOnAppQuit = installsOnQuit();
   autoUpdater.autoRunAppAfterInstall = true;
   autoUpdater.channel = tauriUpdateChannel();
   // The channel setter turns allowDowngrade on; reset both after it.
@@ -111,7 +118,8 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
     const signatureFailure = /code[\s_-]*(?:requirement|sign(?:ature|ing))|ERR_UPDATER_INVALID_SIGNATURE/i.test(
       `${(error as Error & { code?: string }).code ?? ""} ${error.message}`,
     );
-    if (phase === "downloaded" && signatureFailure) {
+    // With Squirrel.Mac the signature is checked while installing, so cover that phase too.
+    if ((phase === "downloaded" || phase === "installing") && signatureFailure) {
       mode = "manual";
       updateMode = mode;
       disableAutoUpdate();

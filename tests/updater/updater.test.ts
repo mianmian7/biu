@@ -57,25 +57,34 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("updater lifecycle", () => {
-  it("installs only after a successful export", async () => {
-    const { setupAutoUpdater, quitAndInstall, installOnQuit, isInstallingUpdate, stopCheckForUpdates } =
+  it("installs only after a successful export and handles signature errors while installing", async () => {
+    const { setupAutoUpdater, quitAndInstall, installsOnQuit, isInstallingUpdate, stopCheckForUpdates } =
       await import("../../electron/updater");
-    await setupAutoUpdater({ getMainWindow: () => null });
-
-    expect(await installOnQuit()).toBe(false); // nothing downloaded yet
+    const send = vi.fn();
+    await setupAutoUpdater({ getMainWindow: () => ({ webContents: { send } }) as never });
     updater.emit("update-downloaded", { downloadedFile: "/tmp/Biu.zip" });
 
     mocks.exportResult = null;
     expect(await quitAndInstall()).toBe(false);
-    expect(await installOnQuit()).toBe(false);
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
     expect(isInstallingUpdate()).toBe(false);
     expect(mocks.app.quitting).toBeUndefined();
 
+    // Normal-quit install stays off on Linux, where AppImageUpdater would block the quit.
+    expect(installsOnQuit("darwin")).toBe(true);
+    expect(installsOnQuit("win32")).toBe(true);
+    expect(installsOnQuit("linux")).toBe(false);
+
     mocks.exportResult = "/tmp/tauri-migration.json";
-    expect(await installOnQuit()).toBe(true);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, false);
+    expect(await quitAndInstall()).toBe(true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
     expect(mocks.app.quitting).toBe(true);
+
+    // Squirrel.Mac reports a bad signature during the install itself.
+    updater.emit("error", new Error("update does not satisfy code requirement"));
+    expect(mocks.mode).toBe("manual");
+    expect(updater.autoInstallOnAppQuit).toBe(false);
+    expect(installsOnQuit("darwin")).toBe(false);
     stopCheckForUpdates();
   });
 
@@ -129,8 +138,8 @@ describe("updater lifecycle", () => {
     const { setupAutoUpdater, quitAndInstall, stopCheckForUpdates } = await import("../../electron/updater");
     await setupAutoUpdater({ getMainWindow: () => null });
     expect(updater.autoDownload).toBe(mode === "auto");
-    // main.ts installs on quit via installOnQuit(), after the migration export.
-    expect(updater.autoInstallOnAppQuit).toBe(false);
+    // Off on Linux (AppImage install on quit is synchronous); main.ts holds the quit for the export.
+    expect(updater.autoInstallOnAppQuit).toBe(mode === "auto" && process.platform !== "linux");
     expect(updater.autoRunAppAfterInstall).toBe(true);
     expect(updater.allowPrerelease).toBe(false);
     expect(await quitAndInstall()).toBe(mode === "auto");
