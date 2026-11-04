@@ -30,11 +30,16 @@ async function load(url) {
   await sleep(600);
 }
 let graph;
-async function waveform() {
+// BIU_SILENT keeps the decode and analyser path intact while the speakers stay silent.
+function ensureGraph(silent=false) {
   if(!graph){
-    const ctx=new AudioContext(),source=ctx.createMediaElementSource(audio),analyser=ctx.createAnalyser();source.connect(analyser);analyser.connect(ctx.destination);graph={ctx,analyser};
+    const ctx=new AudioContext(),source=ctx.createMediaElementSource(audio),analyser=ctx.createAnalyser(),gain=ctx.createGain();
+    gain.gain.value=silent?0:1;source.connect(analyser);analyser.connect(gain);gain.connect(ctx.destination);graph={ctx,analyser};
   }
-  const {ctx,analyser}=graph;await ctx.resume();
+  return graph;
+}
+async function waveform() {
+  const {ctx,analyser}=ensureGraph();await ctx.resume();
   await sleep(1000);const samples=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(samples);
   await report({event:'waveform',max:Math.max(...samples.map(Math.abs)),state:ctx.state});
   // Leave the graph connected for the soak.
@@ -149,4 +154,4 @@ async function run(config) {
 document.querySelector('#sample-run').onclick=()=>runSample(document.querySelector('#sample').value);
 document.querySelector('#lyrics').onclick=()=>invoke('lyrics');
 document.querySelector('#run').onclick=()=>run({seconds:60}).catch(e=>report({event:'failure',message:String(e)}));
-invoke('mode').then(config=>{if(config.mode!=='interactive')run(config).catch(async e=>{await report({event:'failure',message:String(e)});await invoke('finish');});});
+invoke('mode').then(async config=>{if(config.silent)await ensureGraph(true).ctx.resume();if(config.mode!=='interactive')run(config).catch(async e=>{await report({event:'failure',message:String(e)});await invoke('finish');});});

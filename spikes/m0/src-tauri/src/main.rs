@@ -425,7 +425,7 @@ fn finish(app: tauri::AppHandle) {
 }
 #[tauri::command]
 fn mode() -> Value {
-    json!({"mode": std::env::var("BIU_MODE").unwrap_or_else(|_| "interactive".into()), "seconds": std::env::var("BIU_SOAK_SECONDS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(1800)})
+    json!({"mode": std::env::var("BIU_MODE").unwrap_or_else(|_| "interactive".into()), "seconds": std::env::var("BIU_SOAK_SECONDS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(1800), "silent": std::env::var_os("BIU_SILENT").is_some()})
 }
 struct LyricsState {
     locked: Arc<AtomicBool>,
