@@ -163,11 +163,22 @@ pub fn store_get<R: Runtime>(app: AppHandle<R>, name: String) -> Result<Value, S
 
 #[tauri::command]
 pub fn store_set<R: Runtime>(app: AppHandle<R>, name: String, value: Value) -> Result<(), String> {
+    write_store(app, name, value, true)
+}
+
+/// Writes a store. `mark_manual` flags edited lyrics-cache entries as `manual`; migration
+/// passes `false` so imported entries keep their original `source`.
+pub fn write_store<R: Runtime>(
+    app: AppHandle<R>,
+    name: String,
+    value: Value,
+    mark_manual: bool,
+) -> Result<(), String> {
     let filename = store_filename(&name)?;
     if value.is_null() {
         return Ok(());
     }
-    let final_val = if name == "lyrics-cache" {
+    let final_val = if mark_manual && name == "lyrics-cache" {
         let prev = read_store_object(&app, &name).unwrap_or_else(|_| json!({}));
         mark_manual_edits(&prev, &value)
     } else {
@@ -260,12 +271,22 @@ pub fn file_store_get(dir: &std::path::Path, name: &str) -> Result<Value, String
 
 #[cfg(test)]
 pub fn file_store_set(dir: &std::path::Path, name: &str, value: Value) -> Result<(), String> {
+    file_store_write(dir, name, value, true)
+}
+
+#[cfg(test)]
+pub fn file_store_write(
+    dir: &std::path::Path,
+    name: &str,
+    value: Value,
+    mark_manual: bool,
+) -> Result<(), String> {
     let filename = store_filename(name)?;
     if value.is_null() {
         return Ok(());
     }
     let current = file_store_get(dir, name).unwrap_or_else(|_| json!({}));
-    let final_val = if name == "lyrics-cache" {
+    let final_val = if mark_manual && name == "lyrics-cache" {
         mark_manual_edits(&current, &value)
     } else {
         value

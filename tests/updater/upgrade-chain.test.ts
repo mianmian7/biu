@@ -6,7 +6,6 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { GitHubProvider } from "electron-updater/out/providers/GitHubProvider";
 
 import { generateFeedsFromDir, writeBridgeFeeds } from "../../scripts/electron-updater-feed.mjs";
 
@@ -14,6 +13,15 @@ import { generateFeedsFromDir, writeBridgeFeeds } from "../../scripts/electron-u
 const requireFromUpdater = createRequire(createRequire(import.meta.url).resolve("electron-updater"));
 const { HttpError } = requireFromUpdater("builder-util-runtime") as {
   HttpError: new (statusCode: number, description: string) => Error;
+};
+// Loaded untyped: electron-updater's .d.ts files need the Electron types, which this repo no longer has.
+type ResolvedFile = { url: URL };
+type Provider = {
+  getLatestVersion: () => Promise<{ version: string }>;
+  resolveFiles: (info: unknown) => ResolvedFile[];
+};
+const { GitHubProvider } = requireFromUpdater("./providers/GitHubProvider") as {
+  GitHubProvider: new (options: unknown, updater: unknown, runtimeOptions: unknown) => Provider;
 };
 
 const REPO = "/mianmian7/biu/releases";
@@ -89,11 +97,11 @@ async function resolveUpdate(opts: {
       throw new HttpError(404, `not found: ${pathname}`);
     },
   };
-  const provider = new GitHubProvider(
-    { provider: "github", owner: "mianmian7", repo: "biu" },
-    updater as never,
-    { platform: opts.platform, executor: executor as never, isUseMultipleRangeRequest: true },
-  );
+  const provider = new GitHubProvider({ provider: "github", owner: "mianmian7", repo: "biu" }, updater, {
+    platform: opts.platform,
+    executor,
+    isUseMultipleRangeRequest: true,
+  });
   const info = await provider.getLatestVersion();
   const files = provider.resolveFiles(info).map(f => f.url.pathname);
   return { version: info.version, files, requested };

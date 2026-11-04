@@ -318,6 +318,24 @@ fn save_cookie_store(cookies: &CookieStoreMutex, path: &Path) -> Result<(), Stri
     Ok(())
 }
 
+/// Follows a redirect only when every hop stays on hosts that `allowed` accepts.
+pub fn allowlist_redirect_policy(allowed: fn(&Url) -> bool) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= 10 {
+            attempt.error("too many redirects")
+        } else if allowed(attempt.url()) {
+            attempt.follow()
+        } else {
+            let host = attempt.url().host_str().unwrap_or("").to_string();
+            attempt.error(format!("redirect to disallowed host {host}"))
+        }
+    })
+}
+
+fn is_bili_redirect_allowed(u: &Url) -> bool {
+    is_bili_api_url_allowed(u) || u.host_str().is_some_and(is_bili_audio_cdn_host)
+}
+
 pub fn build_reqwest_client(
     cookies: Arc<CookieStoreMutex>,
     proxy: Option<&ProxySettings>,
@@ -336,6 +354,7 @@ pub fn build_reqwest_client(
         .cookie_provider(cookies)
         .user_agent(USER_AGENT)
         .connect_timeout(std::time::Duration::from_secs(10))
+        .redirect(allowlist_redirect_policy(is_bili_redirect_allowed))
         .default_headers(default_headers);
 
     if let Some(p) = proxy {

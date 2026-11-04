@@ -13,6 +13,10 @@ use tauri::{AppHandle, Runtime};
 
 pub const MIGRATION_MARKER_FILE: &str = "migration.json";
 pub const ELECTRON_EXPORT_FILE: &str = "tauri-migration.json";
+/// Renderer `localStorage` from the bridge export, applied by the webview on its next start.
+pub const LOCAL_STORAGE_FILE: &str = "migrated-local-storage.json";
+/// Incomplete migrations are retried on later starts, at most this many times.
+const MAX_MIGRATION_ATTEMPTS: u32 = 5;
 pub const USER_LOGIN_INFO_ENCRYPTION_KEY: &str = "user-login-info";
 
 const MIGRATABLE_STORES: &[&str] = &[
@@ -53,6 +57,8 @@ pub struct TauriMigrationExport {
     pub stores: HashMap<String, Value>,
     #[serde(default)]
     pub cookies: Vec<ExportedCookie>,
+    #[serde(default, rename = "localStorage")]
+    pub local_storage: Option<serde_json::Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +73,17 @@ pub struct MigrationMarker {
     pub imported_stores: Vec<String>,
     #[serde(rename = "importedCookies")]
     pub imported_cookies: usize,
+    /// False while some item failed; those items are listed in `pending` and retried.
+    #[serde(default = "default_true")]
+    pub complete: bool,
+    #[serde(default)]
+    pub pending: Vec<String>,
+    #[serde(default)]
+    pub attempts: u32,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub fn candidate_electron_user_data_dirs() -> Vec<PathBuf> {
@@ -550,39 +567,132 @@ fn is_bilibili_domain(domain: &str) -> bool {
     trimmed == "bilibili.com" || trimmed.ends_with(".bilibili.com")
 }
 
-pub fn import_cookies_into_bili_state(bili_state: &BiliState, cookies: &[ExportedCookie]) -> usize {
+/// Builds a `Set-Cookie` string and the URL it is set from, keeping the Electron cookie's
+/// domain (host-only when it has no leading dot), path, Secure, HttpOnly and SameSite.
+fn cookie_set_string(c: &ExportedCookie, now_secs: i64) -> Option<(String, url::Url)> {
+    let host = c.domain.trim().trim_start_matches('.').to_ascii_lowercase();
+    let host_only = !c.domain.trim().starts_with('.');
+    let path = if c.path.starts_with('/') {
+        c.path.as_str()
+    } else {
+        "/"
+    };
+    let url = url::Url::parse(&format!("https://{host}{path}")).ok()?;
+    let mut raw = format!("{}={}; Path={path}", c.name, c.value);
+    if !host_only {
+        raw.push_str(&format!("; Domain={host}"));
+    }
+    if c.secure {
+        raw.push_str("; Secure");
+    }
+    if c.http_only {
+        raw.push_str("; HttpOnly");
+    }
+    match c.same_site.as_deref() {
+        Some("no_restriction") => raw.push_str("; SameSite=None"),
+        Some("lax") => raw.push_str("; SameSite=Lax"),
+        Some("strict") => raw.push_str("; SameSite=Strict"),
+        _ => {}
+    }
+    if let Some(exp) = c.expiration_date.map(|f| f.floor() as i64) {
+        raw.push_str(&format!("; Max-Age={}", (exp - now_secs).max(1)));
+    }
+    Some((raw, url))
+}
+
+/// Imports unexpired bilibili cookies that the Tauri store does not already hold under the
+/// same (domain, path, name). Returns (imported, failed).
+pub fn import_cookies_into_bili_state(
+    bili_state: &BiliState,
+    cookies: &[ExportedCookie],
+) -> (usize, usize) {
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
 
     let mut imported = 0usize;
-    for c in cookies {
-        if c.name.trim().is_empty() || !is_bilibili_domain(&c.domain) {
-            continue;
-        }
-        let exp_secs = c.expiration_date.map(|f| f.floor() as i64);
-        if let Some(exp) = exp_secs {
-            if exp <= now_secs {
+    let mut failed = 0usize;
+    {
+        let mut store = bili_state.cookies.lock().unwrap();
+        for c in cookies {
+            if c.name.trim().is_empty() || !is_bilibili_domain(&c.domain) {
                 continue;
             }
-        }
-        // Do not overwrite an existing cookie in Tauri
-        if bili_state.get_cookie(&c.name).is_some() {
-            continue;
-        }
-        if bili_state.set_cookie(&c.name, &c.value, exp_secs).is_ok() {
-            imported += 1;
+            if matches!(c.expiration_date, Some(exp) if (exp.floor() as i64) <= now_secs) {
+                continue;
+            }
+            let domain = c.domain.trim().trim_start_matches('.').to_ascii_lowercase();
+            let path = if c.path.starts_with('/') {
+                c.path.as_str()
+            } else {
+                "/"
+            };
+            if store.contains(&domain, path, &c.name) {
+                continue;
+            }
+            match cookie_set_string(c, now_secs).map(|(raw, url)| store.parse(&raw, &url)) {
+                Some(Ok(_)) => imported += 1,
+                _ => {
+                    log::warn!(
+                        "[migration] failed to import cookie {} for {domain}",
+                        c.name
+                    );
+                    failed += 1;
+                }
+            }
         }
     }
-    imported
+    if imported > 0 {
+        if let Err(e) = bili_state.save_cookies() {
+            log::warn!("[migration] failed to save imported cookies: {e}");
+            failed += imported;
+            imported = 0;
+        }
+    }
+    (imported, failed)
+}
+
+fn write_local_storage_file(
+    tauri_data_dir: &Path,
+    entries: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let strings: serde_json::Map<String, Value> = entries
+        .iter()
+        .filter(|(_, v)| v.is_string())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if strings.is_empty() {
+        return Ok(());
+    }
+    write_private_json(tauri_data_dir, LOCAL_STORAGE_FILE, &Value::Object(strings))
+}
+
+/// Returns the migrated `localStorage` entries waiting to be applied, or an empty map.
+pub fn read_migrated_local_storage(tauri_data_dir: &Path) -> serde_json::Map<String, Value> {
+    fs::read(tauri_data_dir.join(LOCAL_STORAGE_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn read_marker(tauri_data_dir: &Path) -> Option<MigrationMarker> {
+    let bytes = fs::read(tauri_data_dir.join(MIGRATION_MARKER_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn write_migration_marker(tauri_data_dir: &Path, marker: &MigrationMarker) -> Result<(), String> {
-    fs::create_dir_all(tauri_data_dir).map_err(|e| e.to_string())?;
-    let marker_path = tauri_data_dir.join(MIGRATION_MARKER_FILE);
-    let tmp_path = tauri_data_dir.join(format!(".{MIGRATION_MARKER_FILE}.tmp"));
-    let bytes = serde_json::to_vec_pretty(marker).map_err(|e| e.to_string())?;
+    let value = serde_json::to_value(marker).map_err(|e| e.to_string())?;
+    write_private_json(tauri_data_dir, MIGRATION_MARKER_FILE, &value)
+}
+
+/// Atomically writes a 0600 JSON file into `dir`.
+fn write_private_json(dir: &Path, name: &str, value: &Value) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let marker_path = dir.join(name);
+    let tmp_path = dir.join(format!(".{name}.tmp"));
+    let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
     {
         let mut opts = OpenOptions::new();
         opts.write(true).create(true).truncate(true);
@@ -609,14 +719,26 @@ pub fn migrate_from_candidates_with<F>(
 where
     F: FnMut(&str, Value) -> Result<(), String>,
 {
-    let marker_path = tauri_data_dir.join(MIGRATION_MARKER_FILE);
-    if marker_path.exists() {
+    let previous = read_marker(tauri_data_dir);
+    if let Some(prev) = &previous {
+        if prev.complete || prev.attempts >= MAX_MIGRATION_ATTEMPTS {
+            log::info!(
+                "[migration] already done (complete={}, attempts={}), skipping",
+                prev.complete,
+                prev.attempts
+            );
+            return None;
+        }
         log::info!(
-            "[migration] marker already exists at {:?}, skipping migration",
-            marker_path
+            "[migration] retrying incomplete migration (pending={:?})",
+            prev.pending
         );
+    } else if tauri_data_dir.join(MIGRATION_MARKER_FILE).exists() {
+        log::warn!("[migration] unreadable marker, skipping migration");
         return None;
     }
+    let attempts = previous.as_ref().map_or(0, |p| p.attempts) + 1;
+    let mut pending: Vec<String> = Vec::new();
 
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -685,11 +807,25 @@ where
             {
                 match write_store(store_name, merged) {
                     Ok(()) => imported_stores.push(store_name.to_string()),
-                    Err(e) => log::warn!("[migration] failed to write store {store_name}: {e}"),
+                    Err(e) => {
+                        log::warn!("[migration] failed to write store {store_name}: {e}");
+                        pending.push(store_name.to_string());
+                    }
                 }
             }
         }
-        imported_cookies = import_cookies_into_bili_state(bili_state, &export.cookies);
+        let (cookies_ok, cookies_failed) =
+            import_cookies_into_bili_state(bili_state, &export.cookies);
+        imported_cookies = cookies_ok;
+        if cookies_failed > 0 {
+            pending.push("cookies".to_string());
+        }
+        if let Some(entries) = &export.local_storage {
+            if let Err(e) = write_local_storage_file(tauri_data_dir, entries) {
+                log::warn!("[migration] failed to stage localStorage: {e}");
+                pending.push("localStorage".to_string());
+            }
+        }
     } else {
         for &store_name in MIGRATABLE_STORES {
             let Ok(filename) = store_filename(store_name) else {
@@ -701,6 +837,7 @@ where
             }
             let Ok(raw_bytes) = fs::read(&src_file) else {
                 log::warn!("[migration] failed to read {:?}", src_file);
+                pending.push(store_name.to_string());
                 continue;
             };
             let parsed_val = if store_name == "user-login-info" {
@@ -727,7 +864,10 @@ where
             {
                 match write_store(store_name, merged) {
                     Ok(()) => imported_stores.push(store_name.to_string()),
-                    Err(e) => log::warn!("[migration] failed to write store {store_name}: {e}"),
+                    Err(e) => {
+                        log::warn!("[migration] failed to write store {store_name}: {e}");
+                        pending.push(store_name.to_string());
+                    }
                 }
             }
         }
@@ -740,16 +880,21 @@ where
         source_path: Some(electron_dir.to_string_lossy().into_owned()),
         imported_stores: imported_stores.clone(),
         imported_cookies,
+        complete: pending.is_empty(),
+        pending,
+        attempts,
     };
 
     if let Err(e) = write_migration_marker(tauri_data_dir, &marker) {
         log::warn!("[migration] failed to write migration marker: {e}");
     } else {
         log::info!(
-            "[migration] completed from {} (stores={:?}, cookies={})",
+            "[migration] finished from {} (stores={:?}, cookies={}, complete={}, pending={:?})",
             source_kind,
             imported_stores,
-            imported_cookies
+            imported_cookies,
+            marker.complete,
+            marker.pending
         );
     }
 
@@ -766,7 +911,7 @@ pub fn migrate_from_candidates_in_dir(
         tauri_data_dir,
         electron_candidates,
         bili_state,
-        |name, val| crate::store::file_store_set(tauri_data_dir, name, val),
+        |name, val| crate::store::file_store_write(tauri_data_dir, name, val, false),
     )
 }
 
@@ -778,7 +923,7 @@ pub fn run_startup_migration<R: Runtime>(
     let candidates = candidate_electron_user_data_dirs();
     let marker =
         migrate_from_candidates_with(tauri_data_dir, &candidates, bili_state, |name, val| {
-            crate::store::store_set(app.clone(), name.to_string(), val)
+            crate::store::write_store(app.clone(), name.to_string(), val, false)
         });
     if let Some(ref m) = marker {
         if m.imported_stores.iter().any(|s| s == "app-settings") {
@@ -796,10 +941,33 @@ pub fn run_startup_migration<R: Runtime>(
     marker
 }
 
+fn app_data_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+/// Migrated `localStorage` entries for the webview to apply before its stores load.
+#[tauri::command]
+pub fn migration_local_storage<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<serde_json::Map<String, Value>, String> {
+    Ok(read_migrated_local_storage(&app_data_dir(&app)?))
+}
+
+/// Called by the webview once it has written the migrated entries.
+#[tauri::command]
+pub fn migration_local_storage_done<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    match fs::remove_file(app_data_dir(&app)?.join(LOCAL_STORAGE_FILE)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::file_store_set;
+    use crate::store::{file_store_set, file_store_write};
     use serde_json::json;
     use std::process::Command;
 
@@ -1153,6 +1321,90 @@ mod tests {
             "/filled/from/electron"
         );
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn migrate_keeps_cookie_scope_lyrics_source_local_storage_and_retries_failures() {
+        let root = std::env::temp_dir().join(format!("biu-mig-scope-{}", uuid::Uuid::new_v4()));
+        let electron_dir = root.join("electron-Biu");
+        let tauri_dir = root.join("tauri-data");
+        fs::create_dir_all(&electron_dir).unwrap();
+        fs::create_dir_all(&tauri_dir).unwrap();
+        let exp = (SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 86400) as f64;
+        let export_json = json!({
+            "version": 1,
+            "stores": {
+                "app-settings": { "appSettings": { "primaryColor": "#000000" } },
+                "lyrics-cache": { "BV1": { "lyrics": "[00:01.00]a", "offset": 0, "source": "auto" } }
+            },
+            "cookies": [
+                { "name": "SESSDATA", "value": "s", "domain": ".bilibili.com", "path": "/",
+                  "expirationDate": exp, "secure": true, "httpOnly": true, "sameSite": "no_restriction" },
+                { "name": "host_only", "value": "h", "domain": "www.bilibili.com", "path": "/x",
+                  "expirationDate": exp, "secure": true, "httpOnly": false }
+            ],
+            "localStorage": { "user-token": "{\"state\":{}}", "not-a-string": 3 }
+        });
+        fs::write(
+            electron_dir.join(ELECTRON_EXPORT_FILE),
+            serde_json::to_vec(&export_json).unwrap(),
+        )
+        .unwrap();
+        let bili = BiliState::new(tauri_dir.join("cookies.json"), None).unwrap();
+        let candidates = vec![electron_dir.clone()];
+
+        // First run: the app-settings write fails, so the marker stays incomplete.
+        let marker = migrate_from_candidates_with(&tauri_dir, &candidates, &bili, |name, val| {
+            if name == "app-settings" {
+                Err("disk full".into())
+            } else {
+                file_store_write(&tauri_dir, name, val, false)
+            }
+        })
+        .expect("first run");
+        assert!(!marker.complete);
+        assert_eq!(marker.pending, vec!["app-settings".to_string()]);
+        assert_eq!(marker.imported_cookies, 2);
+
+        // Cookie scope is preserved: host-only cookie keeps its host and path.
+        {
+            let store = bili.cookies.lock().unwrap();
+            assert!(store.contains("bilibili.com", "/", "SESSDATA"));
+            assert!(store.contains("www.bilibili.com", "/x", "host_only"));
+            assert!(!store.contains("bilibili.com", "/", "host_only"));
+            let root_url = url::Url::parse("https://api.bilibili.com/").unwrap();
+            let sent: Vec<String> = store
+                .get_request_values(&root_url)
+                .map(|(n, _)| n.to_string())
+                .collect();
+            assert_eq!(sent, vec!["SESSDATA".to_string()]);
+        }
+
+        // Lyrics cache keeps its original source.
+        let lyrics = file_store_get(&tauri_dir, "lyrics-cache").unwrap();
+        assert_eq!(lyrics["BV1"]["source"], "auto");
+
+        // Only string localStorage entries are staged.
+        let staged = read_migrated_local_storage(&tauri_dir);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged["user-token"], "{\"state\":{}}");
+
+        // Second run retries and completes; cookies are not duplicated.
+        let marker =
+            migrate_from_candidates_in_dir(&tauri_dir, &candidates, &bili).expect("retry runs");
+        assert!(marker.complete);
+        assert_eq!(marker.attempts, 2);
+        assert_eq!(marker.imported_cookies, 0);
+        let settings = file_store_get(&tauri_dir, "app-settings").unwrap();
+        assert_eq!(settings["appSettings"]["primaryColor"], "#000000");
+
+        // Third run is skipped.
+        assert!(migrate_from_candidates_in_dir(&tauri_dir, &candidates, &bili).is_none());
         let _ = fs::remove_dir_all(&root);
     }
 }

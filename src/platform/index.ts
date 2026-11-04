@@ -41,6 +41,32 @@ export async function invokeTauri<T = unknown>(cmd: string, args?: Record<string
   return tauri.core.invoke<T>(cmd, args);
 }
 
+/**
+ * Writes `localStorage` entries migrated from the Electron app (login refresh token,
+ * play queue, …) that this webview does not have yet. Must run before any zustand
+ * store module is imported, because those hydrate from `localStorage` on import.
+ */
+export async function applyMigratedLocalStorage(storage: Storage = window.localStorage): Promise<number> {
+  let entries: Record<string, unknown>;
+  try {
+    entries = await invokeTauri<Record<string, unknown>>("migration_local_storage");
+  } catch {
+    return 0;
+  }
+  const keys = Object.keys(entries ?? {});
+  if (keys.length === 0) return 0;
+  let written = 0;
+  for (const key of keys) {
+    const value = entries[key];
+    if (typeof value === "string" && storage.getItem(key) === null) {
+      storage.setItem(key, value);
+      written += 1;
+    }
+  }
+  await invokeTauri("migration_local_storage_done").catch(() => {});
+  return written;
+}
+
 export function listenTauriEvent<T = unknown>(eventName: string, cb: (payload: T) => void): VoidFunction {
   let disposed = false;
   let unlisten: VoidFunction | null = null;
@@ -360,7 +386,8 @@ export function createTauriElectronAPI(): ElectronAPI {
 
     // Step 4: App Updater
     checkAppUpdate: () => invokeTauri<CheckAppUpdateResult>("check_app_update"),
-    onUpdateAvailable: cb => listenTauriEvent<{ latestVersion: string; releaseNotes?: string }>("app:update-available", cb),
+    onUpdateAvailable: cb =>
+      listenTauriEvent<{ latestVersion: string; releaseNotes?: string }>("app:update-available", cb),
     getUpdateMode: () => invokeTauri<AppUpdateMode>("get_update_mode"),
     downloadAppUpdate: () => invokeTauri<void>("download_app_update"),
     onDownloadAppProgress: cb => listenTauriEvent<DownloadAppMessage>("app:update-message", cb),

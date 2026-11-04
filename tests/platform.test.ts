@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
+  applyMigratedLocalStorage,
   createTauriElectronAPI,
   NOT_IMPLEMENTED_MESSAGE,
   toMediaUrl,
@@ -294,5 +295,28 @@ describe("platform ElectronAPI compatibility and media URL wrapping", () => {
     // 3. Cancellation on controller
     const controller = createTauriAutoLyricsController(async () => undefined as any);
     await expect(controller.cancel("BV1xx411c7mD-1")).resolves.toBeUndefined();
+  });
+
+  test("applyMigratedLocalStorage writes only missing string entries, then acks", async () => {
+    const calls: string[] = [];
+    (window as any).__TAURI__ = {
+      core: {
+        invoke: vi.fn(async (cmd: string) => {
+          calls.push(cmd);
+          if (cmd === "migration_local_storage") {
+            return { "user-token": '{"state":{"tokenData":{"refresh_token":"r"}}}', "play-list": "new", bad: 1 };
+          }
+          return null;
+        }),
+      },
+    };
+    localStorage.clear();
+    localStorage.setItem("play-list", "existing");
+    const written = await applyMigratedLocalStorage(localStorage);
+    expect(written).toBe(1);
+    expect(localStorage.getItem("user-token")).toContain("refresh_token");
+    expect(localStorage.getItem("play-list")).toBe("existing");
+    expect(localStorage.getItem("bad")).toBeNull();
+    expect(calls).toEqual(["migration_local_storage", "migration_local_storage_done"]);
   });
 });

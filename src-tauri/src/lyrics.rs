@@ -84,6 +84,9 @@ fn lyrics_http_client() -> &'static reqwest::Client {
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(10))
+            .redirect(crate::bili::allowlist_redirect_policy(
+                is_lyrics_url_allowed,
+            ))
             .build()
             .expect("failed to build lyrics reqwest client")
     })

@@ -63,6 +63,9 @@ impl AutoLyricsState {
         let netease_client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(Duration::from_secs(10))
+            .redirect(crate::bili::allowlist_redirect_policy(
+                is_netease_api_url_allowed,
+            ))
             .build()
             .map_err(|e| e.to_string())?;
 

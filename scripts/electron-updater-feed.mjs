@@ -21,21 +21,14 @@ export function statAndHashFile(filePath) {
  * Format an electron-updater YAML feed (`latest.yml`, `latest-mac.yml`,
  * `latest-linux.yml`, `latest-linux-arm64.yml`) matching electron-builder's output.
  */
-export function formatUpdaterYaml({
-  version,
-  files,
-  primaryFile = "",
-  releaseDate = "",
-  releaseNotes = "",
-}) {
+export function formatUpdaterYaml({ version, files, primaryFile = "", releaseDate = "", releaseNotes = "" }) {
   if (!version) {
     throw new Error("version is required");
   }
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error("files must be a non-empty array");
   }
-  const primary =
-    (primaryFile && files.find(f => f.url === primaryFile)) || files[0];
+  const primary = (primaryFile && files.find(f => f.url === primaryFile)) || files[0];
   const dateStr = releaseDate || new Date().toISOString();
 
   const lines = [`version: ${version}`, "files:"];
@@ -161,10 +154,7 @@ export function generateFeedsFromDir({
     `Biu-${version}-mac-x64.dmg`,
     `Biu-${version}-mac-arm64.dmg`,
   ];
-  const macFiles = macFileNames
-    .map(findEntry)
-    .filter(Boolean)
-    .map(statAndHashFile);
+  const macFiles = macFileNames.map(findEntry).filter(Boolean).map(statAndHashFile);
   if (macFiles.some(f => f.url.endsWith(".zip"))) {
     const primaryMac =
       macFiles.find(f => f.url === `Biu-${version}-mac-x64.zip`)?.url ||
@@ -201,14 +191,8 @@ export function generateFeedsFromDir({
   }
 
   // 3. Linux x64: latest-linux.yml
-  const linuxX64Names = [
-    `Biu-${version}-linux-x86_64.AppImage`,
-    `Biu-${version}-linux-amd64.deb`,
-  ];
-  const linuxX64Files = linuxX64Names
-    .map(findEntry)
-    .filter(Boolean)
-    .map(statAndHashFile);
+  const linuxX64Names = [`Biu-${version}-linux-x86_64.AppImage`, `Biu-${version}-linux-amd64.deb`];
+  const linuxX64Files = linuxX64Names.map(findEntry).filter(Boolean).map(statAndHashFile);
   if (linuxX64Files.some(f => f.url.endsWith(".AppImage"))) {
     const yml = formatUpdaterYaml({
       version,
@@ -224,14 +208,8 @@ export function generateFeedsFromDir({
   }
 
   // 4. Linux arm64: latest-linux-arm64.yml
-  const linuxArm64Names = [
-    `Biu-${version}-linux-arm64.AppImage`,
-    `Biu-${version}-linux-arm64.deb`,
-  ];
-  const linuxArm64Files = linuxArm64Names
-    .map(findEntry)
-    .filter(Boolean)
-    .map(statAndHashFile);
+  const linuxArm64Names = [`Biu-${version}-linux-arm64.AppImage`, `Biu-${version}-linux-arm64.deb`];
+  const linuxArm64Files = linuxArm64Names.map(findEntry).filter(Boolean).map(statAndHashFile);
   if (linuxArm64Files.some(f => f.url.endsWith(".AppImage"))) {
     const yml = formatUpdaterYaml({
       version,

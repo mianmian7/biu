@@ -159,6 +159,8 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            migration::migration_local_storage,
+            migration::migration_local_storage_done,
             store_get,
             store_set,
             store_clear,
@@ -453,6 +455,51 @@ mod tests {
             parse_http_request(&good, "wrongtok", host).unwrap_err(),
             403
         );
+    }
+
+    #[tokio::test]
+    async fn redirect_policy_follows_only_allowed_hosts() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 2048];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let resp = if req.starts_with("GET /to-allowed") {
+                    format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/ok\r\nContent-Length: 0\r\n\r\n")
+                } else if req.starts_with("GET /to-other") {
+                    format!("HTTP/1.1 302 Found\r\nLocation: http://localhost:{port}/ok\r\nContent-Length: 0\r\n\r\n")
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_string()
+                };
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        fn only_ip(u: &url::Url) -> bool {
+            u.host_str() == Some("127.0.0.1")
+        }
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(crate::bili::allowlist_redirect_policy(only_ip))
+            .build()
+            .unwrap();
+        let ok = client
+            .get(format!("http://127.0.0.1:{port}/to-allowed"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.text().await.unwrap(), "ok");
+        let err = client
+            .get(format!("http://127.0.0.1:{port}/to-other"))
+            .send()
+            .await
+            .expect_err("redirect to another host must fail");
+        assert!(err.is_redirect(), "{err}");
     }
 
     #[tokio::test]
