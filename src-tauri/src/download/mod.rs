@@ -1093,9 +1093,21 @@ pub fn parse_content_range_start(header_val: &str) -> Option<(u64, u64)> {
 }
 
 pub struct WorkerControl {
+    pub generation: u64,
     pub stop_flag: Arc<AtomicBool>,
-    pub stop_notify: Arc<tokio::sync::Notify>,
+    pub stop_tx: Arc<tokio::sync::watch::Sender<bool>>,
     pub done_rx: tokio::sync::watch::Receiver<bool>,
+}
+
+async fn wait_watch_true(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    if *rx.borrow_and_update() {
+        return;
+    }
+    while rx.changed().await.is_ok() {
+        if *rx.borrow_and_update() {
+            return;
+        }
+    }
 }
 
 pub struct DownloadManager {
@@ -1153,22 +1165,45 @@ impl DownloadManager {
             == generation
     }
 
+    fn cleanup_generation_if_matches(&self, id: &str, generation: u64) {
+        let mut gens = self.generations.lock().unwrap();
+        if gens.get(id).copied() == Some(generation) {
+            gens.remove(id);
+        }
+    }
+
     async fn stop_and_wait_worker(&self, id: &str) -> u64 {
-        let (gen, prev_worker) = {
-            let gen = self.next_generation(id);
-            let prev = self.workers.lock().unwrap().remove(id);
-            (gen, prev)
-        };
-        if let Some(mut w) = prev_worker {
-            w.stop_flag.store(true, Ordering::SeqCst);
-            w.stop_notify.notify_waiters();
-            while !*w.done_rx.borrow_and_update() {
-                if w.done_rx.changed().await.is_err() {
-                    break;
+        let mut waited_gen: Option<u64> = None;
+        loop {
+            let (gen, done_rx_opt) = {
+                let gen = self.next_generation(id);
+                let workers = self.workers.lock().unwrap();
+                let rx = workers.get(id).and_then(|w| {
+                    w.stop_flag.store(true, Ordering::SeqCst);
+                    let _ = w.stop_tx.send(true);
+                    if waited_gen == Some(w.generation) {
+                        None
+                    } else {
+                        Some((w.generation, w.done_rx.clone()))
+                    }
+                });
+                (gen, rx)
+            };
+            if let Some((w_gen, mut done_rx)) = done_rx_opt {
+                wait_watch_true(&mut done_rx).await;
+                waited_gen = Some(w_gen);
+                let still_has_other = self
+                    .workers
+                    .lock()
+                    .unwrap()
+                    .get(id)
+                    .is_some_and(|w| w.generation != w_gen);
+                if still_has_other {
+                    continue;
                 }
             }
+            return gen;
         }
-        gen
     }
 
     fn restore_from_disk(&self) {
@@ -1426,39 +1461,69 @@ impl DownloadManager {
         generation: u64,
     ) {
         let id = task_arc.lock().unwrap().id.clone();
+        if !self.is_current_generation(&id, generation) {
+            return;
+        }
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_notify = Arc::new(tokio::sync::Notify::new());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let stop_tx = Arc::new(stop_tx);
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
 
         if let Some(prev) = self.workers.lock().unwrap().insert(
             id.clone(),
             WorkerControl {
+                generation,
                 stop_flag: stop_flag.clone(),
-                stop_notify: stop_notify.clone(),
+                stop_tx: stop_tx.clone(),
                 done_rx,
             },
         ) {
             prev.stop_flag.store(true, Ordering::SeqCst);
-            prev.stop_notify.notify_waiters();
+            let _ = prev.stop_tx.send(true);
         }
 
         let mgr = self.clone();
         let id_clone = id.clone();
         tauri::async_runtime::spawn(async move {
+            struct WorkerExitGuard {
+                mgr: Arc<DownloadManager>,
+                id: String,
+                generation: u64,
+                done_tx: tokio::sync::watch::Sender<bool>,
+            }
+            impl Drop for WorkerExitGuard {
+                fn drop(&mut self) {
+                    {
+                        let mut workers = self.mgr.workers.lock().unwrap();
+                        if workers
+                            .get(&self.id)
+                            .is_some_and(|w| w.generation == self.generation)
+                        {
+                            workers.remove(&self.id);
+                        }
+                    }
+                    let _ = self.done_tx.send(true);
+                }
+            }
+            let _exit_guard = WorkerExitGuard {
+                mgr: mgr.clone(),
+                id: id_clone.clone(),
+                generation,
+                done_tx,
+            };
+
+            let mut stop_rx_acquire = stop_rx.clone();
             let permit = tokio::select! {
                 p = mgr.semaphore.clone().acquire_owned() => p,
-                _ = stop_notify.notified() => {
-                    let _ = done_tx.send(true);
+                _ = wait_watch_true(&mut stop_rx_acquire) => {
                     return;
                 }
             };
             let Ok(_permit) = permit else {
-                let _ = done_tx.send(true);
                 return;
             };
             if stop_flag.load(Ordering::SeqCst) || !mgr.is_current_generation(&id_clone, generation)
             {
-                let _ = done_tx.send(true);
                 return;
             }
             mgr.run_task_pipeline(
@@ -1466,15 +1531,18 @@ impl DownloadManager {
                 &bili,
                 &task_arc,
                 &stop_flag,
-                &stop_notify,
+                &stop_rx,
                 is_resume,
                 generation,
             )
             .await;
             if mgr.is_current_generation(&id_clone, generation) {
                 mgr.save_to_disk();
+                let is_completed = task_arc.lock().unwrap().status == "completed";
+                if is_completed {
+                    mgr.cleanup_generation_if_matches(&id_clone, generation);
+                }
             }
-            let _ = done_tx.send(true);
         });
     }
 
@@ -1485,7 +1553,7 @@ impl DownloadManager {
         bili: &Arc<BiliState>,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
         stop_flag: &Arc<AtomicBool>,
-        stop_notify: &Arc<tokio::sync::Notify>,
+        stop_rx: &tokio::sync::watch::Receiver<bool>,
         is_resume: bool,
         generation: u64,
     ) {
@@ -1506,9 +1574,10 @@ impl DownloadManager {
 
         if let Some(bvid) = bvid_opt.filter(|b| !b.is_empty() && !has_cid) {
             let view_fut = get_web_interface_view(bili, &bvid);
+            let mut stop_rx_view = stop_rx.clone();
             let view_res = tokio::select! {
                 r = view_fut => r,
-                _ = stop_notify.notified() => return,
+                _ = wait_watch_true(&mut stop_rx_view) => return,
             };
             if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation)
             {
@@ -1600,7 +1669,7 @@ impl DownloadManager {
             }
 
             if let Err(err) = self
-                .stage_download(app, bili, task_arc, stop_flag, stop_notify, generation)
+                .stage_download(app, bili, task_arc, stop_flag, stop_rx, generation)
                 .await
             {
                 if !stop_flag.load(Ordering::SeqCst)
@@ -1663,7 +1732,7 @@ impl DownloadManager {
         bili: &Arc<BiliState>,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
         stop_flag: &Arc<AtomicBool>,
-        stop_notify: &Arc<tokio::sync::Notify>,
+        stop_rx: &tokio::sync::watch::Receiver<bool>,
         generation: u64,
     ) -> Result<(), String> {
         // 1. Check if URLs need refreshing
@@ -1679,9 +1748,10 @@ impl DownloadManager {
         };
 
         if need_urls {
+            let mut stop_rx_urls = stop_rx.clone();
             tokio::select! {
                 res = self.fetch_download_urls(app, bili, task_arc) => res?,
-                _ = stop_notify.notified() => return Ok(()),
+                _ = wait_watch_true(&mut stop_rx_urls) => return Ok(()),
             }
         }
         if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation) {
@@ -1705,9 +1775,10 @@ impl DownloadManager {
         let mut video_total_bytes = 0u64;
 
         if let Some(a_url) = audio_url.as_deref().filter(|s| !s.is_empty()) {
+            let mut stop_rx_len = stop_rx.clone();
             let len = tokio::select! {
                 l = self.get_content_length(bili, a_url) => l,
-                _ = stop_notify.notified() => return Ok(()),
+                _ = wait_watch_true(&mut stop_rx_len) => return Ok(()),
             };
             if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&id, generation) {
                 return Ok(());
@@ -1723,9 +1794,10 @@ impl DownloadManager {
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| "can't get video url".to_string())?;
+            let mut stop_rx_len = stop_rx.clone();
             let len = tokio::select! {
                 l = self.get_content_length(bili, v_url) => l,
-                _ = stop_notify.notified() => return Ok(()),
+                _ = wait_watch_true(&mut stop_rx_len) => return Ok(()),
             };
             if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&id, generation) {
                 return Ok(());
@@ -1784,7 +1856,8 @@ impl DownloadManager {
         // 3. Check existing chunk files & queue pending chunks (concurrency = 5)
         let chunk_sem = Arc::new(Semaphore::new(CHUNK_CONCURRENCY));
         let chunk_abort_flag = Arc::new(AtomicBool::new(false));
-        let chunk_abort_notify = Arc::new(tokio::sync::Notify::new());
+        let (chunk_abort_tx, chunk_abort_rx) = tokio::sync::watch::channel(false);
+        let chunk_abort_tx = Arc::new(chunk_abort_tx);
         let mut join_handles = Vec::new();
 
         for (idx, chunk) in chunks.iter().enumerate() {
@@ -1834,16 +1907,17 @@ impl DownloadManager {
             let mgr_clone = self.clone();
             let task_clone = task_arc.clone();
             let stop_clone = stop_flag.clone();
-            let stop_notify_clone = stop_notify.clone();
+            let mut stop_rx_clone = stop_rx.clone();
             let abort_clone = chunk_abort_flag.clone();
-            let abort_notify_clone = chunk_abort_notify.clone();
+            let abort_tx_clone = chunk_abort_tx.clone();
+            let mut abort_rx_clone = chunk_abort_rx.clone();
             let chunk_clone = chunk.clone();
 
             let handle = tauri::async_runtime::spawn(async move {
                 let permit = tokio::select! {
                     p = sem.acquire_owned() => p,
-                    _ = stop_notify_clone.notified() => return Ok(()),
-                    _ = abort_notify_clone.notified() => return Ok(()),
+                    _ = wait_watch_true(&mut stop_rx_clone) => return Ok(()),
+                    _ = wait_watch_true(&mut abort_rx_clone) => return Ok(()),
                 };
                 let Ok(_permit) = permit else {
                     return Err("Semaphore closed".to_string());
@@ -1857,9 +1931,9 @@ impl DownloadManager {
                         &bili_clone,
                         &task_clone,
                         &stop_clone,
-                        &stop_notify_clone,
+                        &stop_rx_clone,
                         &abort_clone,
-                        &abort_notify_clone,
+                        &abort_rx_clone,
                         generation,
                         idx,
                         &chunk_clone,
@@ -1870,7 +1944,7 @@ impl DownloadManager {
                     .await;
                 if res.is_err() {
                     abort_clone.store(true, Ordering::SeqCst);
-                    abort_notify_clone.notify_waiters();
+                    let _ = abort_tx_clone.send(true);
                 }
                 res
             });
@@ -1883,14 +1957,14 @@ impl DownloadManager {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     chunk_abort_flag.store(true, Ordering::SeqCst);
-                    chunk_abort_notify.notify_waiters();
+                    let _ = chunk_abort_tx.send(true);
                     if first_err.is_none() {
                         first_err = Some(e);
                     }
                 }
                 Err(e) => {
                     chunk_abort_flag.store(true, Ordering::SeqCst);
-                    chunk_abort_notify.notify_waiters();
+                    let _ = chunk_abort_tx.send(true);
                     if first_err.is_none() {
                         first_err = Some(e.to_string());
                     }
@@ -1915,9 +1989,9 @@ impl DownloadManager {
         bili: &BiliState,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
         stop_flag: &Arc<AtomicBool>,
-        stop_notify: &Arc<tokio::sync::Notify>,
+        stop_rx: &tokio::sync::watch::Receiver<bool>,
         chunk_abort_flag: &Arc<AtomicBool>,
-        chunk_abort_notify: &Arc<tokio::sync::Notify>,
+        chunk_abort_rx: &tokio::sync::watch::Receiver<bool>,
         generation: u64,
         chunk_idx: usize,
         chunk: &MediaDownloadChunk,
@@ -1974,10 +2048,12 @@ impl DownloadManager {
                 .header(reqwest::header::RANGE, &range_header)
                 .send();
 
+            let mut stop_rx_send = stop_rx.clone();
+            let mut abort_rx_send = chunk_abort_rx.clone();
             let resp_res = tokio::select! {
                 r = send_fut => r,
-                _ = stop_notify.notified() => return Ok(()),
-                _ = chunk_abort_notify.notified() => return Ok(()),
+                _ = wait_watch_true(&mut stop_rx_send) => return Ok(()),
+                _ = wait_watch_true(&mut abort_rx_send) => return Ok(()),
                 _ = tokio::time::sleep(idle_timeout) => {
                     last_err = "request timed out".to_string();
                     continue;
@@ -1993,10 +2069,12 @@ impl DownloadManager {
                 Err(e) => {
                     last_err = e.to_string();
                     if attempt < 2 {
+                        let mut stop_rx_sleep = stop_rx.clone();
+                        let mut abort_rx_sleep = chunk_abort_rx.clone();
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
-                            _ = stop_notify.notified() => return Ok(()),
-                            _ = chunk_abort_notify.notified() => return Ok(()),
+                            _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                            _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
                         }
                     }
                     continue;
@@ -2012,10 +2090,12 @@ impl DownloadManager {
                     last_err = format!("HTTP {}", resp.status());
                 }
                 if attempt < 2 {
+                    let mut stop_rx_sleep = stop_rx.clone();
+                    let mut abort_rx_sleep = chunk_abort_rx.clone();
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
-                        _ = stop_notify.notified() => return Ok(()),
-                        _ = chunk_abort_notify.notified() => return Ok(()),
+                        _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                        _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
                     }
                 }
                 continue;
@@ -2040,10 +2120,12 @@ impl DownloadManager {
                     chunk.end
                 );
                 if attempt < 2 {
+                    let mut stop_rx_sleep = stop_rx.clone();
+                    let mut abort_rx_sleep = chunk_abort_rx.clone();
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
-                        _ = stop_notify.notified() => return Ok(()),
-                        _ = chunk_abort_notify.notified() => return Ok(()),
+                        _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                        _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
                     }
                 }
                 continue;
@@ -2068,13 +2150,15 @@ impl DownloadManager {
                     return Ok(());
                 }
 
+                let mut stop_rx_chunk = stop_rx.clone();
+                let mut abort_rx_chunk = chunk_abort_rx.clone();
                 let next_chunk = tokio::select! {
                     c = resp.chunk() => c,
-                    _ = stop_notify.notified() => {
+                    _ = wait_watch_true(&mut stop_rx_chunk) => {
                         let _ = file.flush().await;
                         return Ok(());
                     }
-                    _ = chunk_abort_notify.notified() => {
+                    _ = wait_watch_true(&mut abort_rx_chunk) => {
                         let _ = file.flush().await;
                         return Ok(());
                     }
@@ -2129,10 +2213,12 @@ impl DownloadManager {
             if let Some(e) = stream_err {
                 last_err = e;
                 if attempt < 2 {
+                    let mut stop_rx_sleep = stop_rx.clone();
+                    let mut abort_rx_sleep = chunk_abort_rx.clone();
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(200 * (attempt + 1))) => {}
-                        _ = stop_notify.notified() => return Ok(()),
-                        _ = chunk_abort_notify.notified() => return Ok(()),
+                        _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                        _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
                     }
                 }
                 continue;
@@ -2148,10 +2234,12 @@ impl DownloadManager {
                     chunk.name
                 );
                 if attempt < 2 {
+                    let mut stop_rx_sleep = stop_rx.clone();
+                    let mut abort_rx_sleep = chunk_abort_rx.clone();
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(200 * (attempt + 1))) => {}
-                        _ = stop_notify.notified() => return Ok(()),
-                        _ = chunk_abort_notify.notified() => return Ok(()),
+                        _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                        _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
                     }
                 }
                 continue;
@@ -2698,22 +2786,26 @@ impl DownloadManager {
         app: Option<&AppHandle<R>>,
         id: &str,
     ) {
+        let gen = self.stop_and_wait_worker(id).await;
         if let Some(task_arc) = self.find_task(id) {
-            let pub_t = {
+            let pub_t_opt = {
                 let mut t = task_arc.lock().unwrap();
-                t.status = match t.status.as_str() {
-                    "downloading" | "waiting" => "downloadPaused".to_string(),
-                    "merging" => "mergePaused".to_string(),
-                    "converting" => "convertPaused".to_string(),
-                    other => other.to_string(),
-                };
-                t.to_public_task()
+                if !self.is_current_generation(id, gen) {
+                    None
+                } else {
+                    t.status = match t.status.as_str() {
+                        "downloading" | "waiting" => "downloadPaused".to_string(),
+                        "merging" => "mergePaused".to_string(),
+                        "converting" => "convertPaused".to_string(),
+                        other => other.to_string(),
+                    };
+                    Some(t.to_public_task())
+                }
             };
-            self.stop_and_wait_worker(id).await;
-            self.save_to_disk();
-            self.emit_task_update(app, pub_t, true);
-        } else {
-            self.stop_and_wait_worker(id).await;
+            if let Some(pub_t) = pub_t_opt {
+                self.save_to_disk();
+                self.emit_task_update_if_gen(app, pub_t, gen, true);
+            }
         }
     }
 
@@ -2732,9 +2824,11 @@ impl DownloadManager {
         bili: Arc<BiliState>,
         id: &str,
     ) {
+        let gen = self.stop_and_wait_worker(id).await;
         if let Some(task_arc) = self.find_task(id) {
-            let gen = self.stop_and_wait_worker(id).await;
             self.spawn_worker_with_gen(app.cloned(), bili, task_arc, true, gen);
+        } else {
+            self.cleanup_generation_if_matches(id, gen);
         }
     }
 
@@ -2753,19 +2847,28 @@ impl DownloadManager {
         bili: Arc<BiliState>,
         id: &str,
     ) {
+        let gen = self.stop_and_wait_worker(id).await;
         if let Some(task_arc) = self.find_task(id) {
-            let gen = self.stop_and_wait_worker(id).await;
-            {
+            let valid = {
                 let mut t = task_arc.lock().unwrap();
-                t.status = "waiting".to_string();
-                t.error = None;
-                t.download_progress = 0;
-                t.merge_progress = 0;
-                t.convert_progress = 0;
+                if !self.is_current_generation(id, gen) {
+                    false
+                } else {
+                    t.status = "waiting".to_string();
+                    t.error = None;
+                    t.download_progress = 0;
+                    t.merge_progress = 0;
+                    t.convert_progress = 0;
+                    true
+                }
+            };
+            if valid {
+                self.save_to_disk();
+                self.broadcast_full(app);
+                self.spawn_worker_with_gen(app.cloned(), bili, task_arc, false, gen);
             }
-            self.save_to_disk();
-            self.broadcast_full(app);
-            self.spawn_worker_with_gen(app.cloned(), bili, task_arc, false, gen);
+        } else {
+            self.cleanup_generation_if_matches(id, gen);
         }
     }
 
@@ -2779,7 +2882,6 @@ impl DownloadManager {
             return;
         }
         self.pending_updates.lock().unwrap().remove(id);
-        self.workers.lock().unwrap().remove(id);
         let removed = {
             let mut lock = self.tasks.write().unwrap();
             lock.iter()
@@ -2792,6 +2894,7 @@ impl DownloadManager {
                 let _ = tokio::fs::remove_dir_all(&temp_dir).await;
             }
         }
+        self.cleanup_generation_if_matches(id, generation);
         self.save_to_disk();
         self.broadcast_full(app);
     }
@@ -2805,6 +2908,7 @@ impl DownloadManager {
         app: Option<&AppHandle<R>>,
         id: &str,
     ) {
+        let gen = self.stop_and_wait_worker(id).await;
         self.pending_updates.lock().unwrap().remove(id);
         let removed = {
             let mut lock = self.tasks.write().unwrap();
@@ -2812,7 +2916,6 @@ impl DownloadManager {
                 .position(|t| t.lock().unwrap().id == id)
                 .map(|pos| lock.remove(pos))
         };
-        self.stop_and_wait_worker(id).await;
         if let Some(task_arc) = removed {
             let (temp_dir, save_dir, title) = {
                 let t = task_arc.lock().unwrap();
@@ -2823,6 +2926,7 @@ impl DownloadManager {
             }
             self.cleanup_task_temp_outputs(&save_dir, &title, id);
         }
+        self.cleanup_generation_if_matches(id, gen);
         self.save_to_disk();
         self.broadcast_full(app);
     }
@@ -2849,19 +2953,45 @@ impl DownloadManager {
     }
 
     pub async fn clear_tasks_opt<R: Runtime>(self: &Arc<Self>, app: Option<&AppHandle<R>>) {
-        self.pending_updates.lock().unwrap().clear();
-        let all_tasks: Vec<Arc<Mutex<FullMediaDownloadTask>>> = {
-            let mut lock = self.tasks.write().unwrap();
-            lock.drain(..).collect()
-        };
-        let ids: Vec<String> = all_tasks
-            .iter()
-            .map(|t| t.lock().unwrap().id.clone())
-            .collect();
-        for id in &ids {
-            self.stop_and_wait_worker(id).await;
+        let mut removed_tasks: Vec<Arc<Mutex<FullMediaDownloadTask>>> = Vec::new();
+        loop {
+            let ids: Vec<String> = {
+                let lock = self.tasks.read().unwrap();
+                let mut task_ids: Vec<String> =
+                    lock.iter().map(|t| t.lock().unwrap().id.clone()).collect();
+                for k in self.workers.lock().unwrap().keys() {
+                    if !task_ids.contains(k) {
+                        task_ids.push(k.clone());
+                    }
+                }
+                task_ids
+            };
+            if ids.is_empty() {
+                break;
+            }
+            let mut gens = Vec::with_capacity(ids.len());
+            for id in &ids {
+                let gen = self.stop_and_wait_worker(id).await;
+                gens.push((id.clone(), gen));
+            }
+            {
+                let mut lock = self.tasks.write().unwrap();
+                for (id, gen) in &gens {
+                    if self.is_current_generation(id, *gen) {
+                        if let Some(pos) = lock.iter().position(|t| t.lock().unwrap().id == *id) {
+                            removed_tasks.push(lock.remove(pos));
+                        }
+                    }
+                    self.pending_updates.lock().unwrap().remove(id);
+                    self.cleanup_generation_if_matches(id, *gen);
+                }
+            }
+            if self.tasks.read().unwrap().is_empty() && self.workers.lock().unwrap().is_empty() {
+                break;
+            }
         }
-        for task_arc in all_tasks {
+        self.pending_updates.lock().unwrap().clear();
+        for task_arc in removed_tasks {
             let (id, temp_dir, save_dir, title) = {
                 let t = task_arc.lock().unwrap();
                 (
@@ -3118,9 +3248,9 @@ mod tests {
         let task_arc = Arc::new(Mutex::new(task));
         let gen = mgr.next_generation("t-resume");
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_notify = Arc::new(tokio::sync::Notify::new());
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let abort_flag = Arc::new(AtomicBool::new(false));
-        let abort_notify = Arc::new(tokio::sync::Notify::new());
+        let (_abort_tx, abort_rx) = tokio::sync::watch::channel(false);
         let chunk = task_arc.lock().unwrap().chunks[0].clone();
         let url = format!("http://{addr}/audio.m4s");
 
@@ -3129,9 +3259,9 @@ mod tests {
             &bili,
             &task_arc,
             &stop_flag,
-            &stop_notify,
+            &stop_rx,
             &abort_flag,
-            &abort_notify,
+            &abort_rx,
             gen,
             0,
             &chunk,
@@ -3419,8 +3549,8 @@ mod tests {
         // Immediately resume; verify stage_download + stage_merge finish with exact payload
         let gen2 = mgr.stop_and_wait_worker("t-pause-resume").await;
         let stop_flag2 = Arc::new(AtomicBool::new(false));
-        let stop_notify2 = Arc::new(tokio::sync::Notify::new());
-        mgr.stage_download::<tauri::Wry>(None, &bili, &task_arc, &stop_flag2, &stop_notify2, gen2)
+        let (_stop_tx2, stop_rx2) = tokio::sync::watch::channel(false);
+        mgr.stage_download::<tauri::Wry>(None, &bili, &task_arc, &stop_flag2, &stop_rx2, gen2)
             .await
             .unwrap();
         mgr.stage_merge::<tauri::Wry>(None, &task_arc, &stop_flag2, gen2)
@@ -3456,15 +3586,16 @@ mod tests {
             end: 99,
             done: false,
         };
+        let (_abort_tx2, abort_rx2) = tokio::sync::watch::channel(false);
         let slow_err = mgr
             .download_single_chunk::<tauri::Wry>(
                 None,
                 &bili,
                 &task_arc,
                 &stop_flag2,
-                &stop_notify2,
+                &stop_rx2,
                 &Arc::new(AtomicBool::new(false)),
-                &Arc::new(tokio::sync::Notify::new()),
+                &abort_rx2,
                 gen2,
                 0,
                 &slow_chunk,
