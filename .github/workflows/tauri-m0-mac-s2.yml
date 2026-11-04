@@ -23,25 +23,10 @@ jobs:
           node-version: 22
       - run: rustup default stable && rustc --version && sw_vers && uname -m
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build dmg (S4)
+      - name: Build app
         working-directory: spikes/m0
-        run: ../node_modules/.bin/tauri build --ci --bundles dmg
-      - name: Sizes (S4)
-        run: |
-          mkdir -p evidence
-          b=m0/src-tauri/target/release/bundle
-          python3 - "$b" <<'PY' | tee evidence/mac-sizes.json
-          import json, os, sys, hashlib
-          b = sys.argv[1]
-          dmg = [os.path.join(b, 'dmg', f) for f in os.listdir(os.path.join(b, 'dmg')) if f.endswith('.dmg')][0]
-          app = os.path.join(b, 'macos', 'Biu M0.app')
-          total = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(app) for f in fs if not os.path.islink(os.path.join(r, f)))
-          exe = os.path.join(app, 'Contents', 'MacOS', 'biu-m0')
-          print(json.dumps({'dmg': os.path.basename(dmg), 'dmg_bytes': os.path.getsize(dmg), 'dmg_mb': os.path.getsize(dmg) / 1e6,
-                            'app_bytes': total, 'exe_bytes': os.path.getsize(exe),
-                            'dmg_sha256': hashlib.sha256(open(dmg, 'rb').read()).hexdigest()}, indent=2))
-          PY
-      - run: python3 scripts/make_fixtures_mac.py m0/fixtures && mkdir -p m0/private
+        run: ../node_modules/.bin/tauri build --ci --bundles app
+      - run: python3 scripts/make_fixtures_mac.py m0/fixtures && mkdir -p m0/private evidence
       - name: S2 custom protocol 3600 s soak
         run: |
           python3 scripts/fixture_server.py --fixtures m0/fixtures --log evidence/mac-server.jsonl &
@@ -65,6 +50,24 @@ jobs:
           print(dict(collections.Counter(e.get('event') for e in ev))); print('last', ev[-1])
           PY
           true
+      - name: Build dmg (S4)
+        working-directory: spikes/m0
+        run: ../node_modules/.bin/tauri build --ci --bundles dmg
+      - name: Sizes (S4)
+        run: |
+          mkdir -p evidence
+          b=m0/src-tauri/target/release/bundle
+          python3 - "$b" <<'PY' | tee evidence/mac-sizes.json
+          import json, os, sys, hashlib
+          b = sys.argv[1]
+          dmg = [os.path.join(b, 'dmg', f) for f in os.listdir(os.path.join(b, 'dmg')) if f.endswith('.dmg')][0]
+          app = os.path.join(b, 'macos', 'Biu M0.app')
+          total = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(app) for f in fs if not os.path.islink(os.path.join(r, f)))
+          exe = os.path.join(app, 'Contents', 'MacOS', 'biu-m0')
+          print(json.dumps({'dmg': os.path.basename(dmg), 'dmg_bytes': os.path.getsize(dmg), 'dmg_mb': os.path.getsize(dmg) / 1e6,
+                            'app_bytes': total, 'exe_bytes': os.path.getsize(exe),
+                            'dmg_sha256': hashlib.sha256(open(dmg, 'rb').read()).hexdigest()}, indent=2))
+          PY
       - if: always()
         uses: actions/upload-artifact@v4
         with:
