@@ -44,6 +44,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # macos-15-intel 默认 Xcode 16.4；electron-builder 编译 .icon 需要 actool 26+。
+      - name: Select Xcode 26
+        if: runner.os == 'macOS'
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          test -n "$xcode" || { ls -d /Applications/Xcode*.app; echo "::error::Xcode 26 not found"; exit 1; }
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcrun actool --version
+
       # electron-builder 的 CSC_LINK 自建 keychain 在 macos-26 上 set-key-partition-list 解锁失败，
       # 所以自己建 keychain 导入证书，只给 electron-builder 传 CSC_NAME（见 docs/plans/seamless-update.md 步骤 1 结果）。
       - name: Import Mac signing certificate
