@@ -124,6 +124,12 @@ Sol 审查 `8eaf2533` 和桥接版 `1a835bb6`，结论“暂不建议发布”�
 - [x] 重定向：`bili_request`、歌词和自动歌词的 HTTP 客户端每一跳都检查 host 白名单。（owner）
   `3b2fc916`。`allowlist_redirect_policy`；kuromoji 下载有 sha256 校验，不限制。
 - [ ] 代码逻辑审查（GPT-6.1-Sol）。
+  2026-11-05 审查记录（owner）：
+  - Sol 第 1 轮（Tauri `8eaf2533`、桥接 `1a835bb6`）：不可发布，3 阻塞 + 10 应修，修复见上面各项。
+  - Sol 复核 1–4 轮（桥接 `b4e5cdef` → `5b258345`，Tauri `5cdd4efc`、`cbf3fb89`）：陆续指出 Mac 隐藏窗口挡住安装、导出失败仍安装、读取失败记为完成、重试重复导入、普通退出安装无兜底、Linux AppImage 同步启动、Mac 普通退出会重启、导出期间退出可绕过、签名错误后仍安装、安装失败后未收回交接。均已修复；第 4 轮结论：桥接版可发布。
+  - Opus 审 Argon 下载修复 `8b82c7c8`：不可发布（B1、B2、S1–S4）。Argon 在 `feat/tauri-dl3` 修复，合入 `370905a4`。Opus 复核：可发布，1 应修（续传的整文件单分块收到 200 永久失败）。
+  - owner 修该应修，并补 `shutdown` 后不再启动 worker：`1e7916ca`，交 Argon 审。
+  - Codex 7d 余量 3%，Sol 后两段由 Opus / Argon 按作者异构替代。
 - [x] Mac 签名链：用 `workflow_dispatch` 跑 `release.yml`（只构建不发布），在 Mac 上对正式签名的 zip 执行 `codesign --verify -R`，条件取 `.6` 的 designated requirement。（owner）
   2026-11-05 部分完成：run 41902247789（`3b2fc916`）六目标通过，mac arm64 dmg 5.5 MB。Mac 上 `.6` release zip 的 DR 为 `identifier "com.biu.wood3n" and certificate leaf = H"9580df08…529b3c"`；`2.0.0` zip 同证书同 DR，`codesign --verify --deep --strict -R=<.6 DR>` 通过。`.7` 包构建后再验 `.6 DR → .7`。
   2026-11-05 完成：`.7` 正式 release（run 41915450554，桥接 `81fff3de`，Intel Mac runner 选 Xcode 26 后构建）的 arm64、x64 zip DR 同上，Mac 上 `codesign --verify --deep --strict -R=<.6 DR>` 都输出 VERIFY_OK。`.6 → .7 → 2.0.0` 三个版本 DR 相同。
