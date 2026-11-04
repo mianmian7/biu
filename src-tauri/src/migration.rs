@@ -898,11 +898,17 @@ where
             }
         }
     } else {
+        // With an unreadable export, a missing raw file proves nothing: leave that store for the
+        // retry that can read the export.
+        let export_pending = pending.iter().any(|p| p == "export");
         for &store_name in MIGRATABLE_STORES {
             if is_done(&done, store_name) {
                 continue;
             }
             let incoming = read_raw_electron_store(&electron_dir, store_name);
+            if export_pending && matches!(incoming, Ok(None)) {
+                continue;
+            }
             import_store(
                 store_name,
                 incoming,
@@ -1487,6 +1493,32 @@ mod tests {
         assert!(marker.pending.contains(&"export".to_string()));
         assert!(!marker.done.contains(&"cookies".to_string()));
         assert_eq!(marker.attempts, 2);
+        // Fresh Tauri data with the export unreadable from the start: media-downloads has no
+        // raw file, which proves nothing, so it must stay open.
+        let tauri_dir = root.join("tauri-data-2");
+        fs::create_dir_all(&tauri_dir).unwrap();
+        let bili = BiliState::new(tauri_dir.join("cookies.json"), None).unwrap();
+        let marker = migrate_from_candidates_in_dir(&tauri_dir, &candidates, &bili).unwrap();
+        assert!(marker.pending.contains(&"export".to_string()));
+        assert!(!marker.done.contains(&"media-downloads".to_string()));
+        assert!(marker.done.contains(&"shortcut-settings".to_string()));
+
+        // Once the export is readable, the retry imports what the raw files lacked.
+        let export_json = json!({
+            "version": 1,
+            "stores": { "media-downloads": { "downloads": { "t": { "id": "t" } } } },
+            "cookies": []
+        });
+        fs::write(
+            electron_dir.join(ELECTRON_EXPORT_FILE),
+            serde_json::to_vec(&export_json).unwrap(),
+        )
+        .unwrap();
+        let marker = migrate_from_candidates_in_dir(&tauri_dir, &candidates, &bili).unwrap();
+        assert!(marker
+            .imported_stores
+            .contains(&"media-downloads".to_string()));
+        assert!(marker.done.contains(&"cookies".to_string()));
         let _ = fs::remove_dir_all(&root);
     }
 }
