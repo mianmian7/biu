@@ -3721,7 +3721,7 @@ mod tests {
 
         let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
         let mgr = DownloadManager::new(dir.join("downloads.json"));
-        mgr.set_chunk_idle_timeout(Duration::from_millis(300));
+        mgr.set_chunk_idle_timeout(Duration::from_secs(30));
 
         let url = format!("http://{addr}/audio.m4s?deadline=4102444800");
         let temp_dir = dir.join("temp");
@@ -3768,9 +3768,15 @@ mod tests {
         first_get_started.notified().await;
         tokio::time::sleep(Duration::from_millis(30)).await;
 
-        // Pause and immediately resume; pause_task_opt must wake and wait for worker 1 to exit
+        // Pause with 30s idle timeout; pause_task_opt must wake and return within 1s
+        let pause_start = Instant::now();
         mgr.pause_task_opt::<tauri::Wry>(None, "t-pause-resume")
             .await;
+        assert!(
+            pause_start.elapsed() < Duration::from_secs(1),
+            "pause_task_opt took {:?}",
+            pause_start.elapsed()
+        );
         assert_eq!(task_arc.lock().unwrap().status, "downloadPaused");
         assert!(!mgr.is_current_generation("t-pause-resume", gen1));
 
@@ -3809,19 +3815,23 @@ mod tests {
             .get("t-pause-resume")
             .is_none());
 
-        // Immediately resume; verify stage_download + stage_merge finish with exact payload
-        let gen2 = mgr.stop_and_wait_worker("t-pause-resume").await;
-        let stop_flag2 = Arc::new(AtomicBool::new(false));
-        let (_stop_tx2, stop_rx2) = tokio::sync::watch::channel(false);
-        mgr.stage_download::<tauri::Wry>(None, &bili, &task_arc, &stop_flag2, &stop_rx2, gen2)
-            .await
-            .unwrap();
-        mgr.stage_merge::<tauri::Wry>(None, &task_arc, &stop_flag2, gen2)
-            .await
-            .unwrap();
-
+        // Resume via resume_task_opt and wait for worker to finish download + merge
+        mgr.resume_task_opt::<tauri::Wry>(None, bili.clone(), "t-pause-resume")
+            .await;
+        for _ in 0..100 {
+            if temp_dir.join("audio.m4s").exists()
+                && fs::metadata(temp_dir.join("audio.m4s"))
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+                    == payload.len() as u64
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         let merged_audio = fs::read(temp_dir.join("audio.m4s")).unwrap();
         assert_eq!(merged_audio, payload);
+        mgr.stop_and_wait_worker("t-pause-resume").await;
 
         // Also test slow response idle timeout when server stalls forever
         let slow_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3842,6 +3852,9 @@ mod tests {
         });
 
         mgr.set_chunk_idle_timeout(Duration::from_millis(120));
+        let gen2 = mgr.next_generation("t-pause-resume");
+        let stop_flag2 = Arc::new(AtomicBool::new(false));
+        let (_stop_tx2, stop_rx2) = tokio::sync::watch::channel(false);
         let slow_chunk = MediaDownloadChunk {
             chunk_type: "audio".into(),
             name: "slow.part1".into(),
@@ -3991,6 +4004,475 @@ mod tests {
         );
 
         srv.abort();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn concurrent_pause_cancel_and_pause_resume_wait_for_worker_and_keep_state_consistent() {
+        let dir = std::env::temp_dir().join(format!("biu-dl-b1b2-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let active_get = Arc::new(AtomicUsize::new(0));
+        let max_concurrent_get = Arc::new(AtomicUsize::new(0));
+        let first_get_started = Arc::new(tokio::sync::Notify::new());
+        let second_get_started = Arc::new(tokio::sync::Notify::new());
+
+        let active_srv = active_get.clone();
+        let max_srv = max_concurrent_get.clone();
+        let first_srv = first_get_started.clone();
+        let second_srv = second_get_started.clone();
+        let get_count = Arc::new(AtomicUsize::new(0));
+        let get_count_srv = get_count.clone();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let active_conn = active_srv.clone();
+                let max_conn = max_srv.clone();
+                let first_conn = first_srv.clone();
+                let second_conn = second_srv.clone();
+                let count_conn = get_count_srv.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("HEAD ") {
+                        let hdr =
+                            "HTTP/1.1 200 OK\r\nContent-Length: 400\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.shutdown().await;
+                        return;
+                    }
+                    let cur = active_conn.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_conn.fetch_max(cur, Ordering::SeqCst);
+                    let idx = count_conn.fetch_add(1, Ordering::SeqCst);
+                    let hdr = "HTTP/1.1 206 Partial Content\r\nContent-Length: 400\r\nContent-Range: bytes 0-399/400\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(&[b'X'; 64]).await;
+                    if idx == 0 {
+                        first_conn.notify_waiters();
+                    } else if idx == 1 {
+                        second_conn.notify_waiters();
+                    }
+                    // Keep connection open until client drops it on worker stop
+                    let mut drain = [0u8; 64];
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(10), sock.read(&mut drain)).await;
+                    active_conn.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+
+        let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        let mgr = DownloadManager::new(dir.join("downloads.json"));
+        let url = format!("http://{addr}/audio.m4s?deadline=4102444800");
+
+        // Case 1: pause and cancel concurrently on task-pc
+        let temp_pc = dir.join("temp_pc");
+        let save_pc = dir.join("save_pc");
+        fs::create_dir_all(&save_pc).unwrap();
+        // Pre-create own .part and another task's .part with the same title
+        let desired_pc = save_pc.join("Same Title.m4a");
+        let own_part = build_task_temp_output_path(&desired_pc, "task-pc");
+        let other_part = build_task_temp_output_path(&desired_pc, "task-other");
+        fs::write(&own_part, b"partial-own").unwrap();
+        fs::write(&other_part, b"partial-other").unwrap();
+
+        let task_pc = FullMediaDownloadTask {
+            id: "task-pc".into(),
+            output_file_type: "audio".into(),
+            title: "Same Title".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: Some(url.clone()),
+            audio_codecs: Some("aac".into()),
+            audio_bandwidth: Some(128000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 0,
+            audio_total_bytes: 0,
+            video_total_bytes: 0,
+            downloaded_bytes: 0,
+            download_progress: 0,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "waiting".into(),
+            file_name: None,
+            temp_dir: temp_pc.to_string_lossy().into_owned(),
+            save_dir: save_pc.to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: Vec::new(),
+            stream_id: None,
+            error: None,
+        };
+        let task_pc_arc = Arc::new(Mutex::new(task_pc));
+        let gen_pc = mgr.next_generation("task-pc");
+        mgr.tasks.write().unwrap().push(task_pc_arc.clone());
+        mgr.spawn_worker_with_gen::<tauri::Wry>(
+            None,
+            bili.clone(),
+            task_pc_arc.clone(),
+            false,
+            gen_pc,
+        );
+
+        first_get_started.notified().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let mgr_p = mgr.clone();
+        let mgr_c = mgr.clone();
+        tokio::join!(
+            mgr_p.pause_task_opt::<tauri::Wry>(None, "task-pc"),
+            mgr_c.cancel_task_opt::<tauri::Wry>(None, "task-pc"),
+        );
+
+        // Task must be removed, no worker left, temp_pc deleted and not recreated, only own .part deleted
+        assert!(mgr.find_task("task-pc").is_none());
+        assert!(!mgr.workers.lock().unwrap().contains_key("task-pc"));
+        assert!(
+            !temp_pc.exists(),
+            "temp_pc must not be recreated after cancel"
+        );
+        assert!(!own_part.exists(), "cancel must delete own .part file");
+        assert!(
+            other_part.exists(),
+            "cancel must NOT delete another task's .part file"
+        );
+
+        // Wait until server sees first connection closed before starting Case 2
+        for _ in 0..50 {
+            if active_get.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        max_concurrent_get.store(0, Ordering::SeqCst);
+
+        // Case 2: pause and resume concurrently on task-pr
+        let temp_pr = dir.join("temp_pr");
+        let save_pr = dir.join("save_pr");
+        let task_pr = FullMediaDownloadTask {
+            id: "task-pr".into(),
+            output_file_type: "audio".into(),
+            title: "Pause Resume Race".into(),
+            cover: None,
+            created_time: Some(2),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: Some(url),
+            audio_codecs: Some("aac".into()),
+            audio_bandwidth: Some(128000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 0,
+            audio_total_bytes: 0,
+            video_total_bytes: 0,
+            downloaded_bytes: 0,
+            download_progress: 0,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "waiting".into(),
+            file_name: None,
+            temp_dir: temp_pr.to_string_lossy().into_owned(),
+            save_dir: save_pr.to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: Vec::new(),
+            stream_id: None,
+            error: None,
+        };
+        let task_pr_arc = Arc::new(Mutex::new(task_pr));
+        let gen_pr = mgr.next_generation("task-pr");
+        mgr.tasks.write().unwrap().push(task_pr_arc.clone());
+        mgr.spawn_worker_with_gen::<tauri::Wry>(
+            None,
+            bili.clone(),
+            task_pr_arc.clone(),
+            false,
+            gen_pr,
+        );
+
+        second_get_started.notified().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let mgr_p2 = mgr.clone();
+        let mgr_r2 = mgr.clone();
+        let bili_r2 = bili.clone();
+        tokio::join!(
+            mgr_p2.pause_task_opt::<tauri::Wry>(None, "task-pr"),
+            mgr_r2.resume_task_opt::<tauri::Wry>(None, bili_r2, "task-pr"),
+        );
+
+        let status_after = task_pr_arc.lock().unwrap().status.clone();
+        let has_worker = mgr.workers.lock().unwrap().contains_key("task-pr");
+        if status_after == "downloadPaused" {
+            assert!(
+                !has_worker,
+                "when final status is downloadPaused, no worker may be running"
+            );
+        } else {
+            assert!(
+                status_after == "waiting" || status_after == "downloading",
+                "unexpected status after concurrent pause+resume: {status_after}"
+            );
+        }
+        assert!(
+            max_concurrent_get.load(Ordering::SeqCst) <= 1,
+            "two workers ran concurrently (max_concurrent_get = {})",
+            max_concurrent_get.load(Ordering::SeqCst)
+        );
+
+        mgr.stop_and_wait_worker("task-pr").await;
+        srv.abort();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn content_range_mismatch_and_final_chunk_length_mismatch_fail_download() {
+        let dir = std::env::temp_dir().join(format!("biu-dl-mismatch-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        // Server 1: returns 206 with mismatched Content-Range (bytes 10-99/100 when 0-99 was requested)
+        let listener_cr = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_cr = listener_cr.local_addr().unwrap();
+        let srv_cr = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener_cr.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let hdr = "HTTP/1.1 206 Partial Content\r\nContent-Length: 90\r\nContent-Range: bytes 10-99/100\r\nConnection: close\r\n\r\n";
+                let _ = sock.write_all(hdr.as_bytes()).await;
+                let _ = sock.write_all(&[b'A'; 90]).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        // Server 2: returns 206 with valid Content-Range matching request, but only sends 10 bytes and closes connection
+        let listener_len = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_len = listener_len.local_addr().unwrap();
+        let srv_len = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener_len.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 1024];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let (start, end) = parse_range_header(&req).unwrap_or((0, 99));
+                let hdr = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/100\r\nConnection: close\r\n\r\n"
+                );
+                let _ = sock.write_all(hdr.as_bytes()).await;
+                let _ = sock.write_all(&[b'B'; 10]).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        let mgr = DownloadManager::new(dir.join("downloads.json"));
+        let chunk = MediaDownloadChunk {
+            chunk_type: "audio".into(),
+            name: "audio.part1".into(),
+            start: 0,
+            end: 99,
+            done: false,
+        };
+        let task = FullMediaDownloadTask {
+            id: "t-mismatch".into(),
+            output_file_type: "audio".into(),
+            title: "Mismatch".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: None,
+            audio_codecs: Some("aac".into()),
+            audio_bandwidth: Some(128000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 100,
+            audio_total_bytes: 100,
+            video_total_bytes: 0,
+            downloaded_bytes: 0,
+            download_progress: 0,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "downloading".into(),
+            file_name: None,
+            temp_dir: dir.to_string_lossy().into_owned(),
+            save_dir: dir.to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: vec![chunk.clone()],
+            stream_id: None,
+            error: None,
+        };
+        let task_arc = Arc::new(Mutex::new(task));
+        let gen = mgr.next_generation("t-mismatch");
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let (_abort_tx, abort_rx) = tokio::sync::watch::channel(false);
+
+        let cr_err = mgr
+            .download_single_chunk::<tauri::Wry>(
+                None,
+                &bili,
+                &task_arc,
+                &stop_flag,
+                &stop_rx,
+                &Arc::new(AtomicBool::new(false)),
+                &abort_rx,
+                gen,
+                0,
+                &chunk,
+                &format!("http://{addr_cr}/audio.m4s"),
+                &dir.join("cr.part1"),
+                0,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            cr_err.contains("invalid Content-Range"),
+            "expected Content-Range mismatch error, got: {cr_err}"
+        );
+
+        let len_err = mgr
+            .download_single_chunk::<tauri::Wry>(
+                None,
+                &bili,
+                &task_arc,
+                &stop_flag,
+                &stop_rx,
+                &Arc::new(AtomicBool::new(false)),
+                &abort_rx,
+                gen,
+                0,
+                &chunk,
+                &format!("http://{addr_len}/audio.m4s"),
+                &dir.join("len.part1"),
+                0,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            len_err.contains("incomplete: got"),
+            "expected incomplete error on final length mismatch, got: {len_err}"
+        );
+
+        srv_cr.abort();
+        srv_len.abort();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn convert_cancel_and_timeout_kill_process_and_cleanup_part_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("biu-dl-conv-kill-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        // Fake ffmpeg that writes a partial output file immediately, then execs sleep 30
+        let slow_ffmpeg = dir.join("slow-ffmpeg.sh");
+        fs::write(
+            &slow_ffmpeg,
+            r#"#!/bin/sh
+out_file=""
+while [ "$#" -gt 0 ]; do
+  out_file="$1"
+  shift
+done
+echo "partial" > "$out_file"
+exec sleep 30
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&slow_ffmpeg, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let in_audio = dir.join("audio.m4s");
+        fs::write(&in_audio, b"audio-data").unwrap();
+        let desired = dir.join("Song.m4a");
+
+        // 1. Cancellation kills ffmpeg and removes .part file quickly
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel_flag.clone();
+        let part_cancel = build_task_temp_output_path(&desired, "task-cancel");
+        // Pre-create stale .part file to verify it gets cleaned up before/after
+        fs::write(&part_cancel, b"stale-part").unwrap();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(120));
+            cancel_clone.store(true, Ordering::SeqCst);
+        });
+
+        let start_cancel = Instant::now();
+        let cancel_err = convert_with_ffmpeg_for_task(
+            &slow_ffmpeg,
+            "audio",
+            Some(&in_audio),
+            None,
+            &desired,
+            "task-cancel",
+            &cancel_flag,
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+        assert_eq!(cancel_err, "Aborted");
+        assert!(
+            start_cancel.elapsed() < Duration::from_secs(2),
+            "cancellation should kill ffmpeg promptly"
+        );
+        assert!(
+            !part_cancel.exists(),
+            ".part file must be removed after cancel"
+        );
+
+        // 2. Timeout kills ffmpeg and removes .part file
+        let part_timeout = build_task_temp_output_path(&desired, "task-timeout");
+        let start_timeout = Instant::now();
+        let timeout_err = convert_with_ffmpeg_for_task(
+            &slow_ffmpeg,
+            "audio",
+            Some(&in_audio),
+            None,
+            &desired,
+            "task-timeout",
+            &AtomicBool::new(false),
+            Duration::from_millis(150),
+        )
+        .unwrap_err();
+        assert_eq!(timeout_err, "ffmpeg convert timed out");
+        assert!(
+            start_timeout.elapsed() < Duration::from_secs(2),
+            "timeout should kill ffmpeg promptly"
+        );
+        assert!(
+            !part_timeout.exists(),
+            ".part file must be removed after timeout"
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 
