@@ -1150,6 +1150,7 @@ pub struct DownloadManager {
     pub flush_scheduled: AtomicBool,
     pub store_path: PathBuf,
     pub chunk_idle_timeout: RwLock<Duration>,
+    pub shut_down: AtomicBool,
 }
 
 impl DownloadManager {
@@ -1168,6 +1169,7 @@ impl DownloadManager {
             flush_scheduled: AtomicBool::new(false),
             store_path,
             chunk_idle_timeout: RwLock::new(CHUNK_READ_IDLE_TIMEOUT),
+            shut_down: AtomicBool::new(false),
         });
         mgr.restore_from_disk();
         mgr
@@ -1234,6 +1236,36 @@ impl DownloadManager {
             }
             return gen;
         }
+    }
+
+    pub fn shutdown(&self, timeout: Duration) {
+        if self.shut_down.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let receivers: Vec<tokio::sync::watch::Receiver<bool>> = {
+            let workers = self.workers.lock().unwrap();
+            let mut gens = self.generations.lock().unwrap();
+            workers
+                .iter()
+                .map(|(id, w)| {
+                    let entry = gens.entry(id.clone()).or_insert(0);
+                    *entry += 1;
+                    w.stop_flag.store(true, Ordering::SeqCst);
+                    let _ = w.stop_tx.send(true);
+                    w.done_rx.clone()
+                })
+                .collect()
+        };
+        if !receivers.is_empty() {
+            let start = Instant::now();
+            while start.elapsed() < timeout {
+                if receivers.iter().all(|rx| *rx.borrow()) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        self.save_to_disk();
     }
 
     fn restore_from_disk(&self) {
@@ -2641,6 +2673,7 @@ impl DownloadManager {
         };
         let file_name = format!("{base_name}{ext}");
         let desired_save_path = Path::new(&save_dir).join(&file_name);
+        let _ = fs::remove_file(build_task_temp_output_path(&desired_save_path, &task_id));
 
         let user_ffmpeg = app.and_then(|a| user_ffmpeg_setting(a));
         let ffmpeg_bin = resolve_ffmpeg_path(user_ffmpeg.as_deref())?;
