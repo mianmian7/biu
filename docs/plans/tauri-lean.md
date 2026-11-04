@@ -104,19 +104,27 @@ Sol 审查 `8eaf2533` 和桥接版 `1a835bb6`，结论“暂不建议发布”�
 - Tauri release 里的 `latest*.yml` 复制自 `.7` release，并加一行 `tag: v1.16.1-autolyrics.7`。`.6` 及更早的 Electron 版读到它，升级到桥接版。
 - Tauri release 另带 `tauri*.yml`（`tauri.yml` win x64、`tauri-arm64.yml` win arm64、`tauri-mac.yml`、`tauri-linux.yml`、`tauri-linux-arm64.yml`），指向 Tauri 安装包。
 - 桥接版设 `autoUpdater.channel = "tauri"`（win arm64 设 `"tauri-arm64"`，用 `app.runningUnderARM64Translation` 识别），随后把 `allowDowngrade` 和 `allowPrerelease` 设回 `false`。频道文件不存在时按“没有更新”处理，不弹错误。
-- `.7` release 发布后不设为 latest。随后发 `2.0.0`，设为 latest。
+- `.7` release 照常设为 latest（`.7` 读不到 `tauri*.yml` 时在检查阶段只记日志，不弹错误）。随后发 `2.0.0`，设为 latest。
 
 **清单：**
 
-- [ ] 版本改为 `2.0.0`；`release.yml` 构建前校验 tag、`package.json`、`tauri.conf.json`、`Cargo.toml` 一致。（owner）
-- [ ] 升级链：feed 脚本按上面的设计生成文件，并用 electron-updater 6.6.2 源码测试 `.6 → .7` 与 `.7 → 2.0.0` 的选版和下载 URL。（owner）
-- [ ] updater：去掉 `pending_update` 的双重加锁；下载好的字节和对应 `Update` 绑定，下载后冻结，重新检查不覆盖。（owner）
-- [ ] 迁移：每项单独记录完成状态，失败项下次启动重试；cookie 按原 domain、path、secure、httpOnly 导入；歌词缓存保留来源字段；桥接版另导出 renderer `localStorage`（含 `refresh_token`、播放列表），Tauri 版首次启动在 store 初始化前写回缺失的键。（owner）
-- [ ] 桥接版：退出和自动安装前串行完成一次导出。（owner）
+- [x] 版本改为 `2.0.0`；`release.yml` 构建前校验 tag、`package.json`、`tauri.conf.json`、`Cargo.toml` 一致。（owner）
+  `be8671ce`。`prepare-release` 先校验四处版本，生成 feed 后再查 `tauri-mac.yml`、`latest.json` 的版本和 `latest-mac.yml` 的 `tag`。
+- [x] 升级链：feed 脚本按上面的设计生成文件，并用 electron-updater 6.6.2 源码测试 `.6 → .7` 与 `.7 → 2.0.0` 的选版和下载 URL。（owner）
+  `be8671ce`。`tests/updater/upgrade-chain.test.ts` 用真实 `GitHubProvider`：`.6` 在四个平台都选 `.7` 并从 `v1.16.1-autolyrics.7` 下载；`.7`（频道 `tauri` / `tauri-arm64`）选 `2.0.0`，Windows 两种架构各自拿到对应 exe。
+- [x] updater：去掉 `pending_update` 的双重加锁；下载好的字节和对应 `Update` 绑定，下载后冻结，重新检查不覆盖。（owner）
+  `be8671ce`。`downloaded: Mutex<Option<(Update, Vec<u8>)>>`；`try_begin_download` 让下载互斥；安装失败清空冻结状态。
+- [x] 迁移：每项单独记录完成状态，失败项下次启动重试；cookie 按原 domain、path、secure、httpOnly 导入；歌词缓存保留来源字段；桥接版另导出 renderer `localStorage`（含 `refresh_token`、播放列表），Tauri 版首次启动在 store 初始化前写回缺失的键。（owner）
+  `3b2fc916`。标记带 `complete`、`pending`、`attempts`，未完成最多重试 5 次；`src/index.tsx` 先调 `applyMigratedLocalStorage` 再动态 import `./app`。
+- [x] 桥接版：退出和自动安装前串行完成一次导出。（owner）
+  `feat/tauri-bridge` `b8b5469a`。导出串行执行；首次退出最多等 5 s 导出完成再退出；更新安装开始后不再拦截退出；localStorage 每 10 分钟刷新一次缓存。
 - [ ] 下载：分块续传每次重试按文件实际长度重算 Range，校验 `206` 和 `Content-Range`；内部失败与取消分开；暂停、恢复、取消等待旧 worker 退出，加 generation 校验和读取空闲超时；ffmpeg 并行读 stdout/stderr，加超时和 kill；同名并发下载用任务独有的临时文件，提交时不覆盖已有文件；文件名按字节截断并处理 Windows 保留名。（Gemini 4 Argon）
-- [ ] 重定向：`bili_request`、歌词和自动歌词的 HTTP 客户端每一跳都检查 host 白名单。（owner）
+- [x] 重定向：`bili_request`、歌词和自动歌词的 HTTP 客户端每一跳都检查 host 白名单。（owner）
+  `3b2fc916`。`allowlist_redirect_policy`；kuromoji 下载有 sha256 校验，不限制。
 - [ ] 代码逻辑审查（GPT-6.1-Sol）。
-- [ ] Mac 实机静音冒烟：`.6 → .7 → 2.0.0`，设置和登录都在。（owner）
+- [ ] Mac 签名链：用 `workflow_dispatch` 跑 `release.yml`（只构建不发布），在 Mac 上对正式签名的 zip 执行 `codesign --verify -R`，条件取 `.6` 的 designated requirement。（owner）
+- [ ] Mac 实机静音冒烟：装 `2.0.0`，静音启动，设置和登录都在。（owner）
+  2026-11-05 核对：用户 Mac 的 `/Applications/Biu.app` 已是第 1 步的 Tauri 测试包（7.9 MB、ad-hoc、版本号 `.6`、无 updater），Electron `.6` 不在了，这台 Mac 上测不了 `.6 → .7` 一跳。用户需手动装 `2.0.0` dmg；Tauri 数据目录 `com.biu.wood3n` 里的扫码登录保留，Electron 目录 `Biu` 的 store 按原样合并。
 
 ## 分工
 
