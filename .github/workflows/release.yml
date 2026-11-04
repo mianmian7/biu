@@ -182,7 +182,7 @@ jobs:
           app="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Biu.app"
           codesign -dv --verbose=2 "$app" 2>&1 | grep -q 'Authority=Biu Self-Signed Code Signing' || { echo "::error::$app not signed with Biu Self-Signed Code Signing"; exit 1; }
           codesign -dv --verbose=2 "$app" 2>&1 | grep -q 'Identifier=com.biu.wood3n' || { echo "::error::$app identifier is not com.biu.wood3n"; exit 1; }
-          codesign -d -r- "$app" 2>&1 | grep -q 'certificate leaf = H"' || { echo "::error::$app designated requirement is not certificate-based"; exit 1; }
+          codesign -d -r- "$app" 2>&1 | grep -q 'certificate leaf = H"9580df080e5d6f3d1470e970ced966286a529b3c"' || { echo "::error::$app designated requirement does not pin the Biu certificate that v1.16.1-autolyrics.6 requires"; exit 1; }
           codesign --verify --deep --strict "$app"
 
       - name: Stage release assets (${{ matrix.name }})
