@@ -956,7 +956,7 @@ mod tests {
         fs::create_dir_all(&electron_dir).unwrap();
         fs::create_dir_all(&tauri_dir).unwrap();
 
-        // Generate encrypted user-login-info.json using Node + repo's electron-store (conf)
+        // Generate encrypted user-login-info.json using Node's crypto (matching conf's exact encryption format)
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -982,24 +982,21 @@ mod tests {
                 "--input-type=module",
                 "-e",
                 r##"
-                import { createRequire } from "node:module";
+                import crypto from "node:crypto";
                 import fs from "node:fs";
                 import path from "node:path";
-                const require = createRequire(import.meta.url);
-                const confPath = require.resolve("conf", { paths: [require.resolve("electron-store")] });
-                const { default: Conf } = await import(confPath);
                 const dir = process.env.ELECTRON_DIR;
-                const userStore = new Conf({
-                  cwd: dir,
-                  configName: "user-login-info",
-                  encryptionKey: "user-login-info",
-                });
-                userStore.store = {
+                const payload = JSON.stringify({
                   isLogin: true,
                   mid: 424242,
                   uname: "conf_encrypted_user",
                   face: "https://i0.hdslb.com/bfs/face/member/noface.jpg",
-                };
+                }, null, "\t");
+                const iv = crypto.randomBytes(16);
+                const password = crypto.pbkdf2Sync("user-login-info", iv.toString(), 10_000, 32, "sha512");
+                const cipher = crypto.createCipheriv("aes-256-cbc", password, iv);
+                const encrypted = Buffer.concat([iv, Buffer.from(":"), cipher.update(Buffer.from(payload)), cipher.final()]);
+                fs.writeFileSync(path.join(dir, "user-login-info.json"), encrypted);
                 fs.writeFileSync(
                   path.join(dir, "app-settings.json"),
                   JSON.stringify({

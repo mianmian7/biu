@@ -424,7 +424,7 @@ pub async fn perform_check<R: Runtime>(
                 },
             );
 
-            if mode == "auto" && std::env::var_os("BIU_UPDATER_E2E_DRIVE").is_none() {
+            if mode == "auto" {
                 let phase = *state.phase.lock().unwrap();
                 if phase != UpdaterPhase::Downloading && phase != UpdaterPhase::Downloaded {
                     *state.phase.lock().unwrap() = UpdaterPhase::Downloading;
@@ -759,53 +759,6 @@ pub fn install_downloaded_update_on_exit<R: Runtime>(app: &AppHandle<R>) {
 pub fn setup_updater<R: Runtime>(app: &AppHandle<R>) {
     app.manage(Arc::new(UpdaterState::default()));
     let app_handle = app.clone();
-    if std::env::var_os("BIU_UPDATER_E2E_DRIVE").is_some() {
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(2000)).await;
-            if let Some(w) = app_handle.get_webview_window("main") {
-                let script = r#"
-(async () => {
-  const logInfo = (message) => window.__TAURI_INTERNALS__.invoke("frontend_log", { level: "info", message });
-  try {
-    for (let i = 0; i < 50 && !window.electron; i++) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    const mode = await window.electron.getUpdateMode();
-    await logInfo(`[e2e-frontend] getUpdateMode() => ${mode}`);
-    window.electron.onUpdateAvailable((info) => {
-      void logInfo(`[e2e-frontend] event onUpdateAvailable => ${JSON.stringify(info)}`);
-    });
-    let sawDownloading = false;
-    let resolveDownloaded;
-    const downloadedPromise = new Promise((resolve) => { resolveDownloaded = resolve; });
-    window.electron.onDownloadAppProgress((msg) => {
-      if (msg.status === "downloading" && !sawDownloading) {
-        sawDownloading = true;
-        void logInfo(`[e2e-frontend] event onDownloadAppProgress(downloading) => ${JSON.stringify(msg)}`);
-      } else if (msg.status === "downloaded") {
-        void logInfo(`[e2e-frontend] event onDownloadAppProgress(downloaded) => ${JSON.stringify(msg)}`);
-        resolveDownloaded(msg);
-      } else if (msg.status === "error") {
-        void logInfo(`[e2e-frontend] event onDownloadAppProgress(error) => ${JSON.stringify(msg)}`);
-        resolveDownloaded(msg);
-      }
-    });
-    const checkRes = await window.electron.checkAppUpdate();
-    await logInfo(`[e2e-frontend] checkAppUpdate() => ${JSON.stringify(checkRes)}`);
-    await window.electron.downloadAppUpdate();
-    await downloadedPromise;
-    await logInfo(`[e2e-frontend] calling quitAndInstall()`);
-    await window.electron.quitAndInstall();
-  } catch (err) {
-    await logInfo(`[e2e-frontend] error => ${String(err)}`);
-  }
-})();
-"#;
-                let _ = w.eval(script);
-            }
-        });
-        return;
-    }
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(1500)).await;
         let _ = perform_check(&app_handle, true).await;

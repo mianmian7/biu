@@ -57,10 +57,12 @@ owner = Claude（osa-a1）
 
 ### 第 4 步：替换 Electron
 
-- [ ] Tauri updater 和发布流程。
+- [x] Tauri updater 和发布流程。
+  `tauri-plugin-updater` 接入，`release.yml` 改为 Tauri 六目标构建，产出 `latest.json` 和 electron-updater 兼容的 `latest*.yml`；osa-a1 上 AppImage 自更新实测通过（检查、下载、验签、替换），自动重启未观察到。Mac 签名与 Win NSIS 钩子待 CI 和实机验证。
 - [x] 老用户设置和登录迁移。
   已在 `feat/tauri-bridge`（`1.16.1-autolyrics.7`）实现启动完成与更新安装前原子导出全部 `StoreNameMap` store（含解密后的 `user-login-info`）及 `*.bilibili.com` cookie 到 `tauri-migration.json`（权限 `0600`）。已在 `feat/tauri-s4b` 新增 `src-tauri/src/migration.rs`，首次启动且无 `migration.json` 时从 Electron `userData` 导入 `tauri-migration.json`（或回退读取明文 store JSON 并按 `conf` 的 PBKDF2-HMAC-SHA512 + AES-256-CBC 解密 `user-login-info.json`），跳过过期 cookie、不覆盖已有 Tauri 数据与 cookie，且不删改 Electron 原文件。
-- [ ] 补其余架构，删除 `electron/` 和 Electron 依赖。
+- [x] 补其余架构，删除 `electron/` 和 Electron 依赖。
+  CI 六目标（mac arm64/x64 在 Intel runner 交叉编译）；`electron/` 与 Electron 依赖已删，ffmpeg 移到 `src-tauri/ffmpeg/`，linux arm64 回退系统 ffmpeg。
 - 用户验收：从 Electron 版升级，设置和登录都在。
 
 ## 第 2–4 步实施决定（owner 2026-11-05 补充）
