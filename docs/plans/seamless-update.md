@@ -209,6 +209,7 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
   - 结果（2026-11-04，Claude（osa-a1））：run 41787276148 四个 job 全部 success，含 `Verify Mac signature`；资产名单与 `.5` 一致（25 个）；release 非 draft、非 prerelease，`/releases/latest` 返回 `v1.16.1-autolyrics.6`。
 - [ ] 7.3 在 CI 跑的过程中（draft 阶段），用 `.5` 客户端（旧逻辑）和本地 `.6` 构建分别观察日志：`.6` 应该没有 404。
 - [ ] 7.4 Mac 上手动安装一次 `.6` 的 dmg；Windows 上 `.5` 客户端按现有按钮安装。之后 `.7` 起全部自动更新。
+  - Mac 部分结果（2026-11-04，Mac 线程 gemini-4-argon 执行，Claude（osa-a1）复核）：`/Applications/Biu.app` 为 `1.16.1-autolyrics.6`，`Authority=Biu Self-Signed Code Signing`，designated requirement 的 `certificate leaf` SHA-1 与 `plugins/mac/biu-codesign.cer` 一致，`codesign --verify --deep --strict` 通过；启动日志 `[updater] mode=auto`，无 404。`spctl` 判 rejected（未公证，预期）。Windows 部分待做。
 
 ## 回滚
 
