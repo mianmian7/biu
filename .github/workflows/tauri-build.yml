@@ -22,7 +22,7 @@ jobs:
       matrix:
         include:
           - name: macos-arm64
-            os: macos-26
+            os: macos-15
             bundles: dmg
             artifact_name: biu-macos-arm64-dmg
             bundle_glob: src-tauri/target/release/bundle/dmg/*.dmg
