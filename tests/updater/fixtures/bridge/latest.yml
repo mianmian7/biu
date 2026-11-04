@@ -1,0 +1,11 @@
+version: 1.16.1-autolyrics.7
+files:
+  - url: Biu-1.16.1-autolyrics.7-win-setup-x64.exe
+    sha512: nTS1RrxQH1cjthQNRrI3MC+RRW45krQiN54X26Dnenw34lddrkMoSxIg1nHkgOfNqs0rzwWjjvMVLGSsZLgvOw==
+    size: 113361920
+  - url: Biu-1.16.1-autolyrics.7-win-setup-arm64.exe
+    sha512: Js5LmEK7MrOOdjuqgzgJaGtxVKbi1P+chlXJHd+lYKC0tJuVDM9Mdifa9T1kDaTsQSKLIACtj3ifayk5vh63Tg==
+    size: 115522915
+path: Biu-1.16.1-autolyrics.7-win-setup-x64.exe
+sha512: nTS1RrxQH1cjthQNRrI3MC+RRW45krQiN54X26Dnenw34lddrkMoSxIg1nHkgOfNqs0rzwWjjvMVLGSsZLgvOw==
+releaseDate: '2026-11-04T06:45:57.199Z'

@@ -256,8 +256,33 @@ pub struct UpdaterState {
     pub mode: Mutex<String>,
     pub phase: Mutex<UpdaterPhase>,
     pub pending_update: Mutex<Option<Update>>,
-    pub downloaded_bytes: Mutex<Option<Vec<u8>>>,
+    /// The update whose bytes were downloaded, frozen together with those bytes.
+    /// Later checks never replace it, so install always verifies the matching metadata.
+    pub downloaded: Mutex<Option<(Update, Vec<u8>)>>,
     pub downloaded_file: Mutex<Option<PathBuf>>,
+}
+
+impl UpdaterState {
+    /// Moves the phase to `Downloading` unless a download is running or done.
+    fn try_begin_download(&self) -> bool {
+        let mut phase = self.phase.lock().unwrap();
+        match *phase {
+            UpdaterPhase::Downloading | UpdaterPhase::Downloaded | UpdaterPhase::Installing => {
+                false
+            }
+            UpdaterPhase::Checking => {
+                *phase = UpdaterPhase::Downloading;
+                true
+            }
+        }
+    }
+
+    fn downloaded_summary(&self) -> Option<(String, Option<String>)> {
+        let guard = self.downloaded.lock().unwrap();
+        guard
+            .as_ref()
+            .map(|(update, _)| (update.version.clone(), update.body.clone()))
+    }
 }
 
 impl Default for UpdaterState {
@@ -268,7 +293,7 @@ impl Default for UpdaterState {
             mode: Mutex::new(mode),
             phase: Mutex::new(UpdaterPhase::Checking),
             pending_update: Mutex::new(None),
-            downloaded_bytes: Mutex::new(None),
+            downloaded: Mutex::new(None),
             downloaded_file: Mutex::new(None),
         }
     }
@@ -371,21 +396,11 @@ pub async fn perform_check<R: Runtime>(
         };
     };
 
-    if is_background && *state.phase.lock().unwrap() == UpdaterPhase::Downloaded {
+    if let Some((version, notes)) = state.downloaded_summary() {
         return CheckAppUpdateResult {
             is_update_available: true,
-            latest_version: state
-                .pending_update
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|u| u.version.clone()),
-            release_notes: state
-                .pending_update
-                .lock()
-                .unwrap()
-                .as_ref()
-                .and_then(|u| u.body.clone()),
+            latest_version: Some(version),
+            release_notes: notes,
             error: None,
             notice: None,
         };
@@ -424,15 +439,11 @@ pub async fn perform_check<R: Runtime>(
                 },
             );
 
-            if mode == "auto" {
-                let phase = *state.phase.lock().unwrap();
-                if phase != UpdaterPhase::Downloading && phase != UpdaterPhase::Downloaded {
-                    *state.phase.lock().unwrap() = UpdaterPhase::Downloading;
-                    let app_clone = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = download_update_internal(&app_clone).await;
-                    });
-                }
+            if mode == "auto" && *state.phase.lock().unwrap() == UpdaterPhase::Checking {
+                let app_clone = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = download_update_internal(&app_clone).await;
+                });
             }
 
             CheckAppUpdateResult {
@@ -565,19 +576,30 @@ pub async fn download_update_internal<R: Runtime>(app: &AppHandle<R>) -> Result<
         return Err("Updater state not initialized".into());
     };
 
+    if !state.try_begin_download() {
+        log::info!("[updater] download_app_update: already downloading or downloaded");
+        return Ok(());
+    }
+
     let mut maybe_update = state.pending_update.lock().unwrap().clone();
     if maybe_update.is_none() {
-        let updater = build_updater(app)?;
-        if let Ok(Some(found)) = updater.check().await {
-            *state.pending_update.lock().unwrap() = Some(found.clone());
-            maybe_update = Some(found);
+        match build_updater(app) {
+            Ok(updater) => {
+                if let Ok(Some(found)) = updater.check().await {
+                    *state.pending_update.lock().unwrap() = Some(found.clone());
+                    maybe_update = Some(found);
+                }
+            }
+            Err(err) => {
+                *state.phase.lock().unwrap() = UpdaterPhase::Checking;
+                return Err(err);
+            }
         }
     }
     let Some(update) = maybe_update else {
+        *state.phase.lock().unwrap() = UpdaterPhase::Checking;
         return Err("没有可下载的更新".into());
     };
-
-    *state.phase.lock().unwrap() = UpdaterPhase::Downloading;
     let mode = current_mode(app);
     log::info!(
         "[updater] download_app_update: starting version={} mode={} url={}",
@@ -691,7 +713,7 @@ pub async fn download_update_internal<R: Runtime>(app: &AppHandle<R>) -> Result<
                 bytes.len(),
                 cached_path.display()
             );
-            *state.downloaded_bytes.lock().unwrap() = Some(bytes);
+            *state.downloaded.lock().unwrap() = Some((update.clone(), bytes));
             *state.downloaded_file.lock().unwrap() = Some(cached_path.clone());
             *state.phase.lock().unwrap() = UpdaterPhase::Downloaded;
 
@@ -745,9 +767,8 @@ pub fn install_downloaded_update_on_exit<R: Runtime>(app: &AppHandle<R>) {
     if phase != UpdaterPhase::Downloaded {
         return;
     }
-    let maybe_update = state.pending_update.lock().unwrap().clone();
-    let maybe_bytes = state.downloaded_bytes.lock().unwrap().take();
-    if let (Some(update), Some(bytes)) = (maybe_update, maybe_bytes) {
+    let downloaded = state.downloaded.lock().unwrap().take();
+    if let Some((update, bytes)) = downloaded {
         *state.phase.lock().unwrap() = UpdaterPhase::Installing;
         let update = update.restart_after_install(false);
         if let Err(err) = update.install(bytes) {
@@ -797,13 +818,19 @@ pub async fn quit_and_install<R: Runtime>(app: AppHandle<R>) -> Result<bool, Str
     if *state.mode.lock().unwrap() != "auto" {
         return Ok(false);
     }
-    let maybe_update = state.pending_update.lock().unwrap().clone();
-    let maybe_bytes = state.downloaded_bytes.lock().unwrap().clone();
-    let (Some(update), Some(bytes)) = (maybe_update, maybe_bytes) else {
+    {
+        let mut phase = state.phase.lock().unwrap();
+        if *phase != UpdaterPhase::Downloaded {
+            return Ok(false);
+        }
+        *phase = UpdaterPhase::Installing;
+    }
+    let downloaded = state.downloaded.lock().unwrap().clone();
+    let Some((update, bytes)) = downloaded else {
+        *state.phase.lock().unwrap() = UpdaterPhase::Checking;
         return Ok(false);
     };
 
-    *state.phase.lock().unwrap() = UpdaterPhase::Installing;
     log::info!(
         "[updater] quit_and_install: installing version={} bytes={}",
         update.version,
@@ -812,7 +839,7 @@ pub async fn quit_and_install<R: Runtime>(app: AppHandle<R>) -> Result<bool, Str
     let update = update.restart_after_install(true);
     match update.install(&bytes) {
         Ok(()) => {
-            *state.downloaded_bytes.lock().unwrap() = None;
+            *state.downloaded.lock().unwrap() = None;
             log::info!(
                 "[updater] quit_and_install: binary replaced, restarting into version={}",
                 update.version
@@ -830,6 +857,7 @@ pub async fn quit_and_install<R: Runtime>(app: AppHandle<R>) -> Result<bool, Str
                 downgrade_to_manual(&app);
                 active_mode = "manual".to_string();
             }
+            *state.downloaded.lock().unwrap() = None;
             *state.phase.lock().unwrap() = UpdaterPhase::Checking;
             emit_to_main(
                 &app,
@@ -1009,5 +1037,18 @@ mod tests {
         assert!(is_signature_error(
             "Signature verification failed: minisign"
         ));
+    }
+
+    #[test]
+    fn download_starts_once_and_downloaded_check_does_not_lock_twice() {
+        let state = UpdaterState::default();
+        assert!(state.try_begin_download());
+        assert!(!state.try_begin_download());
+        *state.phase.lock().unwrap() = UpdaterPhase::Downloaded;
+        assert!(!state.try_begin_download());
+        // Holding no lock, the summary must return without deadlocking.
+        assert_eq!(state.downloaded_summary(), None);
+        *state.phase.lock().unwrap() = UpdaterPhase::Checking;
+        assert!(state.try_begin_download());
     }
 }

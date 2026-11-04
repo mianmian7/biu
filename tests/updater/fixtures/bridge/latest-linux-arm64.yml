@@ -1,0 +1,15 @@
+version: 1.16.1-autolyrics.7
+files:
+  - url: Biu-1.16.1-autolyrics.7-linux-arm64.AppImage
+    sha512: uL9GyI54Kfe3c113P0v+t6XeZqxrqBt5nDP5qT2xq9sp53Asl1q87sVXTA/NNOSFjg3pFZlPCx4kHpG0slDvYg==
+    size: 102501215
+    blockMapSize: 108203
+  - url: Biu-1.16.1-autolyrics.7-linux-arm64.deb
+    sha512: 8An66oSoyA6432GInzC96Qw2ZMG4zvfJGbD+pn2uaoUahI309uKDmKTBGMt/S/AgTxcWXpZ5TilGEmtfgHZfTw==
+    size: 101561740
+  - url: Biu-1.16.1-autolyrics.7-linux-aarch64.rpm
+    sha512: FRl6gtiVmGxQWebKlXSEGm+Ej2au3NGOSI0ypcoWGzvCe+r00+7SjCOnTB36ttoYjq9h6hMU3MfRYj9I5mWpmQ==
+    size: 90886040
+path: Biu-1.16.1-autolyrics.7-linux-arm64.AppImage
+sha512: uL9GyI54Kfe3c113P0v+t6XeZqxrqBt5nDP5qT2xq9sp53Asl1q87sVXTA/NNOSFjg3pFZlPCx4kHpG0slDvYg==
+releaseDate: '2026-11-04T06:48:27.765Z'

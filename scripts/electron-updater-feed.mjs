@@ -97,8 +97,46 @@ export function parseUpdaterYaml(yamlText) {
 }
 
 /**
- * Generate `latest-mac.yml`, `latest.yml`, `latest-linux.yml`, `latest-linux-arm64.yml`,
- * and optionally `latest.json` from a directory of release assets.
+ * Electron clients on `.6` or older must pass through the bridge release, which exports
+ * their login before Tauri takes over. electron-updater 6.6.2's GitHubProvider returns
+ * `{ tag, ...yml }`, so a `tag:` line in the yml makes it download from the bridge release.
+ */
+export function bridgeFeedYaml(yamlText, bridgeTag) {
+  if (!bridgeTag) {
+    throw new Error("bridgeTag is required");
+  }
+  const kept = yamlText
+    .trimEnd()
+    .split(/\r?\n/)
+    .filter(line => !line.startsWith("tag: "));
+  return `${[...kept, `tag: ${bridgeTag}`].join("\n")}\n`;
+}
+
+/**
+ * Copy the bridge release's `latest*.yml` into `outDir`, each pointing at `bridgeTag`.
+ */
+export function writeBridgeFeeds({ bridgeDir, bridgeTag, outDir }) {
+  const generated = {};
+  for (const name of fs.readdirSync(bridgeDir)) {
+    if (!/^latest.*\.yml$/.test(name)) continue;
+    const outPath = path.join(outDir, name);
+    const text = fs.readFileSync(path.join(bridgeDir, name), "utf8");
+    fs.writeFileSync(outPath, bridgeFeedYaml(text, bridgeTag), "utf8");
+    generated[name] = outPath;
+  }
+  for (const required of ["latest.yml", "latest-mac.yml", "latest-linux.yml", "latest-linux-arm64.yml"]) {
+    if (!generated[required]) {
+      throw new Error(`bridge feed ${required} missing in ${bridgeDir}`);
+    }
+  }
+  return generated;
+}
+
+/**
+ * Generate the electron-updater feeds that the bridge release reads (channel `tauri`):
+ * `tauri-mac.yml`, `tauri.yml` (win x64), `tauri-arm64.yml` (win arm64),
+ * `tauri-linux.yml`, `tauri-linux-arm64.yml`, plus Tauri's own `latest.json`.
+ * NsisUpdater takes the first exe in a feed, so each Windows arch gets its own feed.
  */
 export function generateFeedsFromDir({
   dir,
@@ -108,6 +146,7 @@ export function generateFeedsFromDir({
   releaseNotes = "",
   repoUrl = "https://github.com/mianmian7/biu",
   tag = `v${version}`,
+  channel = "tauri",
 }) {
   fs.mkdirSync(outDir, { recursive: true });
   const entries = fs.readdirSync(dir);
@@ -137,34 +176,28 @@ export function generateFeedsFromDir({
       releaseDate,
       releaseNotes,
     });
-    const outPath = path.join(outDir, "latest-mac.yml");
+    const name = `${channel}-mac.yml`;
+    const outPath = path.join(outDir, name);
     fs.writeFileSync(outPath, yml, "utf8");
-    generated["latest-mac.yml"] = outPath;
+    generated[name] = outPath;
   }
 
-  // 2. Windows: latest.yml
-  const winFileNames = [
-    `Biu-${version}-win-setup-x64.exe`,
-    `Biu-${version}-win-setup-arm64.exe`,
-  ];
-  const winFiles = winFileNames
-    .map(findEntry)
-    .filter(Boolean)
-    .map(statAndHashFile);
-  if (winFiles.length > 0) {
-    const primaryWin =
-      winFiles.find(f => f.url === `Biu-${version}-win-setup-x64.exe`)?.url ||
-      winFiles[0].url;
+  // 2. Windows: one feed per arch
+  for (const [arch, name] of [
+    ["x64", `${channel}.yml`],
+    ["arm64", `${channel}-arm64.yml`],
+  ]) {
+    const exePath = findEntry(`Biu-${version}-win-setup-${arch}.exe`);
+    if (!exePath) continue;
     const yml = formatUpdaterYaml({
       version,
-      files: winFiles,
-      primaryFile: primaryWin,
+      files: [statAndHashFile(exePath)],
       releaseDate,
       releaseNotes,
     });
-    const outPath = path.join(outDir, "latest.yml");
+    const outPath = path.join(outDir, name);
     fs.writeFileSync(outPath, yml, "utf8");
-    generated["latest.yml"] = outPath;
+    generated[name] = outPath;
   }
 
   // 3. Linux x64: latest-linux.yml
@@ -184,9 +217,10 @@ export function generateFeedsFromDir({
       releaseDate,
       releaseNotes,
     });
-    const outPath = path.join(outDir, "latest-linux.yml");
+    const name = `${channel}-linux.yml`;
+    const outPath = path.join(outDir, name);
     fs.writeFileSync(outPath, yml, "utf8");
-    generated["latest-linux.yml"] = outPath;
+    generated[name] = outPath;
   }
 
   // 4. Linux arm64: latest-linux-arm64.yml
@@ -206,9 +240,10 @@ export function generateFeedsFromDir({
       releaseDate,
       releaseNotes,
     });
-    const outPath = path.join(outDir, "latest-linux-arm64.yml");
+    const name = `${channel}-linux-arm64.yml`;
+    const outPath = path.join(outDir, name);
     fs.writeFileSync(outPath, yml, "utf8");
-    generated["latest-linux-arm64.yml"] = outPath;
+    generated[name] = outPath;
   }
 
   // 5. Tauri updater: latest.json (when .sig files are present)
@@ -288,6 +323,10 @@ function parseCliArgs(argv) {
       args.repoUrl = argv[++i];
     } else if (arg === "--tag" && argv[i + 1]) {
       args.tag = argv[++i];
+    } else if (arg === "--bridge-dir" && argv[i + 1]) {
+      args.bridgeDir = argv[++i];
+    } else if (arg === "--bridge-tag" && argv[i + 1]) {
+      args.bridgeTag = argv[++i];
     }
   }
   return args;
@@ -297,10 +336,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const opts = parseCliArgs(process.argv.slice(2));
   if (!opts.dir || !opts.version) {
     console.error(
-      "Usage: node scripts/electron-updater-feed.mjs --dir <artifacts-dir> --version <semver> [--out-dir <dir>] [--release-date <ISO>] [--notes <text>] [--tag <vX.Y.Z>]",
+      "Usage: node scripts/electron-updater-feed.mjs --dir <artifacts-dir> --version <semver> [--out-dir <dir>] [--release-date <ISO>] [--notes <text>] [--tag <vX.Y.Z>] [--bridge-dir <dir> --bridge-tag <tag>]",
     );
     process.exit(1);
   }
   const generated = generateFeedsFromDir(opts);
+  if (opts.bridgeDir) {
+    Object.assign(
+      generated,
+      writeBridgeFeeds({ bridgeDir: opts.bridgeDir, bridgeTag: opts.bridgeTag, outDir: opts.outDir ?? opts.dir }),
+    );
+  }
   console.log("Generated feeds:", Object.keys(generated));
 }

@@ -18,6 +18,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check tag matches app versions
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cargo=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -n 1)
+          echo "tag=$TAG package.json=$pkg tauri.conf.json=$conf Cargo.toml=$cargo"
+          for v in "$pkg" "$conf" "$cargo"; do
+            [ "v$v" = "$TAG" ] || { echo "::error::version $v does not match tag $TAG"; exit 1; }
+          done
+
       - name: Ensure draft release exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -207,6 +222,8 @@ jobs:
     name: Publish Release
     runs-on: ubuntu-24.04
     needs: build
+    env:
+      BRIDGE_TAG: v1.16.1-autolyrics.7
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -226,18 +243,35 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Generate Tauri latest.json and electron-updater latest*.yml feeds
+      # Electron clients read latest*.yml: they are sent to the bridge release, which exports
+      # their login and then reads tauri*.yml. See docs/plans/tauri-lean.md (第 4 步审查修复).
+      - name: Download bridge release feeds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p bridge-feeds
+          gh release download "$BRIDGE_TAG" --repo "$REPO" --pattern 'latest*.yml' --dir bridge-feeds
+          ls -l bridge-feeds/
+
+      - name: Generate Tauri latest.json, tauri*.yml and bridge latest*.yml feeds
         env:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
+          [ "v$VERSION" = "$TAG" ] || { echo "::error::version $VERSION does not match tag $TAG"; exit 1; }
           node scripts/electron-updater-feed.mjs \
             --dir release-assets \
             --out-dir release-assets \
             --version "$VERSION" \
             --tag "$TAG" \
-            --repo-url "https://github.com/${REPO}"
+            --repo-url "https://github.com/${REPO}" \
+            --bridge-dir bridge-feeds \
+            --bridge-tag "$BRIDGE_TAG"
+          grep -q "^version: $VERSION$" release-assets/tauri-mac.yml
+          grep -q "\"version\": \"$VERSION\"" release-assets/latest.json
+          grep -q "^tag: $BRIDGE_TAG$" release-assets/latest-mac.yml
           ls -lh release-assets/
 
       - name: Upload assets to draft release

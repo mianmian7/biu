@@ -1,6 +1,6 @@
 {
   "name": "biu",
-  "version": "1.16.1-autolyrics.6",
+  "version": "2.0.0",
   "private": true,
   "engines": {
     "node": "22.17.1"
@@ -94,6 +94,7 @@
     "@types/spark-md5": "^3.0.5",
     "@vitejs/plugin-react": "^5.1.1",
     "changelogen": "^0.6.2",
+    "electron-updater": "6.6.2",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
     "eslint-import-resolver-typescript": "^4.4.4",

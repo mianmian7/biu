@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  bridgeFeedYaml,
   formatUpdaterYaml,
   generateFeedsFromDir,
   parseUpdaterYaml,
@@ -101,7 +102,7 @@ describe("electron-updater-feed generator", () => {
     expect(parsed.files).toHaveLength(4);
   });
 
-  it("generates all 4 electron-updater YAML files and latest.json from an artifact directory", () => {
+  it("generates the tauri*.yml feeds and latest.json from an artifact directory", () => {
     const dir = makeTempDir();
     const version = "1.16.2";
     const assets: Record<string, string> = {
@@ -138,21 +139,21 @@ describe("electron-updater-feed generator", () => {
     });
 
     expect(Object.keys(generated).sort()).toEqual([
-      "latest-linux-arm64.yml",
-      "latest-linux.yml",
-      "latest-mac.yml",
       "latest.json",
-      "latest.yml",
+      "tauri-arm64.yml",
+      "tauri-linux-arm64.yml",
+      "tauri-linux.yml",
+      "tauri-mac.yml",
+      "tauri.yml",
     ]);
 
-    const winYml = parseUpdaterYaml(fs.readFileSync(generated["latest.yml"], "utf8"));
-    expect(winYml.path).toBe(`Biu-${version}-win-setup-x64.exe`);
-    expect(winYml.files.map((f: { url: string }) => f.url)).toEqual([
-      `Biu-${version}-win-setup-x64.exe`,
-      `Biu-${version}-win-setup-arm64.exe`,
-    ]);
+    // NsisUpdater takes the first exe, so each Windows arch has its own feed.
+    const winYml = parseUpdaterYaml(fs.readFileSync(generated["tauri.yml"], "utf8"));
+    expect(winYml.files.map((f: { url: string }) => f.url)).toEqual([`Biu-${version}-win-setup-x64.exe`]);
+    const winArmYml = parseUpdaterYaml(fs.readFileSync(generated["tauri-arm64.yml"], "utf8"));
+    expect(winArmYml.files.map((f: { url: string }) => f.url)).toEqual([`Biu-${version}-win-setup-arm64.exe`]);
 
-    const linuxArmYml = parseUpdaterYaml(fs.readFileSync(generated["latest-linux-arm64.yml"], "utf8"));
+    const linuxArmYml = parseUpdaterYaml(fs.readFileSync(generated["tauri-linux-arm64.yml"], "utf8"));
     expect(linuxArmYml.path).toBe(`Biu-${version}-linux-arm64.AppImage`);
     expect(linuxArmYml.files.map((f: { url: string }) => f.url)).toEqual([
       `Biu-${version}-linux-arm64.AppImage`,
@@ -179,5 +180,12 @@ describe("electron-updater-feed generator", () => {
       signature: "sig-linux-arm64",
       url: `https://github.com/mianmian7/biu/releases/download/v${version}/Biu-${version}-linux-arm64.AppImage`,
     });
+  });
+
+  it("points bridge feeds at the bridge tag and replaces an existing tag line", () => {
+    const yml = "version: 1.16.1-autolyrics.7\ntag: old\npath: a.zip\n";
+    expect(bridgeFeedYaml(yml, "v1.16.1-autolyrics.7")).toBe(
+      "version: 1.16.1-autolyrics.7\npath: a.zip\ntag: v1.16.1-autolyrics.7\n",
+    );
   });
 });
