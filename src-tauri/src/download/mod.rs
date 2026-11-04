@@ -446,6 +446,51 @@ pub async fn get_dash_url(
     Ok(body)
 }
 
+const MAX_FILENAME_STEM_BYTES: usize = 200;
+const FFMPEG_CONVERT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const MAX_FFMPEG_STDERR_BYTES: usize = 16 * 1024;
+const CHUNK_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn is_windows_reserved_name(name: &str) -> bool {
+    let base = name.split('.').next().unwrap_or(name).trim();
+    matches!(
+        base.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+fn truncate_utf8_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 pub fn sanitize_filename(input: &str) -> String {
     if input.is_empty() {
         return String::new();
@@ -487,10 +532,20 @@ pub fn sanitize_filename(input: &str) -> String {
         .collect();
 
     let collapsed = replaced.split_whitespace().collect::<Vec<_>>().join(" ");
-    let trimmed = collapsed.trim().trim_end_matches('.');
-    trimmed.chars().take(255).collect()
+    let trimmed = collapsed.trim().trim_end_matches(['.', ' ']);
+    let truncated =
+        truncate_utf8_bytes(trimmed, MAX_FILENAME_STEM_BYTES).trim_end_matches(['.', ' ']);
+    if truncated.is_empty() {
+        return String::new();
+    }
+    if is_windows_reserved_name(truncated) {
+        format!("_{truncated}")
+    } else {
+        truncated.to_string()
+    }
 }
 
+#[cfg(test)]
 pub fn get_available_output_path(output_path: &Path) -> Result<PathBuf, String> {
     if !output_path.exists() {
         return Ok(output_path.to_path_buf());
@@ -515,20 +570,139 @@ pub fn get_available_output_path(output_path: &Path) -> Result<PathBuf, String> 
     Err("Cannot find available output path".to_string())
 }
 
-pub fn convert_with_ffmpeg(
+pub fn commit_temp_output_no_overwrite(
+    temp_output: &Path,
+    desired_output: &Path,
+) -> Result<PathBuf, String> {
+    let parent = desired_output.parent().unwrap_or_else(|| Path::new("."));
+    let stem = desired_output
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download");
+    let ext = desired_output
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+
+    for i in 0..10000usize {
+        let candidate = if i == 0 {
+            desired_output.to_path_buf()
+        } else {
+            parent.join(format!("{stem} ({i}){ext}"))
+        };
+
+        #[cfg(unix)]
+        {
+            match fs::hard_link(temp_output, &candidate) {
+                Ok(()) => {
+                    let _ = fs::remove_file(temp_output);
+                    return Ok(candidate);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => {
+                    // Fallback if hard_link is unsupported on this filesystem
+                }
+            }
+        }
+
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(placeholder) => {
+                drop(placeholder);
+                if let Err(e) = fs::rename(temp_output, &candidate) {
+                    if let Err(copy_err) = fs::copy(temp_output, &candidate) {
+                        let _ = fs::remove_file(&candidate);
+                        return Err(format!("Failed to commit output ({e}): {copy_err}"));
+                    }
+                    let _ = fs::remove_file(temp_output);
+                }
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("Cannot find available output path".to_string())
+}
+
+pub fn build_task_temp_output_path(desired_output: &Path, task_id: &str) -> PathBuf {
+    let parent = desired_output.parent().unwrap_or_else(|| Path::new("."));
+    let stem = desired_output
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download");
+    let ext = desired_output
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let safe_id: String = task_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    parent.join(format!(".{stem}.{safe_id}.part{ext}"))
+}
+
+fn spawn_pipe_tail_reader<R: Read + Send + 'static>(
+    pipe: Option<R>,
+    max_bytes: usize,
+) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let Some(mut reader) = pipe else {
+            return String::new();
+        };
+        let mut tail = std::collections::VecDeque::<u8>::with_capacity(max_bytes);
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            let slice = &buf[..n];
+            if slice.len() >= max_bytes {
+                tail.clear();
+                tail.extend(slice[slice.len() - max_bytes..].iter().copied());
+            } else {
+                let overflow = (tail.len() + slice.len()).saturating_sub(max_bytes);
+                for _ in 0..overflow {
+                    tail.pop_front();
+                }
+                tail.extend(slice.iter().copied());
+            }
+        }
+        let bytes: Vec<u8> = tail.into_iter().collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn convert_with_ffmpeg_for_task(
     ffmpeg_path: &Path,
     output_file_type: &str,
     audio_temp_path: Option<&Path>,
     video_temp_path: Option<&Path>,
     output_path: &Path,
+    task_id: &str,
     cancelled: &AtomicBool,
+    timeout: Duration,
 ) -> Result<PathBuf, String> {
     if cancelled.load(Ordering::SeqCst) {
         return Err("Aborted".to_string());
     }
-    let final_output = get_available_output_path(output_path)?;
+    let temp_output = build_task_temp_output_path(output_path, task_id);
+    let _ = fs::remove_file(&temp_output);
+
     let mut args: Vec<String> = vec![
-        "-y".to_string(),
+        "-n".to_string(),
         "-hide_banner".to_string(),
         "-loglevel".to_string(),
         "error".to_string(),
@@ -559,12 +733,12 @@ pub fn convert_with_ffmpeg(
         args.push(a_path.to_string_lossy().into_owned());
         args.extend(["-c:a".to_string(), "copy".to_string()]);
     }
-    args.push(final_output.to_string_lossy().into_owned());
+    args.push(temp_output.to_string_lossy().into_owned());
 
     let mut cmd = Command::new(ffmpeg_path);
     cmd.args(&args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
     {
@@ -575,23 +749,46 @@ pub fn convert_with_ffmpeg(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
+
+    let stdout_handle = spawn_pipe_tail_reader(child.stdout.take(), 4096);
+    let stderr_handle = spawn_pipe_tail_reader(child.stderr.take(), MAX_FFMPEG_STDERR_BYTES);
+    let start = Instant::now();
+
     loop {
         if cancelled.load(Ordering::SeqCst) {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = fs::remove_file(&final_output);
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+            let _ = fs::remove_file(&temp_output);
             return Err("Aborted".to_string());
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+            let _ = fs::remove_file(&temp_output);
+            return Err("ffmpeg convert timed out".to_string());
         }
         match child.try_wait() {
             Ok(Some(status)) => {
+                let _ = stdout_handle.join();
+                let stderr_str = stderr_handle.join().unwrap_or_default();
                 if status.success() {
-                    return Ok(final_output);
+                    if cancelled.load(Ordering::SeqCst) {
+                        let _ = fs::remove_file(&temp_output);
+                        return Err("Aborted".to_string());
+                    }
+                    match commit_temp_output_no_overwrite(&temp_output, output_path) {
+                        Ok(final_output) => return Ok(final_output),
+                        Err(e) => {
+                            let _ = fs::remove_file(&temp_output);
+                            return Err(e);
+                        }
+                    }
                 }
-                let mut stderr_str = String::new();
-                if let Some(mut err_pipe) = child.stderr.take() {
-                    let _ = err_pipe.read_to_string(&mut stderr_str);
-                }
-                let _ = fs::remove_file(&final_output);
+                let _ = fs::remove_file(&temp_output);
                 return Err(format!("ffmpeg exited {status}: {stderr_str}"));
             }
             Ok(None) => {
@@ -599,6 +796,10 @@ pub fn convert_with_ffmpeg(
             }
             Err(e) => {
                 let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
+                let _ = fs::remove_file(&temp_output);
                 return Err(e.to_string());
             }
         }
@@ -867,21 +1068,54 @@ fn dash_item_url(item: &Value) -> Option<String> {
     None
 }
 
+pub fn parse_content_range_start(header_val: &str) -> Option<(u64, u64)> {
+    let s = header_val.trim();
+    let rest = s
+        .strip_prefix("bytes")
+        .or_else(|| s.strip_prefix("BYTES"))
+        .or_else(|| {
+            if s.len() >= 5 && s[..5].eq_ignore_ascii_case("bytes") {
+                Some(&s[5..])
+            } else {
+                None
+            }
+        })?
+        .trim();
+    let range_part = rest.split('/').next()?.trim();
+    let (start_str, end_str) = range_part.split_once('-')?;
+    let start = start_str.trim().parse::<u64>().ok()?;
+    let end = end_str.trim().parse::<u64>().ok()?;
+    if start <= end {
+        Some((start, end))
+    } else {
+        None
+    }
+}
+
+pub struct WorkerControl {
+    pub stop_flag: Arc<AtomicBool>,
+    pub stop_notify: Arc<tokio::sync::Notify>,
+    pub done_rx: tokio::sync::watch::Receiver<bool>,
+}
+
 pub struct DownloadManager {
     pub tasks: RwLock<Vec<Arc<Mutex<FullMediaDownloadTask>>>>,
-    pub cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    pub workers: Mutex<HashMap<String, WorkerControl>>,
+    pub generations: Mutex<HashMap<String, u64>>,
     pub semaphore: Arc<Semaphore>,
     pub pending_updates: Mutex<HashMap<String, MediaDownloadTask>>,
     pub last_flush: Mutex<Instant>,
     pub flush_scheduled: AtomicBool,
     pub store_path: PathBuf,
+    pub chunk_idle_timeout: RwLock<Duration>,
 }
 
 impl DownloadManager {
     pub fn new(store_path: PathBuf) -> Arc<Self> {
         let mgr = Arc::new(Self {
             tasks: RwLock::new(Vec::new()),
-            cancel_flags: Mutex::new(HashMap::new()),
+            workers: Mutex::new(HashMap::new()),
+            generations: Mutex::new(HashMap::new()),
             semaphore: Arc::new(Semaphore::new(TASK_CONCURRENCY)),
             pending_updates: Mutex::new(HashMap::new()),
             last_flush: Mutex::new(
@@ -891,9 +1125,50 @@ impl DownloadManager {
             ),
             flush_scheduled: AtomicBool::new(false),
             store_path,
+            chunk_idle_timeout: RwLock::new(CHUNK_READ_IDLE_TIMEOUT),
         });
         mgr.restore_from_disk();
         mgr
+    }
+
+    #[cfg(test)]
+    pub fn set_chunk_idle_timeout(&self, timeout: Duration) {
+        *self.chunk_idle_timeout.write().unwrap() = timeout;
+    }
+
+    pub fn next_generation(&self, id: &str) -> u64 {
+        let mut gens = self.generations.lock().unwrap();
+        let entry = gens.entry(id.to_string()).or_insert(0);
+        *entry += 1;
+        *entry
+    }
+
+    pub fn is_current_generation(&self, id: &str, generation: u64) -> bool {
+        self.generations
+            .lock()
+            .unwrap()
+            .get(id)
+            .copied()
+            .unwrap_or(0)
+            == generation
+    }
+
+    async fn stop_and_wait_worker(&self, id: &str) -> u64 {
+        let (gen, prev_worker) = {
+            let gen = self.next_generation(id);
+            let prev = self.workers.lock().unwrap().remove(id);
+            (gen, prev)
+        };
+        if let Some(mut w) = prev_worker {
+            w.stop_flag.store(true, Ordering::SeqCst);
+            w.stop_notify.notify_waiters();
+            while !*w.done_rx.borrow_and_update() {
+                if w.done_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
+        gen
     }
 
     fn restore_from_disk(&self) {
@@ -961,7 +1236,10 @@ impl DownloadManager {
         lock.iter().find(|t| t.lock().unwrap().id == id).cloned()
     }
 
-    pub fn broadcast_full<R: Runtime>(&self, app: &AppHandle<R>) {
+    pub fn broadcast_full<R: Runtime>(&self, app: Option<&AppHandle<R>>) {
+        let Some(app) = app else {
+            return;
+        };
         let data = self.get_task_list();
         let _ = app.emit(
             "download:sync",
@@ -972,12 +1250,28 @@ impl DownloadManager {
         );
     }
 
+    pub fn emit_task_update_if_gen<R: Runtime>(
+        self: &Arc<Self>,
+        app: Option<&AppHandle<R>>,
+        task: MediaDownloadTask,
+        generation: u64,
+        force_now: bool,
+    ) {
+        if !self.is_current_generation(&task.id, generation) {
+            return;
+        }
+        self.emit_task_update(app, task, force_now);
+    }
+
     pub fn emit_task_update<R: Runtime>(
         self: &Arc<Self>,
-        app: &AppHandle<R>,
+        app: Option<&AppHandle<R>>,
         task: MediaDownloadTask,
         force_now: bool,
     ) {
+        let Some(app) = app else {
+            return;
+        };
         self.pending_updates
             .lock()
             .unwrap()
@@ -1025,9 +1319,9 @@ impl DownloadManager {
         );
     }
 
-    fn resolve_save_dir<R: Runtime>(&self, app: &AppHandle<R>, bili: &BiliState) -> String {
-        let configured = read_store_object(app, "app-settings")
-            .ok()
+    fn resolve_save_dir<R: Runtime>(&self, app: Option<&AppHandle<R>>, bili: &BiliState) -> String {
+        let configured = app
+            .and_then(|a| read_store_object(a, "app-settings").ok())
             .and_then(|v| {
                 v.get("appSettings")?
                     .get("downloadPath")?
@@ -1051,6 +1345,15 @@ impl DownloadManager {
         bili: Arc<BiliState>,
         info: MediaDownloadInfo,
     ) {
+        self.add_task_opt(Some(app), bili, info);
+    }
+
+    pub fn add_task_opt<R: Runtime>(
+        self: &Arc<Self>,
+        app: Option<&AppHandle<R>>,
+        bili: Arc<BiliState>,
+        info: MediaDownloadInfo,
+    ) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let title = if info.title.trim().is_empty() {
             format!("biu下载-{id}")
@@ -1106,52 +1409,85 @@ impl DownloadManager {
         };
 
         let task_arc = Arc::new(Mutex::new(full));
+        let gen = self.next_generation(&id);
         self.tasks.write().unwrap().push(task_arc.clone());
         self.save_to_disk();
         self.broadcast_full(app);
-        self.spawn_worker(app.clone(), bili, task_arc, false);
+        self.spawn_worker_with_gen(app.cloned(), bili, task_arc, false, gen);
+        id
     }
 
-    fn spawn_worker<R: Runtime>(
+    pub fn spawn_worker_with_gen<R: Runtime>(
         self: &Arc<Self>,
-        app: AppHandle<R>,
+        app: Option<AppHandle<R>>,
         bili: Arc<BiliState>,
         task_arc: Arc<Mutex<FullMediaDownloadTask>>,
         is_resume: bool,
+        generation: u64,
     ) {
         let id = task_arc.lock().unwrap().id.clone();
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        if let Some(prev) = self
-            .cancel_flags
-            .lock()
-            .unwrap()
-            .insert(id.clone(), cancel_flag.clone())
-        {
-            prev.store(true, Ordering::SeqCst);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_notify = Arc::new(tokio::sync::Notify::new());
+        let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+
+        if let Some(prev) = self.workers.lock().unwrap().insert(
+            id.clone(),
+            WorkerControl {
+                stop_flag: stop_flag.clone(),
+                stop_notify: stop_notify.clone(),
+                done_rx,
+            },
+        ) {
+            prev.stop_flag.store(true, Ordering::SeqCst);
+            prev.stop_notify.notify_waiters();
         }
 
         let mgr = self.clone();
+        let id_clone = id.clone();
         tauri::async_runtime::spawn(async move {
-            let permit = mgr.semaphore.clone().acquire_owned().await;
+            let permit = tokio::select! {
+                p = mgr.semaphore.clone().acquire_owned() => p,
+                _ = stop_notify.notified() => {
+                    let _ = done_tx.send(true);
+                    return;
+                }
+            };
             let Ok(_permit) = permit else {
+                let _ = done_tx.send(true);
                 return;
             };
-            if cancel_flag.load(Ordering::SeqCst) {
+            if stop_flag.load(Ordering::SeqCst) || !mgr.is_current_generation(&id_clone, generation)
+            {
+                let _ = done_tx.send(true);
                 return;
             }
-            mgr.run_task_pipeline(&app, &bili, &task_arc, &cancel_flag, is_resume)
-                .await;
-            mgr.save_to_disk();
+            mgr.run_task_pipeline(
+                app.as_ref(),
+                &bili,
+                &task_arc,
+                &stop_flag,
+                &stop_notify,
+                is_resume,
+                generation,
+            )
+            .await;
+            if mgr.is_current_generation(&id_clone, generation) {
+                mgr.save_to_disk();
+            }
+            let _ = done_tx.send(true);
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_task_pipeline<R: Runtime>(
         self: &Arc<Self>,
-        app: &AppHandle<R>,
+        app: Option<&AppHandle<R>>,
         bili: &Arc<BiliState>,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
-        cancel_flag: &Arc<AtomicBool>,
+        stop_flag: &Arc<AtomicBool>,
+        stop_notify: &Arc<tokio::sync::Notify>,
         is_resume: bool,
+        generation: u64,
     ) {
         // Resolve video pages if bvid is set without cid
         let (bvid_opt, has_cid, output_file_type, task_id) = {
@@ -1164,8 +1500,21 @@ impl DownloadManager {
             )
         };
 
+        if !self.is_current_generation(&task_id, generation) || stop_flag.load(Ordering::SeqCst) {
+            return;
+        }
+
         if let Some(bvid) = bvid_opt.filter(|b| !b.is_empty() && !has_cid) {
-            match get_web_interface_view(bili, &bvid).await {
+            let view_fut = get_web_interface_view(bili, &bvid);
+            let view_res = tokio::select! {
+                r = view_fut => r,
+                _ = stop_notify.notified() => return,
+            };
+            if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation)
+            {
+                return;
+            }
+            match view_res {
                 Ok(view_res) => {
                     let pages = view_res
                         .get("data")
@@ -1174,7 +1523,12 @@ impl DownloadManager {
                         .cloned()
                         .unwrap_or_default();
                     if pages.is_empty() {
-                        self.fail_task(app, task_arc, "无法获取视频分集信息".to_string());
+                        self.fail_task(
+                            app,
+                            task_arc,
+                            generation,
+                            "无法获取视频分集信息".to_string(),
+                        );
                         return;
                     } else if pages.len() == 1 {
                         if let Some(cid_val) = pages[0].get("cid").cloned() {
@@ -1192,7 +1546,7 @@ impl DownloadManager {
                                 .get("first_frame")
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string());
-                            self.add_task(
+                            self.add_task_opt(
                                 app,
                                 bili.clone(),
                                 MediaDownloadInfo {
@@ -1205,15 +1559,19 @@ impl DownloadManager {
                                 },
                             );
                         }
-                        self.cancel_task(app, &task_id).await;
+                        self.remove_task_self(app, &task_id, generation).await;
                         return;
                     }
                 }
                 Err(e) => {
-                    self.fail_task(app, task_arc, e);
+                    self.fail_task(app, task_arc, generation, e);
                     return;
                 }
             }
+        }
+
+        if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation) {
+            return;
         }
 
         let current_status = task_arc.lock().unwrap().status.clone();
@@ -1230,87 +1588,115 @@ impl DownloadManager {
         if start_from_stage == "download" {
             {
                 let mut t = task_arc.lock().unwrap();
+                if !self.is_current_generation(&t.id, generation)
+                    || stop_flag.load(Ordering::SeqCst)
+                {
+                    return;
+                }
                 t.status = "downloading".to_string();
                 let pub_t = t.to_public_task();
                 drop(t);
-                self.emit_task_update(app, pub_t, true);
+                self.emit_task_update_if_gen(app, pub_t, generation, true);
             }
 
-            if let Err(err) = self.stage_download(app, bili, task_arc, cancel_flag).await {
-                if !cancel_flag.load(Ordering::SeqCst) {
-                    self.fail_task(app, task_arc, err);
+            if let Err(err) = self
+                .stage_download(app, bili, task_arc, stop_flag, stop_notify, generation)
+                .await
+            {
+                if !stop_flag.load(Ordering::SeqCst)
+                    && self.is_current_generation(&task_id, generation)
+                {
+                    self.fail_task(app, task_arc, generation, err);
                 }
                 return;
             }
-            if cancel_flag.load(Ordering::SeqCst) {
+            if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation)
+            {
                 return;
             }
         }
 
         if start_from_stage == "download" || start_from_stage == "merge" {
-            if let Err(err) = self.stage_merge(app, task_arc, cancel_flag).await {
-                if !cancel_flag.load(Ordering::SeqCst) {
-                    self.fail_task(app, task_arc, err);
+            if let Err(err) = self.stage_merge(app, task_arc, stop_flag, generation).await {
+                if !stop_flag.load(Ordering::SeqCst)
+                    && self.is_current_generation(&task_id, generation)
+                {
+                    self.fail_task(app, task_arc, generation, err);
                 }
                 return;
             }
-            if cancel_flag.load(Ordering::SeqCst) {
+            if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation)
+            {
                 return;
             }
         }
 
-        if let Err(err) = self.stage_convert(app, bili, task_arc, cancel_flag).await {
-            if !cancel_flag.load(Ordering::SeqCst) {
-                self.fail_task(app, task_arc, err);
+        if let Err(err) = self
+            .stage_convert(app, bili, task_arc, stop_flag, generation)
+            .await
+        {
+            if !stop_flag.load(Ordering::SeqCst) && self.is_current_generation(&task_id, generation)
+            {
+                self.fail_task(app, task_arc, generation, err);
             }
             return;
         }
-        if cancel_flag.load(Ordering::SeqCst) {
+        if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation) {
             return;
         }
 
         let pub_t = {
             let mut t = task_arc.lock().unwrap();
+            if !self.is_current_generation(&t.id, generation) || stop_flag.load(Ordering::SeqCst) {
+                return;
+            }
             t.status = "completed".to_string();
             t.convert_progress = 100;
             t.to_public_task()
         };
-        self.emit_task_update(app, pub_t, true);
+        self.emit_task_update_if_gen(app, pub_t, generation, true);
     }
 
     async fn stage_download<R: Runtime>(
         self: &Arc<Self>,
-        app: &AppHandle<R>,
+        app: Option<&AppHandle<R>>,
         bili: &Arc<BiliState>,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
-        cancel_flag: &Arc<AtomicBool>,
+        stop_flag: &Arc<AtomicBool>,
+        stop_notify: &Arc<tokio::sync::Notify>,
+        generation: u64,
     ) -> Result<(), String> {
         // 1. Check if URLs need refreshing
-        let need_urls = {
+        let (need_urls, task_id) = {
             let t = task_arc.lock().unwrap();
-            if t.output_file_type == "audio" {
+            let need = if t.output_file_type == "audio" {
                 !is_url_valid(t.audio_url.as_deref())
             } else {
                 !is_url_valid(t.video_url.as_deref())
                     || (t.audio_codecs.is_some() && !is_url_valid(t.audio_url.as_deref()))
-            }
+            };
+            (need, t.id.clone())
         };
 
         if need_urls {
-            self.fetch_download_urls(app, bili, task_arc).await?;
+            tokio::select! {
+                res = self.fetch_download_urls(app, bili, task_arc) => res?,
+                _ = stop_notify.notified() => return Ok(()),
+            }
         }
-        if cancel_flag.load(Ordering::SeqCst) {
+        if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation) {
             return Ok(());
         }
 
         // 2. Fetch Content-Length for audio and/or video
-        let (output_file_type, audio_url, video_url, id) = {
+        let (output_file_type, audio_url, video_url, id, temp_dir_str) = {
             let t = task_arc.lock().unwrap();
             (
                 t.output_file_type.clone(),
                 t.audio_url.clone(),
                 t.video_url.clone(),
                 t.id.clone(),
+                t.temp_dir.clone(),
             )
         };
 
@@ -1319,7 +1705,13 @@ impl DownloadManager {
         let mut video_total_bytes = 0u64;
 
         if let Some(a_url) = audio_url.as_deref().filter(|s| !s.is_empty()) {
-            let len = self.get_content_length(bili, a_url).await;
+            let len = tokio::select! {
+                l = self.get_content_length(bili, a_url) => l,
+                _ = stop_notify.notified() => return Ok(()),
+            };
+            if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&id, generation) {
+                return Ok(());
+            }
             if len == 0 {
                 return Err("can't get audio file size".to_string());
             }
@@ -1331,7 +1723,13 @@ impl DownloadManager {
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| "can't get video url".to_string())?;
-            let len = self.get_content_length(bili, v_url).await;
+            let len = tokio::select! {
+                l = self.get_content_length(bili, v_url) => l,
+                _ = stop_notify.notified() => return Ok(()),
+            };
+            if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&id, generation) {
+                return Ok(());
+            }
             if len == 0 {
                 return Err("can't get video file size".to_string());
             }
@@ -1339,7 +1737,11 @@ impl DownloadManager {
             total_bytes += len;
         }
 
-        let temp_dir_path = std::env::temp_dir().join("biu-temp-downloader").join(&id);
+        let temp_dir_path = if temp_dir_str.trim().is_empty() {
+            std::env::temp_dir().join("biu-temp-downloader").join(&id)
+        } else {
+            PathBuf::from(&temp_dir_str)
+        };
         fs::create_dir_all(&temp_dir_path).map_err(|e| e.to_string())?;
 
         let mut chunks = Vec::new();
@@ -1352,6 +1754,9 @@ impl DownloadManager {
 
         {
             let mut t = task_arc.lock().unwrap();
+            if !self.is_current_generation(&t.id, generation) || stop_flag.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             t.total_bytes = total_bytes;
             t.audio_total_bytes = audio_total_bytes;
             t.video_total_bytes = video_total_bytes;
@@ -1378,6 +1783,8 @@ impl DownloadManager {
 
         // 3. Check existing chunk files & queue pending chunks (concurrency = 5)
         let chunk_sem = Arc::new(Semaphore::new(CHUNK_CONCURRENCY));
+        let chunk_abort_flag = Arc::new(AtomicBool::new(false));
+        let chunk_abort_notify = Arc::new(tokio::sync::Notify::new());
         let mut join_handles = Vec::new();
 
         for (idx, chunk) in chunks.iter().enumerate() {
@@ -1402,7 +1809,7 @@ impl DownloadManager {
                     }
                     t.to_public_task()
                 };
-                self.emit_task_update(app, pub_t, false);
+                self.emit_task_update_if_gen(app, pub_t, generation, false);
                 continue;
             }
 
@@ -1423,48 +1830,79 @@ impl DownloadManager {
 
             let sem = chunk_sem.clone();
             let bili_clone = bili.clone();
-            let app_clone = app.clone();
+            let app_clone = app.cloned();
             let mgr_clone = self.clone();
             let task_clone = task_arc.clone();
-            let cancel_clone = cancel_flag.clone();
+            let stop_clone = stop_flag.clone();
+            let stop_notify_clone = stop_notify.clone();
+            let abort_clone = chunk_abort_flag.clone();
+            let abort_notify_clone = chunk_abort_notify.clone();
             let chunk_clone = chunk.clone();
 
             let handle = tauri::async_runtime::spawn(async move {
-                let Ok(_permit) = sem.acquire_owned().await else {
+                let permit = tokio::select! {
+                    p = sem.acquire_owned() => p,
+                    _ = stop_notify_clone.notified() => return Ok(()),
+                    _ = abort_notify_clone.notified() => return Ok(()),
+                };
+                let Ok(_permit) = permit else {
                     return Err("Semaphore closed".to_string());
                 };
-                if cancel_clone.load(Ordering::SeqCst) {
+                if stop_clone.load(Ordering::SeqCst) || abort_clone.load(Ordering::SeqCst) {
                     return Ok(());
                 }
-                mgr_clone
+                let res = mgr_clone
                     .download_single_chunk(
-                        &app_clone,
+                        app_clone.as_ref(),
                         &bili_clone,
                         &task_clone,
-                        &cancel_clone,
+                        &stop_clone,
+                        &stop_notify_clone,
+                        &abort_clone,
+                        &abort_notify_clone,
+                        generation,
                         idx,
                         &chunk_clone,
                         &url,
                         &chunk_path,
                         current_size,
                     )
-                    .await
+                    .await;
+                if res.is_err() {
+                    abort_clone.store(true, Ordering::SeqCst);
+                    abort_notify_clone.notify_waiters();
+                }
+                res
             });
             join_handles.push(handle);
         }
 
+        let mut first_err: Option<String> = None;
         for h in join_handles {
             match h.await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    cancel_flag.store(true, Ordering::SeqCst);
-                    return Err(e);
+                    chunk_abort_flag.store(true, Ordering::SeqCst);
+                    chunk_abort_notify.notify_waiters();
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
                 }
                 Err(e) => {
-                    cancel_flag.store(true, Ordering::SeqCst);
-                    return Err(e.to_string());
+                    chunk_abort_flag.store(true, Ordering::SeqCst);
+                    chunk_abort_notify.notify_waiters();
+                    if first_err.is_none() {
+                        first_err = Some(e.to_string());
+                    }
                 }
             }
+        }
+
+        if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&id, generation) {
+            return Ok(());
+        }
+        if let Some(err) = first_err {
+            return Err(err);
         }
 
         Ok(())
@@ -1473,75 +1911,197 @@ impl DownloadManager {
     #[allow(clippy::too_many_arguments)]
     async fn download_single_chunk<R: Runtime>(
         self: &Arc<Self>,
-        app: &AppHandle<R>,
+        app: Option<&AppHandle<R>>,
         bili: &BiliState,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
-        cancel_flag: &Arc<AtomicBool>,
+        stop_flag: &Arc<AtomicBool>,
+        stop_notify: &Arc<tokio::sync::Notify>,
+        chunk_abort_flag: &Arc<AtomicBool>,
+        chunk_abort_notify: &Arc<tokio::sync::Notify>,
+        generation: u64,
         chunk_idx: usize,
         chunk: &MediaDownloadChunk,
         url: &str,
         dest_path: &Path,
-        offset: u64,
+        initial_counted_offset: u64,
     ) -> Result<(), String> {
-        let range_header = format!("bytes={}-{}", chunk.start + offset, chunk.end);
+        let expected_chunk_len = chunk.end - chunk.start + 1;
+        let mut accounted_bytes = initial_counted_offset;
         let mut last_err = String::new();
+        let idle_timeout = *self.chunk_idle_timeout.read().unwrap();
 
         for attempt in 0..3 {
-            if cancel_flag.load(Ordering::SeqCst) {
+            if stop_flag.load(Ordering::SeqCst) || chunk_abort_flag.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            let resp_res = bili
+
+            let mut actual_offset = fs::metadata(dest_path).map(|m| m.len()).unwrap_or(0);
+            if actual_offset > expected_chunk_len {
+                let _ = fs::remove_file(dest_path);
+                actual_offset = 0;
+            }
+
+            // Reconcile task.downloaded_bytes with actual_offset on disk before starting this attempt
+            if actual_offset != accounted_bytes {
+                let mut t = task_arc.lock().unwrap();
+                if actual_offset > accounted_bytes {
+                    t.downloaded_bytes += actual_offset - accounted_bytes;
+                } else {
+                    t.downloaded_bytes = t
+                        .downloaded_bytes
+                        .saturating_sub(accounted_bytes - actual_offset);
+                }
+                accounted_bytes = actual_offset;
+            }
+
+            if actual_offset == expected_chunk_len {
+                let mut t = task_arc.lock().unwrap();
+                if let Some(c) = t.chunks.get_mut(chunk_idx) {
+                    c.done = true;
+                }
+                return Ok(());
+            }
+
+            let req_start = chunk.start + actual_offset;
+            let range_header = format!("bytes={req_start}-{}", chunk.end);
+
+            let send_fut = bili
                 .client()
                 .get(url)
                 .header(reqwest::header::ORIGIN, BILI_ORIGIN)
                 .header(reqwest::header::REFERER, BILI_ORIGIN)
                 .header(reqwest::header::USER_AGENT, USER_AGENT)
                 .header(reqwest::header::RANGE, &range_header)
-                .send()
-                .await;
+                .send();
 
-            let mut resp = match resp_res {
-                Ok(r) if r.status().is_success() || r.status().as_u16() == 206 => r,
-                Ok(r) => {
-                    last_err = format!("HTTP {}", r.status());
-                    if attempt < 2 {
-                        tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))).await;
-                    }
+            let resp_res = tokio::select! {
+                r = send_fut => r,
+                _ = stop_notify.notified() => return Ok(()),
+                _ = chunk_abort_notify.notified() => return Ok(()),
+                _ = tokio::time::sleep(idle_timeout) => {
+                    last_err = "request timed out".to_string();
                     continue;
                 }
+            };
+
+            if stop_flag.load(Ordering::SeqCst) || chunk_abort_flag.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+
+            let mut resp = match resp_res {
+                Ok(r) => r,
                 Err(e) => {
                     last_err = e.to_string();
                     if attempt < 2 {
-                        tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))).await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
+                            _ = stop_notify.notified() => return Ok(()),
+                            _ = chunk_abort_notify.notified() => return Ok(()),
+                        }
                     }
                     continue;
                 }
             };
 
+            let status_code = resp.status().as_u16();
+            if status_code != 206 {
+                if status_code == 200 {
+                    // Server ignored Range header; do not append full resource onto chunk
+                    last_err = "server returned 200 OK instead of 206 Partial Content".to_string();
+                } else {
+                    last_err = format!("HTTP {}", resp.status());
+                }
+                if attempt < 2 {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
+                        _ = stop_notify.notified() => return Ok(()),
+                        _ = chunk_abort_notify.notified() => return Ok(()),
+                    }
+                }
+                continue;
+            }
+
+            // Validate Content-Range start matches req_start
+            let cr_valid = resp
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_range_start)
+                .is_some_and(|(cr_start, cr_end)| cr_start == req_start && cr_end == chunk.end);
+
+            if !cr_valid {
+                let cr_raw = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("<missing>");
+                last_err = format!(
+                    "invalid Content-Range {cr_raw} (expected bytes {req_start}-{})",
+                    chunk.end
+                );
+                if attempt < 2 {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
+                        _ = stop_notify.notified() => return Ok(()),
+                        _ = chunk_abort_notify.notified() => return Ok(()),
+                    }
+                }
+                continue;
+            }
+
             let mut file_opts = tokio::fs::OpenOptions::new();
             file_opts.create(true).write(true);
-            if offset > 0 {
+            if actual_offset > 0 {
                 file_opts.append(true);
             } else {
                 file_opts.truncate(true);
             }
             let mut file = file_opts.open(dest_path).await.map_err(|e| e.to_string())?;
 
-            let mut bytes_in_attempt = 0u64;
             let mut stream_err = None;
+            let remaining_expected = expected_chunk_len - actual_offset;
+            let mut bytes_in_attempt = 0u64;
+
             loop {
-                if cancel_flag.load(Ordering::SeqCst) {
+                if stop_flag.load(Ordering::SeqCst) || chunk_abort_flag.load(Ordering::SeqCst) {
                     let _ = file.flush().await;
                     return Ok(());
                 }
-                match resp.chunk().await {
+
+                let next_chunk = tokio::select! {
+                    c = resp.chunk() => c,
+                    _ = stop_notify.notified() => {
+                        let _ = file.flush().await;
+                        return Ok(());
+                    }
+                    _ = chunk_abort_notify.notified() => {
+                        let _ = file.flush().await;
+                        return Ok(());
+                    }
+                    _ = tokio::time::sleep(idle_timeout) => {
+                        stream_err = Some("chunk read idle timeout".to_string());
+                        break;
+                    }
+                };
+
+                match next_chunk {
                     Ok(Some(bytes)) => {
+                        let len = bytes.len() as u64;
+                        if bytes_in_attempt + len > remaining_expected {
+                            stream_err = Some(format!(
+                                "chunk {} exceeded expected size ({} > {})",
+                                chunk.name,
+                                actual_offset + bytes_in_attempt + len,
+                                expected_chunk_len
+                            ));
+                            break;
+                        }
                         if let Err(e) = file.write_all(&bytes).await {
                             stream_err = Some(e.to_string());
                             break;
                         }
-                        let len = bytes.len() as u64;
                         bytes_in_attempt += len;
+                        accounted_bytes += len;
                         let pub_t = {
                             let mut t = task_arc.lock().unwrap();
                             t.downloaded_bytes += len;
@@ -1554,7 +2114,7 @@ impl DownloadManager {
                             };
                             t.to_public_task()
                         };
-                        self.emit_task_update(app, pub_t, false);
+                        self.emit_task_update_if_gen(app, pub_t, generation, false);
                     }
                     Ok(None) => break,
                     Err(e) => {
@@ -1564,14 +2124,36 @@ impl DownloadManager {
                 }
             }
             let _ = file.flush().await;
+            drop(file);
 
             if let Some(e) = stream_err {
-                // Roll back bytes counted in this failed attempt before retry
-                {
-                    let mut t = task_arc.lock().unwrap();
-                    t.downloaded_bytes = t.downloaded_bytes.saturating_sub(bytes_in_attempt);
-                }
                 last_err = e;
+                if attempt < 2 {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(200 * (attempt + 1))) => {}
+                        _ = stop_notify.notified() => return Ok(()),
+                        _ = chunk_abort_notify.notified() => return Ok(()),
+                    }
+                }
+                continue;
+            }
+
+            let final_len = fs::metadata(dest_path).map(|m| m.len()).unwrap_or(0);
+            if final_len != expected_chunk_len {
+                if final_len > expected_chunk_len {
+                    let _ = fs::remove_file(dest_path);
+                }
+                last_err = format!(
+                    "chunk {} incomplete: got {final_len} bytes, expected {expected_chunk_len}",
+                    chunk.name
+                );
+                if attempt < 2 {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_millis(200 * (attempt + 1))) => {}
+                        _ = stop_notify.notified() => return Ok(()),
+                        _ = chunk_abort_notify.notified() => return Ok(()),
+                    }
+                }
                 continue;
             }
 
@@ -1589,12 +2171,16 @@ impl DownloadManager {
 
     async fn stage_merge<R: Runtime>(
         self: &Arc<Self>,
-        app: &AppHandle<R>,
+        app: Option<&AppHandle<R>>,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
-        cancel_flag: &Arc<AtomicBool>,
+        stop_flag: &Arc<AtomicBool>,
+        generation: u64,
     ) -> Result<(), String> {
-        let (temp_dir, audio_temp, video_temp, chunks, total_bytes) = {
+        let (temp_dir, audio_temp, video_temp, chunks, total_bytes, task_id) = {
             let mut t = task_arc.lock().unwrap();
+            if !self.is_current_generation(&t.id, generation) || stop_flag.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             t.status = "merging".to_string();
             (
                 PathBuf::from(&t.temp_dir),
@@ -1602,6 +2188,7 @@ impl DownloadManager {
                 t.video_temp_path.clone().map(PathBuf::from),
                 t.chunks.clone(),
                 t.total_bytes,
+                t.id.clone(),
             )
         };
 
@@ -1626,14 +2213,15 @@ impl DownloadManager {
             };
             let pub_t = t.to_public_task();
             drop(t);
-            self.emit_task_update(app, pub_t, true);
+            self.emit_task_update_if_gen(app, pub_t, generation, true);
         }
 
         if let Some(ref ap) = audio_temp {
             self.merge_chunks_by_type(
                 app,
                 task_arc,
-                cancel_flag,
+                stop_flag,
+                generation,
                 "audio",
                 &temp_dir,
                 ap,
@@ -1642,14 +2230,15 @@ impl DownloadManager {
                 total_bytes,
             )?;
         }
-        if cancel_flag.load(Ordering::SeqCst) {
+        if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation) {
             return Ok(());
         }
         if let Some(ref vp) = video_temp {
             self.merge_chunks_by_type(
                 app,
                 task_arc,
-                cancel_flag,
+                stop_flag,
+                generation,
                 "video",
                 &temp_dir,
                 vp,
@@ -1658,7 +2247,7 @@ impl DownloadManager {
                 total_bytes,
             )?;
         }
-        if cancel_flag.load(Ordering::SeqCst) {
+        if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation) {
             return Ok(());
         }
 
@@ -1672,9 +2261,10 @@ impl DownloadManager {
     #[allow(clippy::too_many_arguments)]
     fn merge_chunks_by_type<R: Runtime>(
         self: &Arc<Self>,
-        app: &AppHandle<R>,
+        app: Option<&AppHandle<R>>,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
-        cancel_flag: &Arc<AtomicBool>,
+        stop_flag: &Arc<AtomicBool>,
+        generation: u64,
         chunk_type: &str,
         temp_dir: &Path,
         dest_path: &Path,
@@ -1714,7 +2304,7 @@ impl DownloadManager {
             }
         }
 
-        if start_index >= chunks.len() || cancel_flag.load(Ordering::SeqCst) {
+        if start_index >= chunks.len() || stop_flag.load(Ordering::SeqCst) {
             return Ok(());
         }
 
@@ -1726,13 +2316,13 @@ impl DownloadManager {
 
         let mut buf = vec![0u8; 64 * 1024];
         for c in chunks.iter().skip(start_index) {
-            if cancel_flag.load(Ordering::SeqCst) {
+            if stop_flag.load(Ordering::SeqCst) {
                 return Ok(());
             }
             let chunk_path = temp_dir.join(&c.name);
             let mut in_file = fs::File::open(&chunk_path).map_err(|e| e.to_string())?;
             loop {
-                if cancel_flag.load(Ordering::SeqCst) {
+                if stop_flag.load(Ordering::SeqCst) {
                     return Ok(());
                 }
                 let n = in_file.read(&mut buf).map_err(|e| e.to_string())?;
@@ -1752,7 +2342,7 @@ impl DownloadManager {
                     };
                     t.to_public_task()
                 };
-                self.emit_task_update(app, pub_t, false);
+                self.emit_task_update_if_gen(app, pub_t, generation, false);
             }
         }
         out_file.flush().map_err(|e| e.to_string())?;
@@ -1761,16 +2351,30 @@ impl DownloadManager {
 
     async fn stage_convert<R: Runtime>(
         self: &Arc<Self>,
-        app: &AppHandle<R>,
+        app: Option<&AppHandle<R>>,
         bili: &BiliState,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
-        cancel_flag: &Arc<AtomicBool>,
+        stop_flag: &Arc<AtomicBool>,
+        generation: u64,
     ) -> Result<(), String> {
-        let (output_file_type, title, audio_codecs, mut save_dir, temp_dir, audio_temp, video_temp) = {
+        let (
+            task_id,
+            output_file_type,
+            title,
+            audio_codecs,
+            mut save_dir,
+            temp_dir,
+            audio_temp,
+            video_temp,
+        ) = {
             let mut t = task_arc.lock().unwrap();
+            if !self.is_current_generation(&t.id, generation) || stop_flag.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             t.status = "converting".to_string();
             let pub_t = t.to_public_task();
             let res = (
+                t.id.clone(),
                 t.output_file_type.clone(),
                 t.title.clone(),
                 t.audio_codecs.clone().unwrap_or_default(),
@@ -1780,7 +2384,7 @@ impl DownloadManager {
                 t.video_temp_path.clone().map(PathBuf::from),
             );
             drop(t);
-            self.emit_task_update(app, pub_t, true);
+            self.emit_task_update_if_gen(app, pub_t, generation, true);
             res
         };
 
@@ -1823,26 +2427,34 @@ impl DownloadManager {
         let file_name = format!("{base_name}{ext}");
         let desired_save_path = Path::new(&save_dir).join(&file_name);
 
-        let user_ffmpeg = user_ffmpeg_setting(app);
+        let user_ffmpeg = app.and_then(|a| user_ffmpeg_setting(a));
         let ffmpeg_bin = resolve_ffmpeg_path(user_ffmpeg.as_deref())?;
-        let cancel_clone = cancel_flag.clone();
+        let cancel_clone = stop_flag.clone();
         let out_type_clone = output_file_type.clone();
         let a_temp_clone = audio_temp.clone();
         let v_temp_clone = video_temp.clone();
         let desired_clone = desired_save_path.clone();
+        let task_id_clone = task_id.clone();
 
         let final_save_path = tokio::task::spawn_blocking(move || {
-            convert_with_ffmpeg(
+            convert_with_ffmpeg_for_task(
                 &ffmpeg_bin,
                 &out_type_clone,
                 a_temp_clone.as_deref(),
                 v_temp_clone.as_deref(),
                 &desired_clone,
+                &task_id_clone,
                 &cancel_clone,
+                FFMPEG_CONVERT_TIMEOUT,
             )
         })
         .await
         .map_err(|e| e.to_string())??;
+
+        if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation) {
+            let _ = fs::remove_file(&final_save_path);
+            return Ok(());
+        }
 
         let final_name = final_save_path
             .file_name()
@@ -1858,7 +2470,7 @@ impl DownloadManager {
             t.file_name = Some(final_name);
             t.to_public_task()
         };
-        self.emit_task_update(app, pub_t, true);
+        self.emit_task_update_if_gen(app, pub_t, generation, true);
 
         let _ = fs::remove_dir_all(&temp_dir);
         Ok(())
@@ -1866,7 +2478,7 @@ impl DownloadManager {
 
     async fn fetch_download_urls<R: Runtime>(
         &self,
-        app: &AppHandle<R>,
+        app: Option<&AppHandle<R>>,
         bili: &BiliState,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
     ) -> Result<(), String> {
@@ -1881,8 +2493,9 @@ impl DownloadManager {
         };
 
         if let Some(sid) = sid_opt {
-            let user_store =
-                read_store_object(app, "user-login-info").unwrap_or_else(|_| json!({}));
+            let user_store = app
+                .and_then(|a| read_store_object(a, "user-login-info").ok())
+                .unwrap_or_else(|| json!({}));
             let mid = user_store
                 .get("mid")
                 .and_then(|v| {
@@ -2053,12 +2666,16 @@ impl DownloadManager {
 
     fn fail_task<R: Runtime>(
         self: &Arc<Self>,
-        app: &AppHandle<R>,
+        app: Option<&AppHandle<R>>,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
+        generation: u64,
         error: String,
     ) {
         let pub_t = {
             let mut t = task_arc.lock().unwrap();
+            if !self.is_current_generation(&t.id, generation) {
+                return;
+            }
             if matches!(
                 t.status.as_str(),
                 "downloadPaused" | "mergePaused" | "convertPaused"
@@ -2069,13 +2686,18 @@ impl DownloadManager {
             t.error = Some(error);
             t.to_public_task()
         };
-        self.emit_task_update(app, pub_t, true);
+        self.emit_task_update_if_gen(app, pub_t, generation, true);
     }
 
-    pub fn pause_task<R: Runtime>(self: &Arc<Self>, app: &AppHandle<R>, id: &str) {
-        if let Some(flag) = self.cancel_flags.lock().unwrap().remove(id) {
-            flag.store(true, Ordering::SeqCst);
-        }
+    pub async fn pause_task<R: Runtime>(self: &Arc<Self>, app: &AppHandle<R>, id: &str) {
+        self.pause_task_opt(Some(app), id).await;
+    }
+
+    pub async fn pause_task_opt<R: Runtime>(
+        self: &Arc<Self>,
+        app: Option<&AppHandle<R>>,
+        id: &str,
+    ) {
         if let Some(task_arc) = self.find_task(id) {
             let pub_t = {
                 let mut t = task_arc.lock().unwrap();
@@ -2087,32 +2709,52 @@ impl DownloadManager {
                 };
                 t.to_public_task()
             };
+            self.stop_and_wait_worker(id).await;
             self.save_to_disk();
             self.emit_task_update(app, pub_t, true);
+        } else {
+            self.stop_and_wait_worker(id).await;
         }
     }
 
-    pub fn resume_task<R: Runtime>(
+    pub async fn resume_task<R: Runtime>(
         self: &Arc<Self>,
         app: &AppHandle<R>,
         bili: Arc<BiliState>,
         id: &str,
     ) {
+        self.resume_task_opt(Some(app), bili, id).await;
+    }
+
+    pub async fn resume_task_opt<R: Runtime>(
+        self: &Arc<Self>,
+        app: Option<&AppHandle<R>>,
+        bili: Arc<BiliState>,
+        id: &str,
+    ) {
         if let Some(task_arc) = self.find_task(id) {
-            self.spawn_worker(app.clone(), bili, task_arc, true);
+            let gen = self.stop_and_wait_worker(id).await;
+            self.spawn_worker_with_gen(app.cloned(), bili, task_arc, true, gen);
         }
     }
 
-    pub fn retry_task<R: Runtime>(
+    pub async fn retry_task<R: Runtime>(
         self: &Arc<Self>,
         app: &AppHandle<R>,
         bili: Arc<BiliState>,
         id: &str,
     ) {
-        if let Some(flag) = self.cancel_flags.lock().unwrap().remove(id) {
-            flag.store(true, Ordering::SeqCst);
-        }
+        self.retry_task_opt(Some(app), bili, id).await;
+    }
+
+    pub async fn retry_task_opt<R: Runtime>(
+        self: &Arc<Self>,
+        app: Option<&AppHandle<R>>,
+        bili: Arc<BiliState>,
+        id: &str,
+    ) {
         if let Some(task_arc) = self.find_task(id) {
+            let gen = self.stop_and_wait_worker(id).await;
             {
                 let mut t = task_arc.lock().unwrap();
                 t.status = "waiting".to_string();
@@ -2123,15 +2765,21 @@ impl DownloadManager {
             }
             self.save_to_disk();
             self.broadcast_full(app);
-            self.spawn_worker(app.clone(), bili, task_arc, false);
+            self.spawn_worker_with_gen(app.cloned(), bili, task_arc, false, gen);
         }
     }
 
-    pub async fn cancel_task<R: Runtime>(self: &Arc<Self>, app: &AppHandle<R>, id: &str) {
-        self.pending_updates.lock().unwrap().remove(id);
-        if let Some(flag) = self.cancel_flags.lock().unwrap().remove(id) {
-            flag.store(true, Ordering::SeqCst);
+    async fn remove_task_self<R: Runtime>(
+        self: &Arc<Self>,
+        app: Option<&AppHandle<R>>,
+        id: &str,
+        generation: u64,
+    ) {
+        if !self.is_current_generation(id, generation) {
+            return;
         }
+        self.pending_updates.lock().unwrap().remove(id);
+        self.workers.lock().unwrap().remove(id);
         let removed = {
             let mut lock = self.tasks.write().unwrap();
             lock.iter()
@@ -2148,23 +2796,85 @@ impl DownloadManager {
         self.broadcast_full(app);
     }
 
-    pub async fn clear_tasks<R: Runtime>(self: &Arc<Self>, app: &AppHandle<R>) {
-        self.pending_updates.lock().unwrap().clear();
-        {
-            let mut flags = self.cancel_flags.lock().unwrap();
-            for (_, flag) in flags.drain() {
-                flag.store(true, Ordering::SeqCst);
+    pub async fn cancel_task<R: Runtime>(self: &Arc<Self>, app: &AppHandle<R>, id: &str) {
+        self.cancel_task_opt(Some(app), id).await;
+    }
+
+    pub async fn cancel_task_opt<R: Runtime>(
+        self: &Arc<Self>,
+        app: Option<&AppHandle<R>>,
+        id: &str,
+    ) {
+        self.pending_updates.lock().unwrap().remove(id);
+        let removed = {
+            let mut lock = self.tasks.write().unwrap();
+            lock.iter()
+                .position(|t| t.lock().unwrap().id == id)
+                .map(|pos| lock.remove(pos))
+        };
+        self.stop_and_wait_worker(id).await;
+        if let Some(task_arc) = removed {
+            let (temp_dir, save_dir, title) = {
+                let t = task_arc.lock().unwrap();
+                (t.temp_dir.clone(), t.save_dir.clone(), t.title.clone())
+            };
+            if !temp_dir.is_empty() {
+                let _ = tokio::fs::remove_dir_all(&temp_dir).await;
             }
+            self.cleanup_task_temp_outputs(&save_dir, &title, id);
         }
+        self.save_to_disk();
+        self.broadcast_full(app);
+    }
+
+    fn cleanup_task_temp_outputs(&self, save_dir: &str, title: &str, id: &str) {
+        if save_dir.trim().is_empty() {
+            return;
+        }
+        let sanitized = sanitize_filename(title);
+        let base_name = if sanitized.is_empty() {
+            "download".to_string()
+        } else {
+            sanitized
+        };
+        for ext in [".m4a", ".mp3", ".flac", ".mp4", ".mkv"] {
+            let desired = Path::new(save_dir).join(format!("{base_name}{ext}"));
+            let temp_out = build_task_temp_output_path(&desired, id);
+            let _ = fs::remove_file(temp_out);
+        }
+    }
+
+    pub async fn clear_tasks<R: Runtime>(self: &Arc<Self>, app: &AppHandle<R>) {
+        self.clear_tasks_opt(Some(app)).await;
+    }
+
+    pub async fn clear_tasks_opt<R: Runtime>(self: &Arc<Self>, app: Option<&AppHandle<R>>) {
+        self.pending_updates.lock().unwrap().clear();
         let all_tasks: Vec<Arc<Mutex<FullMediaDownloadTask>>> = {
             let mut lock = self.tasks.write().unwrap();
             lock.drain(..).collect()
         };
+        let ids: Vec<String> = all_tasks
+            .iter()
+            .map(|t| t.lock().unwrap().id.clone())
+            .collect();
+        for id in &ids {
+            self.stop_and_wait_worker(id).await;
+        }
         for task_arc in all_tasks {
-            let temp_dir = task_arc.lock().unwrap().temp_dir.clone();
+            let (id, temp_dir, save_dir, title) = {
+                let t = task_arc.lock().unwrap();
+                (
+                    t.id.clone(),
+                    t.temp_dir.clone(),
+                    t.save_dir.clone(),
+                    t.title.clone(),
+                )
+            };
             if !temp_dir.is_empty() {
                 let _ = tokio::fs::remove_dir_all(&temp_dir).await;
             }
+            self.cleanup_task_temp_outputs(&save_dir, &title, &id);
         }
         self.save_to_disk();
         self.broadcast_full(app);
@@ -2208,7 +2918,7 @@ pub async fn download_pause<R: Runtime>(
     mgr: tauri::State<'_, Arc<DownloadManager>>,
     id: String,
 ) -> Result<(), String> {
-    mgr.pause_task(&app, &id);
+    mgr.pause_task(&app, &id).await;
     Ok(())
 }
 
@@ -2219,7 +2929,7 @@ pub async fn download_resume<R: Runtime>(
     bili: tauri::State<'_, Arc<BiliState>>,
     id: String,
 ) -> Result<(), String> {
-    mgr.resume_task(&app, bili.inner().clone(), &id);
+    mgr.resume_task(&app, bili.inner().clone(), &id).await;
     Ok(())
 }
 
@@ -2230,7 +2940,7 @@ pub async fn download_retry<R: Runtime>(
     bili: tauri::State<'_, Arc<BiliState>>,
     id: String,
 ) -> Result<(), String> {
-    mgr.retry_task(&app, bili.inner().clone(), &id);
+    mgr.retry_task(&app, bili.inner().clone(), &id).await;
     Ok(())
 }
 
@@ -2251,4 +2961,629 @@ pub async fn download_clear<R: Runtime>(
 ) -> Result<(), String> {
     mgr.clear_tasks(&app).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn parse_range_header(req: &str) -> Option<(u64, u64)> {
+        for line in req.lines() {
+            let lower = line.to_ascii_lowercase();
+            if let Some(rest) = lower.strip_prefix("range:") {
+                let val = rest.trim().strip_prefix("bytes=")?;
+                let (s, e) = val.split_once('-')?;
+                return Some((s.trim().parse().ok()?, e.trim().parse().ok()?));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn sanitize_filename_utf8_byte_truncation_and_windows_reserved_names() {
+        // Windows reserved names (case-insensitive, with or without extension / trailing dots/spaces)
+        assert_eq!(sanitize_filename("CON"), "_CON");
+        assert_eq!(sanitize_filename("con.mp3"), "_con.mp3");
+        assert_eq!(sanitize_filename("Prn . .. "), "_Prn");
+        assert_eq!(sanitize_filename("aux"), "_aux");
+        assert_eq!(sanitize_filename("NUL"), "_NUL");
+        assert_eq!(sanitize_filename("COM1"), "_COM1");
+        assert_eq!(sanitize_filename("com9.txt"), "_com9.txt");
+        assert_eq!(sanitize_filename("LPT1"), "_LPT1");
+        assert_eq!(sanitize_filename("lpt9..."), "_lpt9");
+        // Non-reserved prefixes
+        assert_eq!(sanitize_filename("CONSOLE"), "CONSOLE");
+        assert_eq!(sanitize_filename("COM10"), "COM10");
+
+        // UTF-8 byte truncation (<= 200 bytes without splitting multi-byte characters)
+        // Each Chinese character '歌' is 3 bytes in UTF-8. 100 chars = 300 bytes.
+        let long_cjk = "歌".repeat(100);
+        let sanitized = sanitize_filename(&long_cjk);
+        assert!(sanitized.len() <= MAX_FILENAME_STEM_BYTES);
+        // 200 / 3 = 66 chars = 198 bytes
+        assert_eq!(sanitized.len(), 198);
+        assert_eq!(sanitized.chars().count(), 66);
+
+        // Trailing dots and spaces after truncation are stripped
+        let prefix = "a".repeat(198);
+        let with_dot = format!("{prefix}.b");
+        let sanitized_dot = sanitize_filename(&with_dot);
+        assert!(!sanitized_dot.ends_with('.'));
+        assert!(!sanitized_dot.ends_with(' '));
+    }
+
+    #[tokio::test]
+    async fn chunk_resume_recalculates_range_after_midstream_disconnect() {
+        let dir = std::env::temp_dir().join(format!("biu-dl-resume-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let payload: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let payload_srv = payload.clone();
+        let seen_ranges: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_srv = seen_ranges.clone();
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let count_srv = call_count.clone();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 2048];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let (start, end) = parse_range_header(&req).expect("Range header missing");
+                seen_srv.lock().unwrap().push((start, end));
+                let idx = count_srv.fetch_add(1, Ordering::SeqCst);
+                let total = payload_srv.len();
+
+                if idx == 0 {
+                    // First attempt: claim 206 for full range, but only send 400 bytes then drop connection
+                    let slice = &payload_srv[start as usize..(start as usize + 400)];
+                    let hdr = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nConnection: close\r\n\r\n",
+                        end - start + 1
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(slice).await;
+                    let _ = sock.shutdown().await;
+                } else {
+                    // Retry attempt: send remaining range accurately
+                    let slice = &payload_srv[start as usize..=end as usize];
+                    let hdr = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nConnection: close\r\n\r\n",
+                        slice.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(slice).await;
+                    let _ = sock.shutdown().await;
+                    break;
+                }
+            }
+        });
+
+        let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        let mgr = DownloadManager::new(dir.join("downloads.json"));
+
+        // Pre-populate 100 bytes on disk to also verify initial offset + mid-stream disconnect retry
+        let chunk_path = dir.join("audio.part1");
+        fs::write(&chunk_path, &payload[..100]).unwrap();
+
+        let task = FullMediaDownloadTask {
+            id: "t-resume".into(),
+            output_file_type: "audio".into(),
+            title: "Resume Test".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: None,
+            audio_codecs: None,
+            audio_bandwidth: None,
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 1000,
+            audio_total_bytes: 1000,
+            video_total_bytes: 0,
+            downloaded_bytes: 100,
+            download_progress: 10,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "downloading".into(),
+            file_name: None,
+            temp_dir: dir.to_string_lossy().into_owned(),
+            save_dir: dir.to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: vec![MediaDownloadChunk {
+                chunk_type: "audio".into(),
+                name: "audio.part1".into(),
+                start: 0,
+                end: 999,
+                done: false,
+            }],
+            error: None,
+        };
+        let task_arc = Arc::new(Mutex::new(task));
+        let gen = mgr.next_generation("t-resume");
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_notify = Arc::new(tokio::sync::Notify::new());
+        let abort_flag = Arc::new(AtomicBool::new(false));
+        let abort_notify = Arc::new(tokio::sync::Notify::new());
+        let chunk = task_arc.lock().unwrap().chunks[0].clone();
+        let url = format!("http://{addr}/audio.m4s");
+
+        mgr.download_single_chunk::<tauri::Wry>(
+            None,
+            &bili,
+            &task_arc,
+            &stop_flag,
+            &stop_notify,
+            &abort_flag,
+            &abort_notify,
+            gen,
+            0,
+            &chunk,
+            &url,
+            &chunk_path,
+            100,
+        )
+        .await
+        .unwrap();
+
+        let _ = srv.await;
+        let ranges = seen_ranges.lock().unwrap().clone();
+        // Attempt 1 started at 100; wrote 400 bytes -> Attempt 2 recalculated Range from 500..=999
+        assert_eq!(ranges, vec![(100, 999), (500, 999)]);
+        let final_bytes = fs::read(&chunk_path).unwrap();
+        assert_eq!(final_bytes.len(), 1000);
+        assert_eq!(final_bytes, payload);
+        let t = task_arc.lock().unwrap();
+        assert_eq!(t.downloaded_bytes, 1000);
+        assert!(t.chunks[0].done);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn chunk_rejects_200_ignoring_range_and_marks_task_failed_not_cancelled() {
+        let dir = std::env::temp_dir().join(format!("biu-dl-200-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server responds to HEAD with Content-Length: 500, but responds to GET Range with 200 OK (ignoring Range)
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 2048];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let req = String::from_utf8_lossy(&buf[..n]);
+                if req.starts_with("HEAD ") {
+                    let hdr = "HTTP/1.1 200 OK\r\nContent-Length: 500\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                } else {
+                    let body = vec![b'A'; 500];
+                    let hdr = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                }
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        let mgr = DownloadManager::new(dir.join("downloads.json"));
+
+        let url = format!("http://{addr}/audio.m4s?deadline=4102444800");
+        let task = FullMediaDownloadTask {
+            id: "t-200-fail".into(),
+            output_file_type: "audio".into(),
+            title: "200 Ignore Range".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: Some(url),
+            audio_codecs: Some("aac".into()),
+            audio_bandwidth: Some(128000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 0,
+            audio_total_bytes: 0,
+            video_total_bytes: 0,
+            downloaded_bytes: 0,
+            download_progress: 0,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "waiting".into(),
+            file_name: None,
+            temp_dir: dir.join("temp").to_string_lossy().into_owned(),
+            save_dir: dir.join("save").to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: Vec::new(),
+            error: None,
+        };
+        let task_arc = Arc::new(Mutex::new(task));
+        let gen = mgr.next_generation("t-200-fail");
+        mgr.tasks.write().unwrap().push(task_arc.clone());
+        mgr.spawn_worker_with_gen::<tauri::Wry>(None, bili, task_arc.clone(), false, gen);
+
+        // Wait for worker to finish
+        for _ in 0..100 {
+            let status = task_arc.lock().unwrap().status.clone();
+            if status == "failed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        srv.abort();
+        let t = task_arc.lock().unwrap();
+        assert_eq!(
+            t.status, "failed",
+            "task should be marked failed, not stuck in downloading"
+        );
+        let err_msg = t.error.as_deref().unwrap_or("");
+        assert!(
+            err_msg.contains("200 OK"),
+            "expected error mentioning 200 OK, got: {err_msg}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn slow_response_idle_timeout_and_pause_immediate_resume_waits_for_old_worker() {
+        let dir = std::env::temp_dir().join(format!("biu-dl-pause-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let payload: Vec<u8> = (0..512u32).map(|i| (i % 251) as u8).collect();
+        let payload_srv = payload.clone();
+        let get_calls = Arc::new(AtomicUsize::new(0));
+        let get_calls_srv = get_calls.clone();
+        let first_get_started = Arc::new(tokio::sync::Notify::new());
+        let first_get_srv = first_get_started.clone();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let payload_conn = payload_srv.clone();
+                let get_calls_conn = get_calls_srv.clone();
+                let first_get_conn = first_get_srv.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("HEAD ") {
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            payload_conn.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.shutdown().await;
+                        return;
+                    }
+                    let (start, end) = parse_range_header(&req).unwrap_or((0, 511));
+                    let call_idx = get_calls_conn.fetch_add(1, Ordering::SeqCst);
+                    if call_idx == 0 {
+                        // First worker: send headers and 100 bytes, then stall so pause + resume happens while stalled
+                        let hdr = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nConnection: close\r\n\r\n",
+                            end - start + 1,
+                            payload_conn.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock
+                            .write_all(&payload_conn[start as usize..start as usize + 100])
+                            .await;
+                        first_get_conn.notify_waiters();
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                    } else {
+                        // Second worker (after pause + immediate resume): serve requested range immediately
+                        let slice = &payload_conn[start as usize..=end as usize];
+                        let hdr = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nConnection: close\r\n\r\n",
+                            slice.len(),
+                            payload_conn.len()
+                        );
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.write_all(slice).await;
+                        let _ = sock.shutdown().await;
+                    }
+                });
+            }
+        });
+
+        let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        let mgr = DownloadManager::new(dir.join("downloads.json"));
+        mgr.set_chunk_idle_timeout(Duration::from_millis(300));
+
+        let url = format!("http://{addr}/audio.m4s?deadline=4102444800");
+        let temp_dir = dir.join("temp");
+        let save_dir = dir.join("save");
+        let task = FullMediaDownloadTask {
+            id: "t-pause-resume".into(),
+            output_file_type: "audio".into(),
+            title: "Pause Resume Song".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: Some(url),
+            audio_codecs: Some("aac".into()),
+            audio_bandwidth: Some(128000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 0,
+            audio_total_bytes: 0,
+            video_total_bytes: 0,
+            downloaded_bytes: 0,
+            download_progress: 0,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "waiting".into(),
+            file_name: None,
+            temp_dir: temp_dir.to_string_lossy().into_owned(),
+            save_dir: save_dir.to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: Vec::new(),
+            error: None,
+        };
+        let task_arc = Arc::new(Mutex::new(task));
+        let gen1 = mgr.next_generation("t-pause-resume");
+        mgr.tasks.write().unwrap().push(task_arc.clone());
+        mgr.spawn_worker_with_gen::<tauri::Wry>(None, bili.clone(), task_arc.clone(), false, gen1);
+
+        // Wait until worker 1 has written the first 100 bytes and is stalled on network read
+        first_get_started.notified().await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        // Pause and immediately resume; pause_task_opt must wake and wait for worker 1 to exit
+        mgr.pause_task_opt::<tauri::Wry>(None, "t-pause-resume")
+            .await;
+        assert_eq!(task_arc.lock().unwrap().status, "downloadPaused");
+        assert!(!mgr.is_current_generation("t-pause-resume", gen1));
+
+        // Stale update from gen1 must be rejected
+        mgr.emit_task_update_if_gen::<tauri::Wry>(
+            None,
+            MediaDownloadTask {
+                id: "t-pause-resume".into(),
+                output_file_type: "audio".into(),
+                title: "Stale".into(),
+                bvid: None,
+                cid: None,
+                sid: None,
+                cover: None,
+                audio_codecs: None,
+                audio_bandwidth: None,
+                video_resolution: None,
+                video_frame_rate: None,
+                save_path: None,
+                status: "downloading".into(),
+                total_bytes: None,
+                downloaded_bytes: None,
+                download_progress: Some(99),
+                merge_progress: None,
+                convert_progress: None,
+                created_time: None,
+                error: None,
+            },
+            gen1,
+            false,
+        );
+        assert!(mgr
+            .pending_updates
+            .lock()
+            .unwrap()
+            .get("t-pause-resume")
+            .is_none());
+
+        // Immediately resume; verify stage_download + stage_merge finish with exact payload
+        let gen2 = mgr.stop_and_wait_worker("t-pause-resume").await;
+        let stop_flag2 = Arc::new(AtomicBool::new(false));
+        let stop_notify2 = Arc::new(tokio::sync::Notify::new());
+        mgr.stage_download::<tauri::Wry>(None, &bili, &task_arc, &stop_flag2, &stop_notify2, gen2)
+            .await
+            .unwrap();
+        mgr.stage_merge::<tauri::Wry>(None, &task_arc, &stop_flag2, gen2)
+            .await
+            .unwrap();
+
+        let merged_audio = fs::read(temp_dir.join("audio.m4s")).unwrap();
+        assert_eq!(merged_audio, payload);
+
+        // Also test slow response idle timeout when server stalls forever
+        let slow_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let slow_addr = slow_listener.local_addr().unwrap();
+        let slow_srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = slow_listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 1024];
+                    let _ = sock.read(&mut buf).await;
+                    let hdr = "HTTP/1.1 206 Partial Content\r\nContent-Length: 100\r\nContent-Range: bytes 0-99/100\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                });
+            }
+        });
+
+        mgr.set_chunk_idle_timeout(Duration::from_millis(120));
+        let slow_chunk = MediaDownloadChunk {
+            chunk_type: "audio".into(),
+            name: "slow.part1".into(),
+            start: 0,
+            end: 99,
+            done: false,
+        };
+        let slow_err = mgr
+            .download_single_chunk::<tauri::Wry>(
+                None,
+                &bili,
+                &task_arc,
+                &stop_flag2,
+                &stop_notify2,
+                &Arc::new(AtomicBool::new(false)),
+                &Arc::new(tokio::sync::Notify::new()),
+                gen2,
+                0,
+                &slow_chunk,
+                &format!("http://{slow_addr}/slow.m4s"),
+                &dir.join("slow.part1"),
+                0,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            slow_err.contains("idle timeout"),
+            "expected idle timeout error, got: {slow_err}"
+        );
+
+        srv.abort();
+        slow_srv.abort();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ffmpeg_stderr_flood_and_concurrent_same_name_downloads_do_not_overwrite() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("biu-dl-ffmpeg-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        // Fake ffmpeg script that writes >256KB to stderr and copies input file to output path (rejecting overwrite if -n and file exists)
+        let fake_ffmpeg = dir.join("fake-ffmpeg.sh");
+        fs::write(
+            &fake_ffmpeg,
+            r#"#!/bin/sh
+dd if=/dev/zero bs=4096 count=80 2>/dev/null | tr '\0' 'S' >&2
+in_file=""
+out_file=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-i" ]; then
+    shift
+    in_file="$1"
+  else
+    out_file="$1"
+  fi
+  shift
+done
+if [ -e "$out_file" ]; then
+  echo "Output file already exists" >&2
+  exit 1
+fi
+cp "$in_file" "$out_file"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&fake_ffmpeg, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let in_a = dir.join("in_a.m4s");
+        let in_b = dir.join("in_b.m4s");
+        fs::write(&in_a, b"content-from-task-A").unwrap();
+        fs::write(&in_b, b"content-from-task-B").unwrap();
+
+        let desired = dir.join("Same Song.m4a");
+        // Pre-existing file to verify neither task overwrites it
+        fs::write(&desired, b"existing-original").unwrap();
+
+        let f1 = fake_ffmpeg.clone();
+        let d1 = desired.clone();
+        let t1 = std::thread::spawn(move || {
+            convert_with_ffmpeg_for_task(
+                &f1,
+                "audio",
+                Some(&in_a),
+                None,
+                &d1,
+                "task-alpha",
+                &AtomicBool::new(false),
+                Duration::from_secs(10),
+            )
+            .unwrap()
+        });
+
+        let f2 = fake_ffmpeg.clone();
+        let d2 = desired.clone();
+        let t2 = std::thread::spawn(move || {
+            convert_with_ffmpeg_for_task(
+                &f2,
+                "audio",
+                Some(&in_b),
+                None,
+                &d2,
+                "task-beta",
+                &AtomicBool::new(false),
+                Duration::from_secs(10),
+            )
+            .unwrap()
+        });
+
+        let out1 = t1.join().unwrap();
+        let out2 = t2.join().unwrap();
+        assert_ne!(out1, out2);
+        assert_ne!(out1, desired);
+        assert_ne!(out2, desired);
+        assert_eq!(fs::read(&desired).unwrap(), b"existing-original");
+
+        let mut names = vec![
+            out1.file_name().unwrap().to_str().unwrap().to_string(),
+            out2.file_name().unwrap().to_str().unwrap().to_string(),
+        ];
+        names.sort();
+        assert_eq!(names, vec!["Same Song (1).m4a", "Same Song (2).m4a"]);
+
+        let mut contents = vec![fs::read(&out1).unwrap(), fs::read(&out2).unwrap()];
+        contents.sort();
+        assert_eq!(
+            contents,
+            vec![
+                b"content-from-task-A".to_vec(),
+                b"content-from-task-B".to_vec()
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

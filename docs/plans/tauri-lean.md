@@ -118,7 +118,8 @@ Sol 审查 `8eaf2533` 和桥接版 `1a835bb6`，结论“暂不建议发布”�
   `3b2fc916`。标记带 `complete`、`pending`、`attempts`，未完成最多重试 5 次；`src/index.tsx` 先调 `applyMigratedLocalStorage` 再动态 import `./app`。
 - [x] 桥接版：退出和自动安装前串行完成一次导出。（owner）
   `feat/tauri-bridge` `b8b5469a`。导出串行执行；首次退出最多等 5 s 导出完成再退出；更新安装开始后不再拦截退出；localStorage 每 10 分钟刷新一次缓存。
-- [ ] 下载：分块续传每次重试按文件实际长度重算 Range，校验 `206` 和 `Content-Range`；内部失败与取消分开；暂停、恢复、取消等待旧 worker 退出，加 generation 校验和读取空闲超时；ffmpeg 并行读 stdout/stderr，加超时和 kill；同名并发下载用任务独有的临时文件，提交时不覆盖已有文件；文件名按字节截断并处理 Windows 保留名。（Gemini 4 Argon）
+- [x] 下载：分块续传每次重试按文件实际长度重算 Range，校验 `206` 和 `Content-Range`；内部失败与取消分开；暂停、恢复、取消等待旧 worker 退出，加 generation 校验和读取空闲超时；ffmpeg 并行读 stdout/stderr，加超时和 kill；同名并发下载用任务独有的临时文件，提交时不覆盖已有文件；文件名按字节截断并处理 Windows 保留名。（Gemini 4 Argon）
+  结果：已在 `src-tauri/src/download/mod.rs` 与 `src-tauri/src/auto_lyrics.rs` 完成全部 6 项修复（分块重试按磁盘实际字节重算 `Range` 并严格校验 `206`/`Content-Range`/最终分块长度；分离 `chunk_abort_flag` 与用户 `stop_flag` 使内部失败正常落入 `failed`；基于 `WorkerControl` + `Notify` + `watch` + 30s 读取空闲超时等待旧 worker 退出并用 `generations` 过滤过期进度/结果；`download` 与 `auto_lyrics` 的 ffmpeg 子进程双线程并发排空 stdout/stderr、保留末尾 16 KB 错误日志并加超时 `kill + wait`；转码输出至 `.part` 任务独有临时文件后以 `hard_link`/`create_new` 原子不覆盖方式落盘并自动追加 ` (n)`；文件名主名按 UTF-8 字符边界截断至 ≤200 字节并处理 Windows 保留名与尾随点/空格），并补充了覆盖断流续传、`200` 忽略 `Range`、慢响应与暂停后立即恢复、ffmpeg 大量写 stderr 及同名并发不覆盖、文件名截断的单元测试。
 - [x] 重定向：`bili_request`、歌词和自动歌词的 HTTP 客户端每一跳都检查 host 白名单。（owner）
   `3b2fc916`。`allowlist_redirect_policy`；kuromoji 下载有 sha256 校验，不限制。
 - [ ] 代码逻辑审查（GPT-6.1-Sol）。
