@@ -193,8 +193,21 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running biu application");
+        .build(tauri::generate_context!())
+        .expect("error while building biu application")
+        .run(|app, event| {
+            // macOS: clicking the Dock icon after the main window was hidden to the tray.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.unminimize();
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
 #[cfg(test)]
@@ -503,9 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn kuromoji_dict_download_fallback_and_loopback_route() {
-        use crate::lyrics::{
-            ensure_kuromoji_dict_in_dir, verify_dict_file, KUROMOJI_DICT_FILES,
-        };
+        use crate::lyrics::{ensure_kuromoji_dict_in_dir, verify_dict_file, KUROMOJI_DICT_FILES};
 
         let repo_dict_dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../node_modules/kuromoji/dict");
@@ -562,7 +573,7 @@ mod tests {
 
         let bad_base = format!("http://{bad_addr}");
         let good_base = format!("http://{good_addr}");
-        ensure_kuromoji_dict_in_dir(&dict_dir, &[bad_base.as_str(), good_base.as_str()])
+        ensure_kuromoji_dict_in_dir(&dict_dir, &[bad_base.as_str(), good_base.as_str()], None)
             .await
             .unwrap();
         assert!(verify_dict_file(
@@ -574,11 +585,8 @@ mod tests {
         let state = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
         let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = proxy_listener.local_addr().unwrap();
-        let proxy_server = tokio::spawn(serve_http(
-            proxy_listener,
-            "tok-kuro".into(),
-            state.clone(),
-        ));
+        let proxy_server =
+            tokio::spawn(serve_http(proxy_listener, "tok-kuro".into(), state.clone()));
 
         {
             let mut client_sock = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
@@ -612,5 +620,49 @@ mod tests {
         proxy_server.abort();
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
 
+    #[tokio::test]
+    async fn kuromoji_dict_falls_back_to_tarball() {
+        use crate::lyrics::{ensure_kuromoji_dict_in_dir, verify_dict_file, KUROMOJI_DICT_FILES};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let src =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../node_modules/kuromoji/dict");
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (name, _) in KUROMOJI_DICT_FILES {
+            builder
+                .append_path_with_name(src.join(name), format!("package/dict/{name}"))
+                .unwrap();
+        }
+        let tgz = builder.into_inner().unwrap().finish().unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    tgz.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(&tgz).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let dict_dir = std::env::temp_dir().join(format!("biu-kuro-tgz-{}", uuid::Uuid::new_v4()));
+        let url = format!("http://{addr}/kuromoji-0.1.2.tgz");
+        ensure_kuromoji_dict_in_dir(&dict_dir, &[], Some(url.as_str()))
+            .await
+            .unwrap();
+        for (name, sha) in KUROMOJI_DICT_FILES {
+            assert!(verify_dict_file(&dict_dir.join(name), sha), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dict_dir);
+    }
+}

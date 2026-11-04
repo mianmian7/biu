@@ -245,6 +245,7 @@ pub fn read_kuromoji_dict_file(app_data_dir: &Path, name: &str) -> Result<Vec<u8
 pub async fn ensure_kuromoji_dict_in_dir(
     dict_dir: &Path,
     mirror_bases: &[&str],
+    tarball_url: Option<&str>,
 ) -> Result<(), String> {
     static DOWNLOAD_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     let lock = DOWNLOAD_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
@@ -259,6 +260,7 @@ pub async fn ensure_kuromoji_dict_in_dir(
         .build()
         .map_err(|e| e.to_string())?;
 
+    let mut missing: Vec<(&str, &str)> = Vec::new();
     for (filename, expected_sha256) in KUROMOJI_DICT_FILES {
         let target_path = dict_dir.join(filename);
         if verify_dict_file(&target_path, expected_sha256) {
@@ -317,13 +319,102 @@ pub async fn ensure_kuromoji_dict_in_dir(
         }
 
         if !downloaded {
-            return Err(format!(
-                "failed to download and verify kuromoji dictionary file: {filename}"
-            ));
+            missing.push((*filename, *expected_sha256));
         }
     }
 
-    Ok(())
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let Some(tarball) = tarball_url else {
+        return Err(format!(
+            "failed to download and verify kuromoji dictionary files: {}",
+            missing
+                .iter()
+                .map(|(f, _)| *f)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    };
+    extract_dict_from_tarball(dict_dir, tarball, &missing).await
+}
+
+/// Fallback for mirrors (npmmirror) that only serve the package tarball, not single files.
+async fn extract_dict_from_tarball(
+    dict_dir: &Path,
+    tarball_url: &str,
+    missing: &[(&str, &str)],
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let parsed = Url::parse(tarball_url).map_err(|e| e.to_string())?;
+    let host = parsed.host_str().unwrap_or("unknown").to_string();
+    let resp = client.get(parsed).send().await.map_err(|e| {
+        format!(
+            "kuromoji tarball from {host}: {}",
+            sanitize_reqwest_error(&e)
+        )
+    })?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "kuromoji tarball from {host} returned HTTP {}",
+            resp.status().as_u16()
+        ));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("kuromoji tarball from {host}: {e}"))?;
+
+    let mut remaining: Vec<(&str, &str)> = missing.to_vec();
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(&bytes[..]));
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?.into_owned();
+        let Some(name) = path
+            .strip_prefix("package/dict")
+            .ok()
+            .and_then(|p| p.to_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let Some(idx) = remaining.iter().position(|(f, _)| *f == name) else {
+            continue;
+        };
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut data).map_err(|e| e.to_string())?;
+        let (filename, expected) = remaining[idx];
+        let actual = sha256_hex(&data);
+        if !actual.eq_ignore_ascii_case(expected) {
+            log::warn!("[kuromoji] sha256 mismatch for {filename} in tarball from {host}");
+            continue;
+        }
+        let target_path = dict_dir.join(filename);
+        let tmp_path = dict_dir.join(format!("{filename}.tmp"));
+        fs::write(&tmp_path, &data).map_err(|e| e.to_string())?;
+        fs::rename(&tmp_path, &target_path).map_err(|e| e.to_string())?;
+        log::info!("[kuromoji] extracted and verified {filename} from {host} tarball");
+        remaining.remove(idx);
+    }
+
+    if remaining.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "kuromoji tarball from {host} lacks verified files: {}",
+            remaining
+                .iter()
+                .map(|(f, _)| *f)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
 }
 
 #[tauri::command]
@@ -333,9 +424,11 @@ pub async fn kuromoji_ensure_dict<R: Runtime>(app: AppHandle<R>) -> Result<(), S
         .app_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("com.biu.wood3n"));
     let dict_dir = app_data_dir.join("kuromoji-dict");
+    // npmmirror refuses single-file access for kuromoji (unpkg whitelist), so it is used via the tarball.
     const DEFAULT_MIRRORS: &[&str] = &[
-        "https://registry.npmmirror.com/kuromoji/0.1.2/files/dict",
         "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict",
+        "https://unpkg.com/kuromoji@0.1.2/dict",
     ];
-    ensure_kuromoji_dict_in_dir(&dict_dir, DEFAULT_MIRRORS).await
+    const TARBALL: &str = "https://registry.npmmirror.com/kuromoji/-/kuromoji-0.1.2.tgz";
+    ensure_kuromoji_dict_in_dir(&dict_dir, DEFAULT_MIRRORS, Some(TARBALL)).await
 }
