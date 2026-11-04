@@ -13,6 +13,7 @@ import { beginPlayReport, endPlayReport, reportHeartbeat } from "@/common/utils/
 import { markPlaybackAnchor, resetPlaybackAnchor, usePlaybackAnchor } from "@/common/utils/playback-anchor";
 import { stripHtml } from "@/common/utils/str";
 import { formatUrlProtocol } from "@/common/utils/url";
+import { toMediaUrl } from "@/platform";
 import { getAudioSongInfo } from "@/service/audio-song-info";
 import { getWebInterfaceView } from "@/service/web-interface-view";
 
@@ -294,8 +295,9 @@ export const usePlayList = create<State & Action>()(
           return;
         }
         if (isUrlValid(currentPlayItem?.audioUrl)) {
-          if (audio.src !== currentPlayItem.audioUrl) {
-            audio.src = currentPlayItem.audioUrl;
+          const mediaUrl = await toMediaUrl(currentPlayItem.audioUrl);
+          if (audio.src !== mediaUrl) {
+            audio.src = mediaUrl;
           }
           const currentTime = usePlayProgress.getState().currentTime;
           if (typeof currentTime === "number" && currentTime > 0) {
@@ -1075,7 +1077,7 @@ usePlayList.subscribe(async (state, prevState) => {
         return;
       }
       if (isUrlValid(playItem?.audioUrl) && audio.paused) {
-        resetAudioAndPlay(playItem.audioUrl);
+        resetAudioAndPlay(await toMediaUrl(playItem.audioUrl));
         return;
       }
 

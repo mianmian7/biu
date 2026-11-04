@@ -1,6 +1,7 @@
 import log from "electron-log/renderer";
 import moment from "moment";
 
+import { toMediaUrl, unwrapMediaUrl } from "@/platform";
 import { getAudioWebStreamUrl } from "@/service/audio-web-url";
 import { getPlayerPlayurl, type DashAudio } from "@/service/player-playurl";
 import { useUser } from "@/store/user";
@@ -8,6 +9,26 @@ import { useUser } from "@/store/user";
 import { audioQualitySort } from "../constants/audio";
 import { VideoFnval } from "../constants/video";
 import { getUrlParams } from "./url";
+
+function canBrowserPlayMime(mimeTypes: string[]): boolean {
+  if (typeof Audio === "undefined") {
+    return true;
+  }
+  try {
+    const probe = new Audio();
+    if (typeof probe.canPlayType !== "function") {
+      return true;
+    }
+    const results = mimeTypes.map(m => probe.canPlayType(m));
+    // In test environments (like JSDOM) where canPlayType returns "" for everything including audio/mp4, treat as supported
+    if (probe.canPlayType("audio/mp4") === "" && results.every(r => r === "")) {
+      return true;
+    }
+    return results.some(r => r === "probably" || r === "maybe");
+  } catch {
+    return true;
+  }
+}
 
 function sortAudio(audio: DashAudio[]) {
   return audio.toSorted((a, b) => {
@@ -52,29 +73,39 @@ export async function getDashUrl(bvid: string, cid: string | number, audioQualit
 
     const bestVideoInfo = getUrlInfoRes?.data?.dash?.video?.[0];
     const videoResolution = `${bestVideoInfo?.width}x${bestVideoInfo?.height}`;
-    const videoUrl = bestVideoInfo?.baseUrl || bestVideoInfo?.backupUrl?.[0];
+    const rawVideoUrl = bestVideoInfo?.baseUrl || bestVideoInfo?.backupUrl?.[0];
+    const videoUrl = rawVideoUrl ? await toMediaUrl(rawVideoUrl) : undefined;
     const flacAudio = getUrlInfoRes?.data?.dash?.flac?.audio;
     const dolbyAudio = getUrlInfoRes?.data?.dash?.dolby?.audio?.[0];
 
     if (audioQuality === "auto" || audioQuality === "lossless") {
-      if (flacAudio) {
+      if (flacAudio && canBrowserPlayMime(["audio/flac", 'audio/mp4; codecs="flac"'])) {
+        const rawAudioUrl = flacAudio.baseUrl || flacAudio.backupUrl?.[0];
         return {
           isLossless: true,
           audioCodecs: flacAudio.codecs.toLowerCase(),
           audioBandwidth: flacAudio.bandwidth,
-          audioUrl: flacAudio.baseUrl || flacAudio.backupUrl[0],
+          audioUrl: rawAudioUrl ? await toMediaUrl(rawAudioUrl) : "",
           videoUrl,
           videoResolution,
         };
       }
 
-      if (dolbyAudio) {
+      if (
+        dolbyAudio &&
+        canBrowserPlayMime([
+          `audio/mp4; codecs="${dolbyAudio.codecs}"`,
+          'audio/mp4; codecs="ec-3"',
+          'audio/mp4; codecs="ac-3"',
+        ])
+      ) {
+        const rawAudioUrl = dolbyAudio.baseUrl || dolbyAudio.backupUrl?.[0] || "";
         return {
           isLossless: false,
           isDolby: true,
           audioCodecs: dolbyAudio.codecs.toLowerCase(),
           audioBandwidth: dolbyAudio.bandwidth,
-          audioUrl: dolbyAudio.baseUrl || dolbyAudio.backupUrl?.[0] || "",
+          audioUrl: rawAudioUrl ? await toMediaUrl(rawAudioUrl) : "",
           videoUrl,
           videoResolution: `${bestVideoInfo?.width}x${bestVideoInfo?.height}`,
         };
@@ -83,11 +114,12 @@ export async function getDashUrl(bvid: string, cid: string | number, audioQualit
 
     const audioList = getUrlInfoRes?.data?.dash?.audio || [];
     const selectedAudio = selectAudioByQuality(audioList, audioQuality);
+    const rawSelectedUrl = selectedAudio?.baseUrl || selectedAudio?.backupUrl?.[0] || "";
     return {
       isLossless: false,
       audioCodecs: selectedAudio?.codecs?.toLowerCase() || "",
       audioBandwidth: selectedAudio?.bandwidth,
-      audioUrl: selectedAudio?.baseUrl || selectedAudio?.backupUrl?.[0] || "",
+      audioUrl: rawSelectedUrl ? await toMediaUrl(rawSelectedUrl) : "",
       videoUrl,
       videoResolution,
     };
@@ -112,9 +144,10 @@ export const getAudioUrl = async (sid: number | string) => {
   });
 
   const isFlac = res?.data?.type === 3;
+  const rawAudioUrl = res?.data?.cdns?.[0];
 
   return {
-    audioUrl: res?.data?.cdns?.[0],
+    audioUrl: rawAudioUrl ? await toMediaUrl(rawAudioUrl) : undefined,
     audioCodecs: isFlac ? "flac" : "",
     isLossless: isFlac,
   };
@@ -122,5 +155,6 @@ export const getAudioUrl = async (sid: number | string) => {
 
 /** URL是否有效 */
 export const isUrlValid = (url?: string): url is string => {
-  return Boolean(url) && moment().isBefore(moment.unix(Number(getUrlParams(url as string).deadline)));
+  const raw = unwrapMediaUrl(url);
+  return Boolean(raw) && moment().isBefore(moment.unix(Number(getUrlParams(raw as string).deadline)));
 };
