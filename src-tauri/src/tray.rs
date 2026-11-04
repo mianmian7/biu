@@ -245,6 +245,9 @@ pub fn quit_application<R: Runtime>(app: &AppHandle<R>) {
     if let Some(ts) = app.try_state::<Arc<TrayState<R>>>() {
         ts.quitting.store(true, Ordering::Relaxed);
     }
+    if let Some(dl_mgr) = app.try_state::<Arc<crate::download::DownloadManager>>() {
+        dl_mgr.shutdown(std::time::Duration::from_secs(5));
+    }
     destroy_mini_player(app);
     if let Some(dl_state) = app.try_state::<Arc<DesktopLyricsState>>() {
         destroy_desktop_lyrics_window(app, &dl_state);

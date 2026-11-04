@@ -930,10 +930,26 @@ pub struct FullMediaDownloadTask {
     #[serde(default)]
     pub chunks: Vec<MediaDownloadChunk>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 impl FullMediaDownloadTask {
+    pub fn compute_stream_id(&self, audio_total_bytes: u64, video_total_bytes: u64) -> String {
+        format!(
+            "a:{}:{}:{}:{}|v:{}:{}:{}:{}",
+            audio_total_bytes,
+            self.audio_codecs.as_deref().unwrap_or(""),
+            self.audio_bandwidth.unwrap_or(0),
+            url_stream_key(self.audio_url.as_deref()),
+            video_total_bytes,
+            self.video_resolution.as_deref().unwrap_or(""),
+            self.video_frame_rate.as_deref().unwrap_or(""),
+            url_stream_key(self.video_url.as_deref()),
+        )
+    }
+
     pub fn to_public_task(&self) -> MediaDownloadTask {
         MediaDownloadTask {
             id: self.id.clone(),
@@ -969,6 +985,20 @@ impl FullMediaDownloadTask {
         };
         copy
     }
+}
+
+fn url_stream_key(url_str: Option<&str>) -> String {
+    let Some(s) = url_str.filter(|s| !s.is_empty()) else {
+        return String::new();
+    };
+    let Ok(parsed) = Url::parse(s) else {
+        return String::new();
+    };
+    parsed
+        .path_segments()
+        .and_then(|mut segs| segs.next_back())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn value_id_to_string(val: &Option<Value>) -> Option<String> {
@@ -1093,9 +1123,21 @@ pub fn parse_content_range_start(header_val: &str) -> Option<(u64, u64)> {
 }
 
 pub struct WorkerControl {
+    pub generation: u64,
     pub stop_flag: Arc<AtomicBool>,
-    pub stop_notify: Arc<tokio::sync::Notify>,
+    pub stop_tx: Arc<tokio::sync::watch::Sender<bool>>,
     pub done_rx: tokio::sync::watch::Receiver<bool>,
+}
+
+async fn wait_watch_true(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    if *rx.borrow_and_update() {
+        return;
+    }
+    while rx.changed().await.is_ok() {
+        if *rx.borrow_and_update() {
+            return;
+        }
+    }
 }
 
 pub struct DownloadManager {
@@ -1108,6 +1150,7 @@ pub struct DownloadManager {
     pub flush_scheduled: AtomicBool,
     pub store_path: PathBuf,
     pub chunk_idle_timeout: RwLock<Duration>,
+    pub shut_down: AtomicBool,
 }
 
 impl DownloadManager {
@@ -1126,6 +1169,7 @@ impl DownloadManager {
             flush_scheduled: AtomicBool::new(false),
             store_path,
             chunk_idle_timeout: RwLock::new(CHUNK_READ_IDLE_TIMEOUT),
+            shut_down: AtomicBool::new(false),
         });
         mgr.restore_from_disk();
         mgr
@@ -1153,22 +1197,75 @@ impl DownloadManager {
             == generation
     }
 
+    fn cleanup_generation_if_matches(&self, id: &str, generation: u64) {
+        let mut gens = self.generations.lock().unwrap();
+        if gens.get(id).copied() == Some(generation) {
+            gens.remove(id);
+        }
+    }
+
     async fn stop_and_wait_worker(&self, id: &str) -> u64 {
-        let (gen, prev_worker) = {
-            let gen = self.next_generation(id);
-            let prev = self.workers.lock().unwrap().remove(id);
-            (gen, prev)
-        };
-        if let Some(mut w) = prev_worker {
-            w.stop_flag.store(true, Ordering::SeqCst);
-            w.stop_notify.notify_waiters();
-            while !*w.done_rx.borrow_and_update() {
-                if w.done_rx.changed().await.is_err() {
-                    break;
+        let mut waited_gen: Option<u64> = None;
+        loop {
+            let (gen, done_rx_opt) = {
+                let gen = self.next_generation(id);
+                let workers = self.workers.lock().unwrap();
+                let rx = workers.get(id).and_then(|w| {
+                    w.stop_flag.store(true, Ordering::SeqCst);
+                    let _ = w.stop_tx.send(true);
+                    if waited_gen == Some(w.generation) {
+                        None
+                    } else {
+                        Some((w.generation, w.done_rx.clone()))
+                    }
+                });
+                (gen, rx)
+            };
+            if let Some((w_gen, mut done_rx)) = done_rx_opt {
+                wait_watch_true(&mut done_rx).await;
+                waited_gen = Some(w_gen);
+                let still_has_other = self
+                    .workers
+                    .lock()
+                    .unwrap()
+                    .get(id)
+                    .is_some_and(|w| w.generation != w_gen);
+                if still_has_other {
+                    continue;
                 }
             }
+            return gen;
         }
-        gen
+    }
+
+    pub fn shutdown(&self, timeout: Duration) {
+        if self.shut_down.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let receivers: Vec<tokio::sync::watch::Receiver<bool>> = {
+            let workers = self.workers.lock().unwrap();
+            let mut gens = self.generations.lock().unwrap();
+            workers
+                .iter()
+                .map(|(id, w)| {
+                    let entry = gens.entry(id.clone()).or_insert(0);
+                    *entry += 1;
+                    w.stop_flag.store(true, Ordering::SeqCst);
+                    let _ = w.stop_tx.send(true);
+                    w.done_rx.clone()
+                })
+                .collect()
+        };
+        if !receivers.is_empty() {
+            let start = Instant::now();
+            while start.elapsed() < timeout {
+                if receivers.iter().all(|rx| *rx.borrow()) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        self.save_to_disk();
     }
 
     fn restore_from_disk(&self) {
@@ -1405,6 +1502,7 @@ impl DownloadManager {
             audio_temp_path: None,
             video_temp_path: None,
             chunks: Vec::new(),
+            stream_id: None,
             error: None,
         };
 
@@ -1426,39 +1524,69 @@ impl DownloadManager {
         generation: u64,
     ) {
         let id = task_arc.lock().unwrap().id.clone();
+        if !self.is_current_generation(&id, generation) {
+            return;
+        }
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_notify = Arc::new(tokio::sync::Notify::new());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let stop_tx = Arc::new(stop_tx);
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
 
         if let Some(prev) = self.workers.lock().unwrap().insert(
             id.clone(),
             WorkerControl {
+                generation,
                 stop_flag: stop_flag.clone(),
-                stop_notify: stop_notify.clone(),
+                stop_tx: stop_tx.clone(),
                 done_rx,
             },
         ) {
             prev.stop_flag.store(true, Ordering::SeqCst);
-            prev.stop_notify.notify_waiters();
+            let _ = prev.stop_tx.send(true);
         }
 
         let mgr = self.clone();
         let id_clone = id.clone();
         tauri::async_runtime::spawn(async move {
+            struct WorkerExitGuard {
+                mgr: Arc<DownloadManager>,
+                id: String,
+                generation: u64,
+                done_tx: tokio::sync::watch::Sender<bool>,
+            }
+            impl Drop for WorkerExitGuard {
+                fn drop(&mut self) {
+                    {
+                        let mut workers = self.mgr.workers.lock().unwrap();
+                        if workers
+                            .get(&self.id)
+                            .is_some_and(|w| w.generation == self.generation)
+                        {
+                            workers.remove(&self.id);
+                        }
+                    }
+                    let _ = self.done_tx.send(true);
+                }
+            }
+            let _exit_guard = WorkerExitGuard {
+                mgr: mgr.clone(),
+                id: id_clone.clone(),
+                generation,
+                done_tx,
+            };
+
+            let mut stop_rx_acquire = stop_rx.clone();
             let permit = tokio::select! {
                 p = mgr.semaphore.clone().acquire_owned() => p,
-                _ = stop_notify.notified() => {
-                    let _ = done_tx.send(true);
+                _ = wait_watch_true(&mut stop_rx_acquire) => {
                     return;
                 }
             };
             let Ok(_permit) = permit else {
-                let _ = done_tx.send(true);
                 return;
             };
             if stop_flag.load(Ordering::SeqCst) || !mgr.is_current_generation(&id_clone, generation)
             {
-                let _ = done_tx.send(true);
                 return;
             }
             mgr.run_task_pipeline(
@@ -1466,15 +1594,18 @@ impl DownloadManager {
                 &bili,
                 &task_arc,
                 &stop_flag,
-                &stop_notify,
+                &stop_rx,
                 is_resume,
                 generation,
             )
             .await;
             if mgr.is_current_generation(&id_clone, generation) {
                 mgr.save_to_disk();
+                let is_completed = task_arc.lock().unwrap().status == "completed";
+                if is_completed {
+                    mgr.cleanup_generation_if_matches(&id_clone, generation);
+                }
             }
-            let _ = done_tx.send(true);
         });
     }
 
@@ -1485,7 +1616,7 @@ impl DownloadManager {
         bili: &Arc<BiliState>,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
         stop_flag: &Arc<AtomicBool>,
-        stop_notify: &Arc<tokio::sync::Notify>,
+        stop_rx: &tokio::sync::watch::Receiver<bool>,
         is_resume: bool,
         generation: u64,
     ) {
@@ -1506,9 +1637,10 @@ impl DownloadManager {
 
         if let Some(bvid) = bvid_opt.filter(|b| !b.is_empty() && !has_cid) {
             let view_fut = get_web_interface_view(bili, &bvid);
+            let mut stop_rx_view = stop_rx.clone();
             let view_res = tokio::select! {
                 r = view_fut => r,
-                _ = stop_notify.notified() => return,
+                _ = wait_watch_true(&mut stop_rx_view) => return,
             };
             if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation)
             {
@@ -1600,7 +1732,7 @@ impl DownloadManager {
             }
 
             if let Err(err) = self
-                .stage_download(app, bili, task_arc, stop_flag, stop_notify, generation)
+                .stage_download(app, bili, task_arc, stop_flag, stop_rx, generation)
                 .await
             {
                 if !stop_flag.load(Ordering::SeqCst)
@@ -1663,11 +1795,21 @@ impl DownloadManager {
         bili: &Arc<BiliState>,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
         stop_flag: &Arc<AtomicBool>,
-        stop_notify: &Arc<tokio::sync::Notify>,
+        stop_rx: &tokio::sync::watch::Receiver<bool>,
         generation: u64,
     ) -> Result<(), String> {
         // 1. Check if URLs need refreshing
-        let (need_urls, task_id) = {
+        let (
+            need_urls,
+            task_id,
+            prev_stream_id,
+            prev_audio_total,
+            prev_video_total,
+            prev_audio_codecs,
+            prev_audio_bw,
+            prev_video_res,
+            prev_video_fr,
+        ) = {
             let t = task_arc.lock().unwrap();
             let need = if t.output_file_type == "audio" {
                 !is_url_valid(t.audio_url.as_deref())
@@ -1675,13 +1817,24 @@ impl DownloadManager {
                 !is_url_valid(t.video_url.as_deref())
                     || (t.audio_codecs.is_some() && !is_url_valid(t.audio_url.as_deref()))
             };
-            (need, t.id.clone())
+            (
+                need,
+                t.id.clone(),
+                t.stream_id.clone(),
+                t.audio_total_bytes,
+                t.video_total_bytes,
+                t.audio_codecs.clone(),
+                t.audio_bandwidth,
+                t.video_resolution.clone(),
+                t.video_frame_rate.clone(),
+            )
         };
 
         if need_urls {
+            let mut stop_rx_urls = stop_rx.clone();
             tokio::select! {
                 res = self.fetch_download_urls(app, bili, task_arc) => res?,
-                _ = stop_notify.notified() => return Ok(()),
+                _ = wait_watch_true(&mut stop_rx_urls) => return Ok(()),
             }
         }
         if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&task_id, generation) {
@@ -1705,9 +1858,10 @@ impl DownloadManager {
         let mut video_total_bytes = 0u64;
 
         if let Some(a_url) = audio_url.as_deref().filter(|s| !s.is_empty()) {
+            let mut stop_rx_len = stop_rx.clone();
             let len = tokio::select! {
                 l = self.get_content_length(bili, a_url) => l,
-                _ = stop_notify.notified() => return Ok(()),
+                _ = wait_watch_true(&mut stop_rx_len) => return Ok(()),
             };
             if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&id, generation) {
                 return Ok(());
@@ -1723,9 +1877,10 @@ impl DownloadManager {
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| "can't get video url".to_string())?;
+            let mut stop_rx_len = stop_rx.clone();
             let len = tokio::select! {
                 l = self.get_content_length(bili, v_url) => l,
-                _ = stop_notify.notified() => return Ok(()),
+                _ = wait_watch_true(&mut stop_rx_len) => return Ok(()),
             };
             if stop_flag.load(Ordering::SeqCst) || !self.is_current_generation(&id, generation) {
                 return Ok(());
@@ -1742,6 +1897,28 @@ impl DownloadManager {
         } else {
             PathBuf::from(&temp_dir_str)
         };
+
+        let (new_stream_id, stream_changed) = {
+            let t = task_arc.lock().unwrap();
+            let new_id = t.compute_stream_id(audio_total_bytes, video_total_bytes);
+            let changed = if let Some(ref prev_id) = prev_stream_id {
+                prev_id != &new_id
+            } else if prev_audio_total > 0 || prev_video_total > 0 {
+                prev_audio_total != audio_total_bytes
+                    || prev_video_total != video_total_bytes
+                    || prev_audio_codecs != t.audio_codecs
+                    || prev_audio_bw != t.audio_bandwidth
+                    || prev_video_res != t.video_resolution
+                    || prev_video_fr != t.video_frame_rate
+            } else {
+                false
+            };
+            (new_id, changed)
+        };
+
+        if stream_changed && temp_dir_path.exists() {
+            let _ = fs::remove_dir_all(&temp_dir_path);
+        }
         fs::create_dir_all(&temp_dir_path).map_err(|e| e.to_string())?;
 
         let mut chunks = Vec::new();
@@ -1760,6 +1937,7 @@ impl DownloadManager {
             t.total_bytes = total_bytes;
             t.audio_total_bytes = audio_total_bytes;
             t.video_total_bytes = video_total_bytes;
+            t.stream_id = Some(new_stream_id);
             t.temp_dir = temp_dir_path.to_string_lossy().into_owned();
             if audio_total_bytes > 0 {
                 t.audio_temp_path = Some(
@@ -1780,11 +1958,13 @@ impl DownloadManager {
             t.chunks = chunks.clone();
             t.downloaded_bytes = 0;
         }
+        self.save_to_disk();
 
         // 3. Check existing chunk files & queue pending chunks (concurrency = 5)
         let chunk_sem = Arc::new(Semaphore::new(CHUNK_CONCURRENCY));
         let chunk_abort_flag = Arc::new(AtomicBool::new(false));
-        let chunk_abort_notify = Arc::new(tokio::sync::Notify::new());
+        let (chunk_abort_tx, chunk_abort_rx) = tokio::sync::watch::channel(false);
+        let chunk_abort_tx = Arc::new(chunk_abort_tx);
         let mut join_handles = Vec::new();
 
         for (idx, chunk) in chunks.iter().enumerate() {
@@ -1834,16 +2014,17 @@ impl DownloadManager {
             let mgr_clone = self.clone();
             let task_clone = task_arc.clone();
             let stop_clone = stop_flag.clone();
-            let stop_notify_clone = stop_notify.clone();
+            let mut stop_rx_clone = stop_rx.clone();
             let abort_clone = chunk_abort_flag.clone();
-            let abort_notify_clone = chunk_abort_notify.clone();
+            let abort_tx_clone = chunk_abort_tx.clone();
+            let mut abort_rx_clone = chunk_abort_rx.clone();
             let chunk_clone = chunk.clone();
 
             let handle = tauri::async_runtime::spawn(async move {
                 let permit = tokio::select! {
                     p = sem.acquire_owned() => p,
-                    _ = stop_notify_clone.notified() => return Ok(()),
-                    _ = abort_notify_clone.notified() => return Ok(()),
+                    _ = wait_watch_true(&mut stop_rx_clone) => return Ok(()),
+                    _ = wait_watch_true(&mut abort_rx_clone) => return Ok(()),
                 };
                 let Ok(_permit) = permit else {
                     return Err("Semaphore closed".to_string());
@@ -1857,9 +2038,9 @@ impl DownloadManager {
                         &bili_clone,
                         &task_clone,
                         &stop_clone,
-                        &stop_notify_clone,
+                        &stop_rx_clone,
                         &abort_clone,
-                        &abort_notify_clone,
+                        &abort_rx_clone,
                         generation,
                         idx,
                         &chunk_clone,
@@ -1870,7 +2051,7 @@ impl DownloadManager {
                     .await;
                 if res.is_err() {
                     abort_clone.store(true, Ordering::SeqCst);
-                    abort_notify_clone.notify_waiters();
+                    let _ = abort_tx_clone.send(true);
                 }
                 res
             });
@@ -1883,14 +2064,14 @@ impl DownloadManager {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     chunk_abort_flag.store(true, Ordering::SeqCst);
-                    chunk_abort_notify.notify_waiters();
+                    let _ = chunk_abort_tx.send(true);
                     if first_err.is_none() {
                         first_err = Some(e);
                     }
                 }
                 Err(e) => {
                     chunk_abort_flag.store(true, Ordering::SeqCst);
-                    chunk_abort_notify.notify_waiters();
+                    let _ = chunk_abort_tx.send(true);
                     if first_err.is_none() {
                         first_err = Some(e.to_string());
                     }
@@ -1915,9 +2096,9 @@ impl DownloadManager {
         bili: &BiliState,
         task_arc: &Arc<Mutex<FullMediaDownloadTask>>,
         stop_flag: &Arc<AtomicBool>,
-        stop_notify: &Arc<tokio::sync::Notify>,
+        stop_rx: &tokio::sync::watch::Receiver<bool>,
         chunk_abort_flag: &Arc<AtomicBool>,
-        chunk_abort_notify: &Arc<tokio::sync::Notify>,
+        chunk_abort_rx: &tokio::sync::watch::Receiver<bool>,
         generation: u64,
         chunk_idx: usize,
         chunk: &MediaDownloadChunk,
@@ -1974,10 +2155,12 @@ impl DownloadManager {
                 .header(reqwest::header::RANGE, &range_header)
                 .send();
 
+            let mut stop_rx_send = stop_rx.clone();
+            let mut abort_rx_send = chunk_abort_rx.clone();
             let resp_res = tokio::select! {
                 r = send_fut => r,
-                _ = stop_notify.notified() => return Ok(()),
-                _ = chunk_abort_notify.notified() => return Ok(()),
+                _ = wait_watch_true(&mut stop_rx_send) => return Ok(()),
+                _ = wait_watch_true(&mut abort_rx_send) => return Ok(()),
                 _ = tokio::time::sleep(idle_timeout) => {
                     last_err = "request timed out".to_string();
                     continue;
@@ -1993,10 +2176,12 @@ impl DownloadManager {
                 Err(e) => {
                     last_err = e.to_string();
                     if attempt < 2 {
+                        let mut stop_rx_sleep = stop_rx.clone();
+                        let mut abort_rx_sleep = chunk_abort_rx.clone();
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
-                            _ = stop_notify.notified() => return Ok(()),
-                            _ = chunk_abort_notify.notified() => return Ok(()),
+                            _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                            _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
                         }
                     }
                     continue;
@@ -2004,46 +2189,78 @@ impl DownloadManager {
             };
 
             let status_code = resp.status().as_u16();
-            if status_code != 206 {
-                if status_code == 200 {
-                    // Server ignored Range header; do not append full resource onto chunk
-                    last_err = "server returned 200 OK instead of 206 Partial Content".to_string();
-                } else {
-                    last_err = format!("HTTP {}", resp.status());
-                }
-                if attempt < 2 {
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
-                        _ = stop_notify.notified() => return Ok(()),
-                        _ = chunk_abort_notify.notified() => return Ok(()),
-                    }
-                }
-                continue;
-            }
-
-            // Validate Content-Range start matches req_start
-            let cr_valid = resp
-                .headers()
-                .get(reqwest::header::CONTENT_RANGE)
-                .and_then(|v| v.to_str().ok())
-                .and_then(parse_content_range_start)
-                .is_some_and(|(cr_start, cr_end)| cr_start == req_start && cr_end == chunk.end);
-
-            if !cr_valid {
-                let cr_raw = resp
+            if status_code == 206 {
+                // Validate Content-Range start matches req_start
+                let cr_valid = resp
                     .headers()
                     .get(reqwest::header::CONTENT_RANGE)
                     .and_then(|v| v.to_str().ok())
-                    .unwrap_or("<missing>");
-                last_err = format!(
-                    "invalid Content-Range {cr_raw} (expected bytes {req_start}-{})",
-                    chunk.end
-                );
+                    .and_then(parse_content_range_start)
+                    .is_some_and(|(cr_start, cr_end)| cr_start == req_start && cr_end == chunk.end);
+
+                if !cr_valid {
+                    let cr_raw = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_RANGE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("<missing>");
+                    last_err = format!(
+                        "invalid Content-Range {cr_raw} (expected bytes {req_start}-{})",
+                        chunk.end
+                    );
+                    if attempt < 2 {
+                        let mut stop_rx_sleep = stop_rx.clone();
+                        let mut abort_rx_sleep = chunk_abort_rx.clone();
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
+                            _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                            _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
+                        }
+                    }
+                    continue;
+                }
+            } else if status_code == 200 {
+                let stream_total = {
+                    let t = task_arc.lock().unwrap();
+                    if chunk.chunk_type == "audio" {
+                        t.audio_total_bytes
+                    } else {
+                        t.video_total_bytes
+                    }
+                };
+                let content_len = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.trim().parse::<u64>().ok());
+                let covers_whole_file =
+                    chunk.start == 0 && (stream_total == 0 || expected_chunk_len == stream_total);
+                let ok_single_whole_200 = actual_offset == 0
+                    && covers_whole_file
+                    && content_len == Some(expected_chunk_len);
+
+                if !ok_single_whole_200 {
+                    last_err = "server returned 200 OK instead of 206 Partial Content".to_string();
+                    if attempt < 2 {
+                        let mut stop_rx_sleep = stop_rx.clone();
+                        let mut abort_rx_sleep = chunk_abort_rx.clone();
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
+                            _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                            _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
+                        }
+                    }
+                    continue;
+                }
+            } else {
+                last_err = format!("HTTP {}", resp.status());
                 if attempt < 2 {
+                    let mut stop_rx_sleep = stop_rx.clone();
+                    let mut abort_rx_sleep = chunk_abort_rx.clone();
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(300 * (attempt + 1))) => {}
-                        _ = stop_notify.notified() => return Ok(()),
-                        _ = chunk_abort_notify.notified() => return Ok(()),
+                        _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                        _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
                     }
                 }
                 continue;
@@ -2068,13 +2285,15 @@ impl DownloadManager {
                     return Ok(());
                 }
 
+                let mut stop_rx_chunk = stop_rx.clone();
+                let mut abort_rx_chunk = chunk_abort_rx.clone();
                 let next_chunk = tokio::select! {
                     c = resp.chunk() => c,
-                    _ = stop_notify.notified() => {
+                    _ = wait_watch_true(&mut stop_rx_chunk) => {
                         let _ = file.flush().await;
                         return Ok(());
                     }
-                    _ = chunk_abort_notify.notified() => {
+                    _ = wait_watch_true(&mut abort_rx_chunk) => {
                         let _ = file.flush().await;
                         return Ok(());
                     }
@@ -2129,10 +2348,12 @@ impl DownloadManager {
             if let Some(e) = stream_err {
                 last_err = e;
                 if attempt < 2 {
+                    let mut stop_rx_sleep = stop_rx.clone();
+                    let mut abort_rx_sleep = chunk_abort_rx.clone();
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(200 * (attempt + 1))) => {}
-                        _ = stop_notify.notified() => return Ok(()),
-                        _ = chunk_abort_notify.notified() => return Ok(()),
+                        _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                        _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
                     }
                 }
                 continue;
@@ -2148,10 +2369,12 @@ impl DownloadManager {
                     chunk.name
                 );
                 if attempt < 2 {
+                    let mut stop_rx_sleep = stop_rx.clone();
+                    let mut abort_rx_sleep = chunk_abort_rx.clone();
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(200 * (attempt + 1))) => {}
-                        _ = stop_notify.notified() => return Ok(()),
-                        _ = chunk_abort_notify.notified() => return Ok(()),
+                        _ = wait_watch_true(&mut stop_rx_sleep) => return Ok(()),
+                        _ = wait_watch_true(&mut abort_rx_sleep) => return Ok(()),
                     }
                 }
                 continue;
@@ -2280,72 +2503,96 @@ impl DownloadManager {
             return Ok(());
         }
 
+        let expected_total_len: u64 = chunks.iter().map(|c| c.end - c.start + 1).sum();
+
         let mut start_index = 0usize;
         if dest_path.exists() {
             let merged_size = fs::metadata(dest_path).map(|m| m.len()).unwrap_or(0);
-            let mut accumulated = 0u64;
-            for (i, c) in chunks.iter().enumerate() {
-                let c_size = c.end - c.start + 1;
-                if merged_size >= accumulated + c_size {
-                    accumulated += c_size;
-                    start_index = i + 1;
-                } else {
-                    if let Ok(f) = OpenOptions::new().write(true).open(dest_path) {
-                        if f.set_len(accumulated).is_err() {
+            if merged_size > expected_total_len {
+                let _ = fs::remove_file(dest_path);
+            } else {
+                let mut accumulated = 0u64;
+                for (i, c) in chunks.iter().enumerate() {
+                    let c_size = c.end - c.start + 1;
+                    if merged_size >= accumulated + c_size {
+                        accumulated += c_size;
+                        start_index = i + 1;
+                    } else {
+                        if let Ok(f) = OpenOptions::new().write(true).open(dest_path) {
+                            if f.set_len(accumulated).is_err() {
+                                let _ = fs::remove_file(dest_path);
+                                start_index = 0;
+                            }
+                        } else {
                             let _ = fs::remove_file(dest_path);
                             start_index = 0;
                         }
-                    } else {
-                        let _ = fs::remove_file(dest_path);
-                        start_index = 0;
+                        break;
                     }
-                    break;
                 }
             }
         }
 
-        if start_index >= chunks.len() || stop_flag.load(Ordering::SeqCst) {
+        if stop_flag.load(Ordering::SeqCst) {
             return Ok(());
         }
 
-        let mut out_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dest_path)
-            .map_err(|e| e.to_string())?;
+        if start_index < chunks.len() {
+            let mut out_file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dest_path)
+                .map_err(|e| e.to_string())?;
 
-        let mut buf = vec![0u8; 64 * 1024];
-        for c in chunks.iter().skip(start_index) {
-            if stop_flag.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-            let chunk_path = temp_dir.join(&c.name);
-            let mut in_file = fs::File::open(&chunk_path).map_err(|e| e.to_string())?;
-            loop {
+            let mut buf = vec![0u8; 64 * 1024];
+            for c in chunks.iter().skip(start_index) {
                 if stop_flag.load(Ordering::SeqCst) {
                     return Ok(());
                 }
-                let n = in_file.read(&mut buf).map_err(|e| e.to_string())?;
-                if n == 0 {
-                    break;
+                let chunk_path = temp_dir.join(&c.name);
+                let expected_chunk_len = c.end - c.start + 1;
+                let actual_chunk_len = fs::metadata(&chunk_path).map(|m| m.len()).unwrap_or(0);
+                if actual_chunk_len != expected_chunk_len {
+                    return Err(format!(
+                        "chunk {} size mismatch before merge: got {actual_chunk_len} bytes, expected {expected_chunk_len}",
+                        c.name
+                    ));
                 }
-                out_file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-                *merged_bytes += n as u64;
-                let pub_t = {
-                    let mut t = task_arc.lock().unwrap();
-                    t.merge_progress = if total_bytes > 0 {
-                        ((*merged_bytes as f64 / total_bytes as f64) * 100.0)
-                            .round()
-                            .min(100.0) as u32
-                    } else {
-                        0
+                let mut in_file = fs::File::open(&chunk_path).map_err(|e| e.to_string())?;
+                loop {
+                    if stop_flag.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    let n = in_file.read(&mut buf).map_err(|e| e.to_string())?;
+                    if n == 0 {
+                        break;
+                    }
+                    out_file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+                    *merged_bytes += n as u64;
+                    let pub_t = {
+                        let mut t = task_arc.lock().unwrap();
+                        t.merge_progress = if total_bytes > 0 {
+                            ((*merged_bytes as f64 / total_bytes as f64) * 100.0)
+                                .round()
+                                .min(100.0) as u32
+                        } else {
+                            0
+                        };
+                        t.to_public_task()
                     };
-                    t.to_public_task()
-                };
-                self.emit_task_update_if_gen(app, pub_t, generation, false);
+                    self.emit_task_update_if_gen(app, pub_t, generation, false);
+                }
             }
+            out_file.flush().map_err(|e| e.to_string())?;
         }
-        out_file.flush().map_err(|e| e.to_string())?;
+
+        let final_merged_len = fs::metadata(dest_path).map(|m| m.len()).unwrap_or(0);
+        if final_merged_len != expected_total_len {
+            let _ = fs::remove_file(dest_path);
+            return Err(format!(
+                "merged {chunk_type}.m4s length mismatch: got {final_merged_len} bytes, expected {expected_total_len}"
+            ));
+        }
         Ok(())
     }
 
@@ -2426,6 +2673,7 @@ impl DownloadManager {
         };
         let file_name = format!("{base_name}{ext}");
         let desired_save_path = Path::new(&save_dir).join(&file_name);
+        let _ = fs::remove_file(build_task_temp_output_path(&desired_save_path, &task_id));
 
         let user_ffmpeg = app.and_then(|a| user_ffmpeg_setting(a));
         let ffmpeg_bin = resolve_ffmpeg_path(user_ffmpeg.as_deref())?;
@@ -2698,22 +2946,26 @@ impl DownloadManager {
         app: Option<&AppHandle<R>>,
         id: &str,
     ) {
+        let gen = self.stop_and_wait_worker(id).await;
         if let Some(task_arc) = self.find_task(id) {
-            let pub_t = {
+            let pub_t_opt = {
                 let mut t = task_arc.lock().unwrap();
-                t.status = match t.status.as_str() {
-                    "downloading" | "waiting" => "downloadPaused".to_string(),
-                    "merging" => "mergePaused".to_string(),
-                    "converting" => "convertPaused".to_string(),
-                    other => other.to_string(),
-                };
-                t.to_public_task()
+                if !self.is_current_generation(id, gen) {
+                    None
+                } else {
+                    t.status = match t.status.as_str() {
+                        "downloading" | "waiting" => "downloadPaused".to_string(),
+                        "merging" => "mergePaused".to_string(),
+                        "converting" => "convertPaused".to_string(),
+                        other => other.to_string(),
+                    };
+                    Some(t.to_public_task())
+                }
             };
-            self.stop_and_wait_worker(id).await;
-            self.save_to_disk();
-            self.emit_task_update(app, pub_t, true);
-        } else {
-            self.stop_and_wait_worker(id).await;
+            if let Some(pub_t) = pub_t_opt {
+                self.save_to_disk();
+                self.emit_task_update_if_gen(app, pub_t, gen, true);
+            }
         }
     }
 
@@ -2732,9 +2984,11 @@ impl DownloadManager {
         bili: Arc<BiliState>,
         id: &str,
     ) {
+        let gen = self.stop_and_wait_worker(id).await;
         if let Some(task_arc) = self.find_task(id) {
-            let gen = self.stop_and_wait_worker(id).await;
             self.spawn_worker_with_gen(app.cloned(), bili, task_arc, true, gen);
+        } else {
+            self.cleanup_generation_if_matches(id, gen);
         }
     }
 
@@ -2753,19 +3007,28 @@ impl DownloadManager {
         bili: Arc<BiliState>,
         id: &str,
     ) {
+        let gen = self.stop_and_wait_worker(id).await;
         if let Some(task_arc) = self.find_task(id) {
-            let gen = self.stop_and_wait_worker(id).await;
-            {
+            let valid = {
                 let mut t = task_arc.lock().unwrap();
-                t.status = "waiting".to_string();
-                t.error = None;
-                t.download_progress = 0;
-                t.merge_progress = 0;
-                t.convert_progress = 0;
+                if !self.is_current_generation(id, gen) {
+                    false
+                } else {
+                    t.status = "waiting".to_string();
+                    t.error = None;
+                    t.download_progress = 0;
+                    t.merge_progress = 0;
+                    t.convert_progress = 0;
+                    true
+                }
+            };
+            if valid {
+                self.save_to_disk();
+                self.broadcast_full(app);
+                self.spawn_worker_with_gen(app.cloned(), bili, task_arc, false, gen);
             }
-            self.save_to_disk();
-            self.broadcast_full(app);
-            self.spawn_worker_with_gen(app.cloned(), bili, task_arc, false, gen);
+        } else {
+            self.cleanup_generation_if_matches(id, gen);
         }
     }
 
@@ -2779,7 +3042,6 @@ impl DownloadManager {
             return;
         }
         self.pending_updates.lock().unwrap().remove(id);
-        self.workers.lock().unwrap().remove(id);
         let removed = {
             let mut lock = self.tasks.write().unwrap();
             lock.iter()
@@ -2792,6 +3054,7 @@ impl DownloadManager {
                 let _ = tokio::fs::remove_dir_all(&temp_dir).await;
             }
         }
+        self.cleanup_generation_if_matches(id, generation);
         self.save_to_disk();
         self.broadcast_full(app);
     }
@@ -2805,6 +3068,7 @@ impl DownloadManager {
         app: Option<&AppHandle<R>>,
         id: &str,
     ) {
+        let gen = self.stop_and_wait_worker(id).await;
         self.pending_updates.lock().unwrap().remove(id);
         let removed = {
             let mut lock = self.tasks.write().unwrap();
@@ -2812,7 +3076,6 @@ impl DownloadManager {
                 .position(|t| t.lock().unwrap().id == id)
                 .map(|pos| lock.remove(pos))
         };
-        self.stop_and_wait_worker(id).await;
         if let Some(task_arc) = removed {
             let (temp_dir, save_dir, title) = {
                 let t = task_arc.lock().unwrap();
@@ -2823,6 +3086,7 @@ impl DownloadManager {
             }
             self.cleanup_task_temp_outputs(&save_dir, &title, id);
         }
+        self.cleanup_generation_if_matches(id, gen);
         self.save_to_disk();
         self.broadcast_full(app);
     }
@@ -2849,19 +3113,45 @@ impl DownloadManager {
     }
 
     pub async fn clear_tasks_opt<R: Runtime>(self: &Arc<Self>, app: Option<&AppHandle<R>>) {
-        self.pending_updates.lock().unwrap().clear();
-        let all_tasks: Vec<Arc<Mutex<FullMediaDownloadTask>>> = {
-            let mut lock = self.tasks.write().unwrap();
-            lock.drain(..).collect()
-        };
-        let ids: Vec<String> = all_tasks
-            .iter()
-            .map(|t| t.lock().unwrap().id.clone())
-            .collect();
-        for id in &ids {
-            self.stop_and_wait_worker(id).await;
+        let mut removed_tasks: Vec<Arc<Mutex<FullMediaDownloadTask>>> = Vec::new();
+        loop {
+            let ids: Vec<String> = {
+                let lock = self.tasks.read().unwrap();
+                let mut task_ids: Vec<String> =
+                    lock.iter().map(|t| t.lock().unwrap().id.clone()).collect();
+                for k in self.workers.lock().unwrap().keys() {
+                    if !task_ids.contains(k) {
+                        task_ids.push(k.clone());
+                    }
+                }
+                task_ids
+            };
+            if ids.is_empty() {
+                break;
+            }
+            let mut gens = Vec::with_capacity(ids.len());
+            for id in &ids {
+                let gen = self.stop_and_wait_worker(id).await;
+                gens.push((id.clone(), gen));
+            }
+            {
+                let mut lock = self.tasks.write().unwrap();
+                for (id, gen) in &gens {
+                    if self.is_current_generation(id, *gen) {
+                        if let Some(pos) = lock.iter().position(|t| t.lock().unwrap().id == *id) {
+                            removed_tasks.push(lock.remove(pos));
+                        }
+                    }
+                    self.pending_updates.lock().unwrap().remove(id);
+                    self.cleanup_generation_if_matches(id, *gen);
+                }
+            }
+            if self.tasks.read().unwrap().is_empty() && self.workers.lock().unwrap().is_empty() {
+                break;
+            }
         }
-        for task_arc in all_tasks {
+        self.pending_updates.lock().unwrap().clear();
+        for task_arc in removed_tasks {
             let (id, temp_dir, save_dir, title) = {
                 let t = task_arc.lock().unwrap();
                 (
@@ -3113,14 +3403,15 @@ mod tests {
                 end: 999,
                 done: false,
             }],
+            stream_id: None,
             error: None,
         };
         let task_arc = Arc::new(Mutex::new(task));
         let gen = mgr.next_generation("t-resume");
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_notify = Arc::new(tokio::sync::Notify::new());
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let abort_flag = Arc::new(AtomicBool::new(false));
-        let abort_notify = Arc::new(tokio::sync::Notify::new());
+        let (_abort_tx, abort_rx) = tokio::sync::watch::channel(false);
         let chunk = task_arc.lock().unwrap().chunks[0].clone();
         let url = format!("http://{addr}/audio.m4s");
 
@@ -3129,9 +3420,9 @@ mod tests {
             &bili,
             &task_arc,
             &stop_flag,
-            &stop_notify,
+            &stop_rx,
             &abort_flag,
-            &abort_notify,
+            &abort_rx,
             gen,
             0,
             &chunk,
@@ -3164,7 +3455,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        // Server responds to HEAD with Content-Length: 500, but responds to GET Range with 200 OK (ignoring Range)
+        // Server responds to HEAD with Content-Length: 500, and responds to GET Range with 200 OK (ignoring Range)
         let srv = tokio::spawn(async move {
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else {
@@ -3194,8 +3485,103 @@ mod tests {
 
         let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
         let mgr = DownloadManager::new(dir.join("downloads.json"));
-
         let url = format!("http://{addr}/audio.m4s?deadline=4102444800");
+
+        // 1. Whole-file single chunk with actual_offset == 0 and Content-Length == 500 succeeds on 200 OK
+        let temp_ok = dir.join("temp_ok");
+        let task_ok = FullMediaDownloadTask {
+            id: "t-200-ok".into(),
+            output_file_type: "audio".into(),
+            title: "200 Whole File Single Chunk".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: Some(url.clone()),
+            audio_codecs: Some("aac".into()),
+            audio_bandwidth: Some(128000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 0,
+            audio_total_bytes: 0,
+            video_total_bytes: 0,
+            downloaded_bytes: 0,
+            download_progress: 0,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "downloading".into(),
+            file_name: None,
+            temp_dir: temp_ok.to_string_lossy().into_owned(),
+            save_dir: dir.join("save_ok").to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: Vec::new(),
+            stream_id: None,
+            error: None,
+        };
+        let task_ok_arc = Arc::new(Mutex::new(task_ok));
+        let gen_ok = mgr.next_generation("t-200-ok");
+        let stop_flag_ok = Arc::new(AtomicBool::new(false));
+        let (_stop_tx_ok, stop_rx_ok) = tokio::sync::watch::channel(false);
+        mgr.stage_download::<tauri::Wry>(
+            None,
+            &bili,
+            &task_ok_arc,
+            &stop_flag_ok,
+            &stop_rx_ok,
+            gen_ok,
+        )
+        .await
+        .expect("whole-file single-chunk 200 OK should succeed");
+        assert_eq!(
+            fs::read(temp_ok.join("audio.part1")).unwrap(),
+            vec![b'A'; 500]
+        );
+        assert!(task_ok_arc.lock().unwrap().chunks[0].done);
+
+        // 2. Multi-chunk (chunk does not cover full stream) receiving 200 OK must fail
+        let multi_chunk = MediaDownloadChunk {
+            chunk_type: "audio".into(),
+            name: "audio.part1".into(),
+            start: 0,
+            end: 249,
+            done: false,
+        };
+        task_ok_arc.lock().unwrap().audio_total_bytes = 500;
+        task_ok_arc.lock().unwrap().chunks = vec![multi_chunk.clone()];
+        let (_abort_tx, abort_rx) = tokio::sync::watch::channel(false);
+        let multi_err = mgr
+            .download_single_chunk::<tauri::Wry>(
+                None,
+                &bili,
+                &task_ok_arc,
+                &stop_flag_ok,
+                &stop_rx_ok,
+                &Arc::new(AtomicBool::new(false)),
+                &abort_rx,
+                gen_ok,
+                0,
+                &multi_chunk,
+                &url,
+                &dir.join("multi.part1"),
+                0,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            multi_err.contains("200 OK"),
+            "multi-chunk 200 OK must fail: {multi_err}"
+        );
+
+        // 3. actual_offset > 0 receiving 200 OK must fail and mark task failed (not cancelled)
+        let temp_fail = dir.join("temp_fail");
+        fs::create_dir_all(&temp_fail).unwrap();
+        // Pre-populate 100 bytes on disk so actual_offset == 100 > 0
+        fs::write(temp_fail.join("audio.part1"), vec![b'B'; 100]).unwrap();
+
         let task = FullMediaDownloadTask {
             id: "t-200-fail".into(),
             output_file_type: "audio".into(),
@@ -3220,12 +3606,13 @@ mod tests {
             convert_progress: 0,
             status: "waiting".into(),
             file_name: None,
-            temp_dir: dir.join("temp").to_string_lossy().into_owned(),
+            temp_dir: temp_fail.to_string_lossy().into_owned(),
             save_dir: dir.join("save").to_string_lossy().into_owned(),
             save_path: None,
             audio_temp_path: None,
             video_temp_path: None,
             chunks: Vec::new(),
+            stream_id: None,
             error: None,
         };
         let task_arc = Arc::new(Mutex::new(task));
@@ -3252,6 +3639,11 @@ mod tests {
         assert!(
             err_msg.contains("200 OK"),
             "expected error mentioning 200 OK, got: {err_msg}"
+        );
+        // Existing partial file must not have been overwritten with the 200 body
+        assert_eq!(
+            fs::read(temp_fail.join("audio.part1")).unwrap(),
+            vec![b'B'; 100]
         );
 
         let _ = fs::remove_dir_all(&dir);
@@ -3329,7 +3721,7 @@ mod tests {
 
         let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
         let mgr = DownloadManager::new(dir.join("downloads.json"));
-        mgr.set_chunk_idle_timeout(Duration::from_millis(300));
+        mgr.set_chunk_idle_timeout(Duration::from_secs(30));
 
         let url = format!("http://{addr}/audio.m4s?deadline=4102444800");
         let temp_dir = dir.join("temp");
@@ -3364,6 +3756,7 @@ mod tests {
             audio_temp_path: None,
             video_temp_path: None,
             chunks: Vec::new(),
+            stream_id: None,
             error: None,
         };
         let task_arc = Arc::new(Mutex::new(task));
@@ -3375,9 +3768,15 @@ mod tests {
         first_get_started.notified().await;
         tokio::time::sleep(Duration::from_millis(30)).await;
 
-        // Pause and immediately resume; pause_task_opt must wake and wait for worker 1 to exit
+        // Pause with 30s idle timeout; pause_task_opt must wake and return within 1s
+        let pause_start = Instant::now();
         mgr.pause_task_opt::<tauri::Wry>(None, "t-pause-resume")
             .await;
+        assert!(
+            pause_start.elapsed() < Duration::from_secs(1),
+            "pause_task_opt took {:?}",
+            pause_start.elapsed()
+        );
         assert_eq!(task_arc.lock().unwrap().status, "downloadPaused");
         assert!(!mgr.is_current_generation("t-pause-resume", gen1));
 
@@ -3416,19 +3815,23 @@ mod tests {
             .get("t-pause-resume")
             .is_none());
 
-        // Immediately resume; verify stage_download + stage_merge finish with exact payload
-        let gen2 = mgr.stop_and_wait_worker("t-pause-resume").await;
-        let stop_flag2 = Arc::new(AtomicBool::new(false));
-        let stop_notify2 = Arc::new(tokio::sync::Notify::new());
-        mgr.stage_download::<tauri::Wry>(None, &bili, &task_arc, &stop_flag2, &stop_notify2, gen2)
-            .await
-            .unwrap();
-        mgr.stage_merge::<tauri::Wry>(None, &task_arc, &stop_flag2, gen2)
-            .await
-            .unwrap();
-
+        // Resume via resume_task_opt and wait for worker to finish download + merge
+        mgr.resume_task_opt::<tauri::Wry>(None, bili.clone(), "t-pause-resume")
+            .await;
+        for _ in 0..100 {
+            if temp_dir.join("audio.m4s").exists()
+                && fs::metadata(temp_dir.join("audio.m4s"))
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+                    == payload.len() as u64
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         let merged_audio = fs::read(temp_dir.join("audio.m4s")).unwrap();
         assert_eq!(merged_audio, payload);
+        mgr.stop_and_wait_worker("t-pause-resume").await;
 
         // Also test slow response idle timeout when server stalls forever
         let slow_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3449,6 +3852,9 @@ mod tests {
         });
 
         mgr.set_chunk_idle_timeout(Duration::from_millis(120));
+        let gen2 = mgr.next_generation("t-pause-resume");
+        let stop_flag2 = Arc::new(AtomicBool::new(false));
+        let (_stop_tx2, stop_rx2) = tokio::sync::watch::channel(false);
         let slow_chunk = MediaDownloadChunk {
             chunk_type: "audio".into(),
             name: "slow.part1".into(),
@@ -3456,15 +3862,16 @@ mod tests {
             end: 99,
             done: false,
         };
+        let (_abort_tx2, abort_rx2) = tokio::sync::watch::channel(false);
         let slow_err = mgr
             .download_single_chunk::<tauri::Wry>(
                 None,
                 &bili,
                 &task_arc,
                 &stop_flag2,
-                &stop_notify2,
+                &stop_rx2,
                 &Arc::new(AtomicBool::new(false)),
-                &Arc::new(tokio::sync::Notify::new()),
+                &abort_rx2,
                 gen2,
                 0,
                 &slow_chunk,
@@ -3481,6 +3888,591 @@ mod tests {
 
         srv.abort();
         slow_srv.abort();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn resume_clears_temp_dir_on_stream_identity_change_and_merge_verifies_total_length() {
+        let dir = std::env::temp_dir().join(format!("biu-dl-streamid-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 2048];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let req = String::from_utf8_lossy(&buf[..n]);
+                if req.starts_with("HEAD ") {
+                    let hdr = "HTTP/1.1 200 OK\r\nContent-Length: 400\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                } else {
+                    let body = vec![b'N'; 400];
+                    let hdr = "HTTP/1.1 206 Partial Content\r\nContent-Length: 400\r\nContent-Range: bytes 0-399/400\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                }
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        let mgr = DownloadManager::new(dir.join("downloads.json"));
+        let temp_dir = dir.join("temp");
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // Simulate old stream's chunk (same size 400 bytes, but old codec/bandwidth/stream_id)
+        fs::write(temp_dir.join("audio.part1"), vec![b'O'; 400]).unwrap();
+        fs::write(temp_dir.join("stale.tmp"), b"stale").unwrap();
+
+        let url = format!("http://{addr}/new_stream_30280.m4s?deadline=4102444800");
+        let task = FullMediaDownloadTask {
+            id: "t-stream-change".into(),
+            output_file_type: "audio".into(),
+            title: "Stream Change Test".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: Some(url),
+            audio_codecs: Some("flac".into()),
+            audio_bandwidth: Some(320000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 400,
+            audio_total_bytes: 400,
+            video_total_bytes: 0,
+            downloaded_bytes: 400,
+            download_progress: 100,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "downloadPaused".into(),
+            file_name: None,
+            temp_dir: temp_dir.to_string_lossy().into_owned(),
+            save_dir: dir.join("save").to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: Vec::new(),
+            stream_id: Some("a:400:aac:128000:old_stream_30216.m4s|v:0:::".into()),
+            error: None,
+        };
+        let task_arc = Arc::new(Mutex::new(task));
+        let gen = mgr.next_generation("t-stream-change");
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+        mgr.stage_download::<tauri::Wry>(None, &bili, &task_arc, &stop_flag, &stop_rx, gen)
+            .await
+            .unwrap();
+
+        // Stale file should be gone and audio.part1 re-downloaded with new stream's 'N' bytes
+        assert!(!temp_dir.join("stale.tmp").exists());
+        assert_eq!(
+            fs::read(temp_dir.join("audio.part1")).unwrap(),
+            vec![b'N'; 400]
+        );
+
+        // Corrupt audio.part1 size before merge to verify merge rejects mismatched length
+        fs::write(temp_dir.join("audio.part1"), vec![b'N'; 250]).unwrap();
+        let merge_err = mgr
+            .stage_merge::<tauri::Wry>(None, &task_arc, &stop_flag, gen)
+            .await
+            .unwrap_err();
+        assert!(
+            merge_err.contains("mismatch"),
+            "expected merge length mismatch error, got: {merge_err}"
+        );
+
+        // Restore valid chunk and verify merge succeeds and audio.m4s is 400 bytes
+        fs::write(temp_dir.join("audio.part1"), vec![b'N'; 400]).unwrap();
+        mgr.stage_merge::<tauri::Wry>(None, &task_arc, &stop_flag, gen)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read(temp_dir.join("audio.m4s")).unwrap(),
+            vec![b'N'; 400]
+        );
+
+        srv.abort();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn concurrent_pause_cancel_and_pause_resume_wait_for_worker_and_keep_state_consistent() {
+        let dir = std::env::temp_dir().join(format!("biu-dl-b1b2-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let active_get = Arc::new(AtomicUsize::new(0));
+        let max_concurrent_get = Arc::new(AtomicUsize::new(0));
+        let first_get_started = Arc::new(tokio::sync::Notify::new());
+        let second_get_started = Arc::new(tokio::sync::Notify::new());
+
+        let active_srv = active_get.clone();
+        let max_srv = max_concurrent_get.clone();
+        let first_srv = first_get_started.clone();
+        let second_srv = second_get_started.clone();
+        let get_count = Arc::new(AtomicUsize::new(0));
+        let get_count_srv = get_count.clone();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let active_conn = active_srv.clone();
+                let max_conn = max_srv.clone();
+                let first_conn = first_srv.clone();
+                let second_conn = second_srv.clone();
+                let count_conn = get_count_srv.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 2048];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("HEAD ") {
+                        let hdr =
+                            "HTTP/1.1 200 OK\r\nContent-Length: 400\r\nConnection: close\r\n\r\n";
+                        let _ = sock.write_all(hdr.as_bytes()).await;
+                        let _ = sock.shutdown().await;
+                        return;
+                    }
+                    let cur = active_conn.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_conn.fetch_max(cur, Ordering::SeqCst);
+                    let idx = count_conn.fetch_add(1, Ordering::SeqCst);
+                    let hdr = "HTTP/1.1 206 Partial Content\r\nContent-Length: 400\r\nContent-Range: bytes 0-399/400\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes()).await;
+                    let _ = sock.write_all(&[b'X'; 64]).await;
+                    if idx == 0 {
+                        first_conn.notify_waiters();
+                    } else if idx == 1 {
+                        second_conn.notify_waiters();
+                    }
+                    // Keep connection open until client drops it on worker stop
+                    let mut drain = [0u8; 64];
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(10), sock.read(&mut drain)).await;
+                    active_conn.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+
+        let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        let mgr = DownloadManager::new(dir.join("downloads.json"));
+        let url = format!("http://{addr}/audio.m4s?deadline=4102444800");
+
+        // Case 1: pause and cancel concurrently on task-pc
+        let temp_pc = dir.join("temp_pc");
+        let save_pc = dir.join("save_pc");
+        fs::create_dir_all(&save_pc).unwrap();
+        // Pre-create own .part and another task's .part with the same title
+        let desired_pc = save_pc.join("Same Title.m4a");
+        let own_part = build_task_temp_output_path(&desired_pc, "task-pc");
+        let other_part = build_task_temp_output_path(&desired_pc, "task-other");
+        fs::write(&own_part, b"partial-own").unwrap();
+        fs::write(&other_part, b"partial-other").unwrap();
+
+        let task_pc = FullMediaDownloadTask {
+            id: "task-pc".into(),
+            output_file_type: "audio".into(),
+            title: "Same Title".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: Some(url.clone()),
+            audio_codecs: Some("aac".into()),
+            audio_bandwidth: Some(128000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 0,
+            audio_total_bytes: 0,
+            video_total_bytes: 0,
+            downloaded_bytes: 0,
+            download_progress: 0,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "waiting".into(),
+            file_name: None,
+            temp_dir: temp_pc.to_string_lossy().into_owned(),
+            save_dir: save_pc.to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: Vec::new(),
+            stream_id: None,
+            error: None,
+        };
+        let task_pc_arc = Arc::new(Mutex::new(task_pc));
+        let gen_pc = mgr.next_generation("task-pc");
+        mgr.tasks.write().unwrap().push(task_pc_arc.clone());
+        mgr.spawn_worker_with_gen::<tauri::Wry>(
+            None,
+            bili.clone(),
+            task_pc_arc.clone(),
+            false,
+            gen_pc,
+        );
+
+        first_get_started.notified().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let mgr_p = mgr.clone();
+        let mgr_c = mgr.clone();
+        tokio::join!(
+            mgr_p.pause_task_opt::<tauri::Wry>(None, "task-pc"),
+            mgr_c.cancel_task_opt::<tauri::Wry>(None, "task-pc"),
+        );
+
+        // Task must be removed, no worker left, temp_pc deleted and not recreated, only own .part deleted
+        assert!(mgr.find_task("task-pc").is_none());
+        assert!(!mgr.workers.lock().unwrap().contains_key("task-pc"));
+        assert!(
+            !temp_pc.exists(),
+            "temp_pc must not be recreated after cancel"
+        );
+        assert!(!own_part.exists(), "cancel must delete own .part file");
+        assert!(
+            other_part.exists(),
+            "cancel must NOT delete another task's .part file"
+        );
+
+        // Wait until server sees first connection closed before starting Case 2
+        for _ in 0..50 {
+            if active_get.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        max_concurrent_get.store(0, Ordering::SeqCst);
+
+        // Case 2: pause and resume concurrently on task-pr
+        let temp_pr = dir.join("temp_pr");
+        let save_pr = dir.join("save_pr");
+        let task_pr = FullMediaDownloadTask {
+            id: "task-pr".into(),
+            output_file_type: "audio".into(),
+            title: "Pause Resume Race".into(),
+            cover: None,
+            created_time: Some(2),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: Some(url),
+            audio_codecs: Some("aac".into()),
+            audio_bandwidth: Some(128000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 0,
+            audio_total_bytes: 0,
+            video_total_bytes: 0,
+            downloaded_bytes: 0,
+            download_progress: 0,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "waiting".into(),
+            file_name: None,
+            temp_dir: temp_pr.to_string_lossy().into_owned(),
+            save_dir: save_pr.to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: Vec::new(),
+            stream_id: None,
+            error: None,
+        };
+        let task_pr_arc = Arc::new(Mutex::new(task_pr));
+        let gen_pr = mgr.next_generation("task-pr");
+        mgr.tasks.write().unwrap().push(task_pr_arc.clone());
+        mgr.spawn_worker_with_gen::<tauri::Wry>(
+            None,
+            bili.clone(),
+            task_pr_arc.clone(),
+            false,
+            gen_pr,
+        );
+
+        second_get_started.notified().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let mgr_p2 = mgr.clone();
+        let mgr_r2 = mgr.clone();
+        let bili_r2 = bili.clone();
+        tokio::join!(
+            mgr_p2.pause_task_opt::<tauri::Wry>(None, "task-pr"),
+            mgr_r2.resume_task_opt::<tauri::Wry>(None, bili_r2, "task-pr"),
+        );
+
+        let status_after = task_pr_arc.lock().unwrap().status.clone();
+        let has_worker = mgr.workers.lock().unwrap().contains_key("task-pr");
+        if status_after == "downloadPaused" {
+            assert!(
+                !has_worker,
+                "when final status is downloadPaused, no worker may be running"
+            );
+        } else {
+            assert!(
+                status_after == "waiting" || status_after == "downloading",
+                "unexpected status after concurrent pause+resume: {status_after}"
+            );
+        }
+        assert!(
+            max_concurrent_get.load(Ordering::SeqCst) <= 1,
+            "two workers ran concurrently (max_concurrent_get = {})",
+            max_concurrent_get.load(Ordering::SeqCst)
+        );
+
+        mgr.stop_and_wait_worker("task-pr").await;
+        srv.abort();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn content_range_mismatch_and_final_chunk_length_mismatch_fail_download() {
+        let dir = std::env::temp_dir().join(format!("biu-dl-mismatch-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        // Server 1: returns 206 with mismatched Content-Range (bytes 10-99/100 when 0-99 was requested)
+        let listener_cr = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_cr = listener_cr.local_addr().unwrap();
+        let srv_cr = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener_cr.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let hdr = "HTTP/1.1 206 Partial Content\r\nContent-Length: 90\r\nContent-Range: bytes 10-99/100\r\nConnection: close\r\n\r\n";
+                let _ = sock.write_all(hdr.as_bytes()).await;
+                let _ = sock.write_all(&[b'A'; 90]).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        // Server 2: returns 206 with valid Content-Range matching request, but only sends 10 bytes and closes connection
+        let listener_len = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr_len = listener_len.local_addr().unwrap();
+        let srv_len = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener_len.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 1024];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let (start, end) = parse_range_header(&req).unwrap_or((0, 99));
+                let hdr = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/100\r\nConnection: close\r\n\r\n"
+                );
+                let _ = sock.write_all(hdr.as_bytes()).await;
+                let _ = sock.write_all(&[b'B'; 10]).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let bili = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        let mgr = DownloadManager::new(dir.join("downloads.json"));
+        let chunk = MediaDownloadChunk {
+            chunk_type: "audio".into(),
+            name: "audio.part1".into(),
+            start: 0,
+            end: 99,
+            done: false,
+        };
+        let task = FullMediaDownloadTask {
+            id: "t-mismatch".into(),
+            output_file_type: "audio".into(),
+            title: "Mismatch".into(),
+            cover: None,
+            created_time: Some(1),
+            bvid: None,
+            cid: None,
+            sid: None,
+            audio_url: None,
+            audio_codecs: Some("aac".into()),
+            audio_bandwidth: Some(128000),
+            video_url: None,
+            video_resolution: None,
+            video_frame_rate: None,
+            total_bytes: 100,
+            audio_total_bytes: 100,
+            video_total_bytes: 0,
+            downloaded_bytes: 0,
+            download_progress: 0,
+            merge_progress: 0,
+            convert_progress: 0,
+            status: "downloading".into(),
+            file_name: None,
+            temp_dir: dir.to_string_lossy().into_owned(),
+            save_dir: dir.to_string_lossy().into_owned(),
+            save_path: None,
+            audio_temp_path: None,
+            video_temp_path: None,
+            chunks: vec![chunk.clone()],
+            stream_id: None,
+            error: None,
+        };
+        let task_arc = Arc::new(Mutex::new(task));
+        let gen = mgr.next_generation("t-mismatch");
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let (_abort_tx, abort_rx) = tokio::sync::watch::channel(false);
+
+        let cr_err = mgr
+            .download_single_chunk::<tauri::Wry>(
+                None,
+                &bili,
+                &task_arc,
+                &stop_flag,
+                &stop_rx,
+                &Arc::new(AtomicBool::new(false)),
+                &abort_rx,
+                gen,
+                0,
+                &chunk,
+                &format!("http://{addr_cr}/audio.m4s"),
+                &dir.join("cr.part1"),
+                0,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            cr_err.contains("invalid Content-Range"),
+            "expected Content-Range mismatch error, got: {cr_err}"
+        );
+
+        let len_err = mgr
+            .download_single_chunk::<tauri::Wry>(
+                None,
+                &bili,
+                &task_arc,
+                &stop_flag,
+                &stop_rx,
+                &Arc::new(AtomicBool::new(false)),
+                &abort_rx,
+                gen,
+                0,
+                &chunk,
+                &format!("http://{addr_len}/audio.m4s"),
+                &dir.join("len.part1"),
+                0,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            len_err.contains("incomplete: got"),
+            "expected incomplete error on final length mismatch, got: {len_err}"
+        );
+
+        srv_cr.abort();
+        srv_len.abort();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn convert_cancel_and_timeout_kill_process_and_cleanup_part_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("biu-dl-conv-kill-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        // Fake ffmpeg that writes a partial output file immediately, then execs sleep 30
+        let slow_ffmpeg = dir.join("slow-ffmpeg.sh");
+        fs::write(
+            &slow_ffmpeg,
+            r#"#!/bin/sh
+out_file=""
+while [ "$#" -gt 0 ]; do
+  out_file="$1"
+  shift
+done
+echo "partial" > "$out_file"
+exec sleep 30
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&slow_ffmpeg, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let in_audio = dir.join("audio.m4s");
+        fs::write(&in_audio, b"audio-data").unwrap();
+        let desired = dir.join("Song.m4a");
+
+        // 1. Cancellation kills ffmpeg and removes .part file quickly
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel_flag.clone();
+        let part_cancel = build_task_temp_output_path(&desired, "task-cancel");
+        // Pre-create stale .part file to verify it gets cleaned up before/after
+        fs::write(&part_cancel, b"stale-part").unwrap();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(120));
+            cancel_clone.store(true, Ordering::SeqCst);
+        });
+
+        let start_cancel = Instant::now();
+        let cancel_err = convert_with_ffmpeg_for_task(
+            &slow_ffmpeg,
+            "audio",
+            Some(&in_audio),
+            None,
+            &desired,
+            "task-cancel",
+            &cancel_flag,
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+        assert_eq!(cancel_err, "Aborted");
+        assert!(
+            start_cancel.elapsed() < Duration::from_secs(2),
+            "cancellation should kill ffmpeg promptly"
+        );
+        assert!(
+            !part_cancel.exists(),
+            ".part file must be removed after cancel"
+        );
+
+        // 2. Timeout kills ffmpeg and removes .part file
+        let part_timeout = build_task_temp_output_path(&desired, "task-timeout");
+        let start_timeout = Instant::now();
+        let timeout_err = convert_with_ffmpeg_for_task(
+            &slow_ffmpeg,
+            "audio",
+            Some(&in_audio),
+            None,
+            &desired,
+            "task-timeout",
+            &AtomicBool::new(false),
+            Duration::from_millis(150),
+        )
+        .unwrap_err();
+        assert_eq!(timeout_err, "ffmpeg convert timed out");
+        assert!(
+            start_timeout.elapsed() < Duration::from_secs(2),
+            "timeout should kill ffmpeg promptly"
+        );
+        assert!(
+            !part_timeout.exists(),
+            ".part file must be removed after timeout"
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 

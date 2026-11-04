@@ -280,6 +280,11 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building biu application")
         .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(dl_mgr) = app.try_state::<Arc<DownloadManager>>() {
+                    dl_mgr.shutdown(std::time::Duration::from_secs(5));
+                }
+            }
             // macOS: clicking the Dock icon after the main window was hidden to the tray.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
@@ -289,8 +294,6 @@ fn main() {
                     let _ = w.set_focus();
                 }
             }
-            #[cfg(not(target_os = "macos"))]
-            let _ = (app, event);
         });
 }
 
