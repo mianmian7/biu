@@ -14,11 +14,12 @@ import { exportTauriMigration, exportTauriMigrationWithin, setMigrationWindowGet
 import { destroyMiniPlayer } from "./mini-player";
 import { injectAuthCookie } from "./network/cookie";
 import { installWebRequestInterceptors } from "./network/interceptor";
+import { createQuitHold } from "./quit-hold";
 import { registerAllShortcuts, unregisterAllShortcuts } from "./shortcut";
 import { appSettingsStore } from "./store";
 import {
   autoUpdater,
-  isInstallingUpdate,
+  isInstallerHandedOff,
   setupAutoUpdater,
   skipInstallOnThisQuit,
   stopCheckForUpdates,
@@ -212,25 +213,19 @@ if (!gotTheLock) {
 
   app.on("activate", () => mainWindow?.show());
 
-  // Electron does not wait for async before-quit work, so hold the first quit until the
-  // migration export is written (at most 5 s). A downloaded update then installs through
-  // electron-updater's install-on-quit; if the export failed, Windows skips it this time.
-  let quitHandled = false;
+  // Hold every quit until the migration export is written (at most 5 s). A downloaded update
+  // then installs through electron-updater's install-on-quit; if the export failed, Windows
+  // skips it this time.
+  const holdQuitForExport = createQuitHold({
+    exportWithin: exportTauriMigrationWithin,
+    isInstallerHandedOff,
+    onExportFailed: skipInstallOnThisQuit,
+    quit: () => app.quit(),
+    warn: (message, error) => log.warn(message, error),
+  });
   app.on("before-quit", event => {
     (app as any).quitting = true;
-    if (quitHandled || isInstallingUpdate()) return;
-    quitHandled = true;
-    event.preventDefault();
-    void (async () => {
-      let exported: string | null = null;
-      try {
-        exported = await exportTauriMigrationWithin(5000);
-      } catch (error) {
-        log.warn("[main] quit export failed:", error);
-      }
-      if (!exported) skipInstallOnThisQuit();
-      app.quit();
-    })();
+    holdQuitForExport(event);
   });
 
   app.on("will-quit", () => {

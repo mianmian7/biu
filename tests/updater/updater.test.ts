@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   warn: vi.fn(),
   updater: undefined as unknown,
   exportResult: "/tmp/tauri-migration.json" as string | null,
+  exportPromise: null as Promise<string | null> | null,
   app: { runningUnderARM64Translation: false } as { runningUnderARM64Translation: boolean; quitting?: boolean },
 }));
 vi.mock("electron", async () => {
@@ -14,7 +15,7 @@ vi.mock("electron", async () => {
 });
 vi.mock("../../electron/migration", () => ({
   exportTauriMigration: async () => mocks.exportResult,
-  exportTauriMigrationWithin: async () => mocks.exportResult,
+  exportTauriMigrationWithin: () => mocks.exportPromise ?? Promise.resolve(mocks.exportResult),
 }));
 vi.mock("electron-is-dev", () => ({ default: false }));
 vi.mock("electron-log", () => ({ default: { warn: mocks.warn, transports: { file: {} } } }));
@@ -52,13 +53,35 @@ beforeEach(() => {
   mocks.updater = updater;
   mocks.mode = "auto";
   mocks.exportResult = "/tmp/tauri-migration.json";
+  mocks.exportPromise = null;
   delete mocks.app.quitting;
 });
 afterEach(() => vi.useRealTimers());
 
 describe("updater lifecycle", () => {
+  it("does not install when a signature error arrives while exporting", async () => {
+    const { setupAutoUpdater, quitAndInstall, isInstallerHandedOff, stopCheckForUpdates } =
+      await import("../../electron/updater");
+    await setupAutoUpdater({ getMainWindow: () => ({ webContents: { send: vi.fn() } }) as never });
+    updater.emit("update-downloaded", { downloadedFile: "/tmp/Biu.zip" });
+
+    let finishExport!: (value: string | null) => void;
+    mocks.exportPromise = new Promise(resolve => (finishExport = resolve));
+    const pending = quitAndInstall();
+    await vi.advanceTimersByTimeAsync(0);
+    updater.emit("error", new Error("update does not satisfy code requirement"));
+    finishExport("/tmp/tauri-migration.json");
+
+    expect(await pending).toBe(false);
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(isInstallerHandedOff()).toBe(false);
+    expect(mocks.app.quitting).toBeUndefined();
+    expect(mocks.mode).toBe("manual");
+    stopCheckForUpdates();
+  });
+
   it("installs only after a successful export and handles signature errors while installing", async () => {
-    const { setupAutoUpdater, quitAndInstall, installsOnQuit, isInstallingUpdate, stopCheckForUpdates } =
+    const { setupAutoUpdater, quitAndInstall, installsOnQuit, isInstallerHandedOff, stopCheckForUpdates } =
       await import("../../electron/updater");
     const send = vi.fn();
     await setupAutoUpdater({ getMainWindow: () => ({ webContents: { send } }) as never });
@@ -67,7 +90,7 @@ describe("updater lifecycle", () => {
     mocks.exportResult = null;
     expect(await quitAndInstall()).toBe(false);
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
-    expect(isInstallingUpdate()).toBe(false);
+    expect(isInstallerHandedOff()).toBe(false);
     expect(mocks.app.quitting).toBeUndefined();
 
     // Normal-quit install stays off on Linux, where AppImageUpdater would block the quit.

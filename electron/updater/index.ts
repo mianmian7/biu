@@ -14,9 +14,17 @@ let phase: "checking" | "downloading" | "downloaded" | "installing" = "checking"
 let checkForUpdatesInterval: NodeJS.Timeout | null = null;
 let updateMode = "manual";
 
-/** True once an update install has started; the quit path must not delay it. */
-export function isInstallingUpdate() {
-  return phase === "installing";
+let installerHandedOff = false;
+
+/** True once the installer has taken over the quit; main.ts must not hold it any more. */
+export function isInstallerHandedOff() {
+  return installerHandedOff;
+}
+
+function handOffToInstaller() {
+  installerHandedOff = true;
+  // Mac closes every window before installing; a hide-on-close window would block it.
+  (app as unknown as { quitting?: boolean }).quitting = true;
 }
 
 /**
@@ -53,8 +61,12 @@ export async function quitAndInstall() {
     log.warn("[updater] migration export failed, update not installed this time");
     return false;
   }
-  // Mac closes every window before installing; a hide-on-close window would block it.
-  (app as unknown as { quitting?: boolean }).quitting = true;
+  // An error (e.g. a bad signature) while exporting may have cancelled this install.
+  if (phase !== "installing" || updateMode !== "auto") {
+    log.warn("[updater] install cancelled while exporting");
+    return false;
+  }
+  handOffToInstaller();
   autoUpdater.quitAndInstall(true, true);
   return true;
 }
@@ -151,7 +163,7 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
   for (const emitter of [autoUpdater as unknown as NodeJS.EventEmitter, nativeAutoUpdater]) {
     emitter?.on?.("before-quit-for-update", () => {
       phase = "installing";
-      (app as unknown as { quitting?: boolean }).quitting = true;
+      handOffToInstaller();
     });
   }
 

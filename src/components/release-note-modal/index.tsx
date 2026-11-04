@@ -101,7 +101,9 @@ const ReleaseNoteModal = () => {
                 <span className="inline-flex items-center space-x-1">
                   <RiInformationLine size={16} />
                   <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {mode === "auto" ? "也可以稍后，退出时自动安装" : "安装包已下载完成"}
+                    {mode === "auto" && window.electron.getPlatform() !== "linux"
+                      ? "也可以稍后，退出时自动安装"
+                      : "安装包已下载完成"}
                   </span>
                 </span>
                 {mode === "auto" ? (
