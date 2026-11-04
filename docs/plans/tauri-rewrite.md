@@ -2,14 +2,30 @@
 
 owner = Claude（osa-a1）
 
-状态：已批准（2026-11-02 23:54 SGT）。
+状态：已批准（2026-11-02 23:54 SGT）。2026-11-04 修订 R1–R11 已批准（用户授权 owner 自行判断，含 S2 内存阈值、向 `spike/tauri-m0-ci` 推送），见下方修订表。
 
-基线：commit `ff1e6a6`（1.16.1-autolyrics.5）。
+基线：commit `ff1e6a6`（1.16.1-autolyrics.5）。〔R9〕功能对齐基线改为 `v1.16.1-autolyrics.6`（`f0817f10`），M1 起从 `feat/auto-lyrics-p1` 开分支。
+
+## 修订记录（2026-11-04，owner，已批准）
+
+| # | 改动 | 依据 |
+|---|---|---|
+| R1 | 记入 D6=A（用户 2026-11-03 已拍板） | 提交 `7df6b834` 只在 `spike/tauri-m0`，本分支缺这条 |
+| R2 | S4 标准删除 `panic="abort"`，全平台统一 unwind；明确产物必须内嵌 `dist/web` | abort 致 Mac SIGABRT；CI 的 3.89 MiB dmg 未含 `web/assets` |
+| R3 | S2 增加内存判定规则；x64 Linux VM 由 `ubuntu-24.04` runner 承担 | Mac 增长全部在 1 个 WebContent 进程；没有 x64 Linux 实机 |
+| R4 | S3「干净 VM」改为 GitHub x64 runner 上的干净容器 | wsl 无 Docker，pc 的 Hyper-V 未启用；S3 验的是依赖解析和解码 |
+| R5 | S1 先用合成 fMP4，真实 B 站样本改为可选 | 两个退路都不阻塞；真实样本要大会员账号 |
+| R6 | S5 的 Wayland GNOME/KDE 移到 M4 | 没有这类桌面环境；方案对 Wayland 已允许记为已知限制 |
+| R7 | S6 的二维码登录、极验移到 M2 首项；webview 代理在 Mac 也走退路 | 需要 `bili_request` 和 cookie jar，正是 M2 产物；Mac 探针 `proxy_image.loaded=false` |
+| R8 | 媒体传输按平台区分；自定义协议不是流式 | wry 响应是 `Response<Vec<u8>>`，spike 每次最多回 1 MiB；Linux 必须用 HTTP 退路 |
+| R9 | 更新基线、桥接版号和已作废条目 | `.6` 已于 2026-11-04 发布，内容是 seamless-update，不含迁移导出 |
+| R10 | M0 剩余执行者由 Sol 改为 Gemini 4 Argon | Codex-Team 5h 0%，7d 9% / 36% |
+| R11 | 更正 Mac 机型和系统版本 | 实机是 M1 Pro MacBook Pro，现为 macOS 26.7.2（25G332） |
 
 ## 目标
 
 1. 每个平台的下载体积 ≤ 10 MB（Linux AppImage 除外，见「待用户拍板」D1）。
-2. 功能和 1.16.1-autolyrics.5 对齐：播放、登录、下载、本地音乐、歌词（网易云/lrclib/自动歌词/罗马音）、桌面歌词（含卡拉 OK 扫光）、迷你播放器、托盘、全局快捷键、Windows 任务栏按钮、自动更新。
+2. 功能和 1.16.1-autolyrics.6 对齐〔R9〕：播放、登录、下载、本地音乐、歌词（网易云/lrclib/自动歌词/罗马音）、桌面歌词（含卡拉 OK 扫光）、迷你播放器、托盘、全局快捷键、Windows 任务栏按钮、自动更新。
 3. 保留现有 React 前端（`src/`、`shared/`）。前端只改平台适配层，页面和组件不重写。
 4. 现有 Electron 用户只需手动安装一次，设置保留，尽量免重新登录。
 
@@ -18,14 +34,14 @@ owner = Claude（osa-a1）
 - 不做 iOS/Android。
 - 不买 Apple 证书，不做公证；Windows 不做代码签名。
 - 不改 UI 设计，不加新功能。
-- `feat/seamless-update` 分支和 `docs/plans/seamless-update.md` 方案作废，分支保持原样不删不改。
-- `fix/desktop-lyrics-sync`（卡拉 OK）继续在 Electron 代码上进行。它改的是前端（`src/pages/desktop-lyrics` 等）时，合入 master 后自动随前端带进 Tauri 版；改的是 `electron/desktop-lyrics.ts` 时，由 M4 按新行为移植。
+- 〔R9〕`feat/seamless-update` 已合入 `feat/auto-lyrics-p1` 并随 `1.16.1-autolyrics.6` 发布，只服务 Electron 版；Tauri 版不沿用其自签名证书和 Squirrel.Mac。
+- 〔R9〕`fix/desktop-lyrics-sync`（卡拉 OK）已随 `.6` 发布。前端改动随 `feat/auto-lyrics-p1` 带进 Tauri 版；`electron/desktop-lyrics.ts` 的改动由 M4 按新行为移植。
 
 ## 已作废的决定
 
 | 原决定 | 新处理 |
 |---|---|
-| Mac 用自签名证书 + Squirrel.Mac 无感更新 | Tauri updater（minisign/Ed25519）。Mac 只做 ad-hoc 签名（`bundle.macOS.signingIdentity = "-"`），updater 直接替换 `.app`，不需要证书 |
+| Mac 用自签名证书 + Squirrel.Mac 无感更新（〔R9〕Electron 版 `.6` 起已启用，只到桥接版为止） | Tauri 版用 Tauri updater（minisign/Ed25519）。Mac 只做 ad-hoc 签名（`bundle.macOS.signingIdentity = "-"`），updater 直接替换 `.app`，不需要证书 |
 | electron-updater 通道过渡（`allowPrerelease=false` 等） | 只在桥接版本 M8 里用到一次；之后由 Tauri updater 的 `latest.json` 取代 |
 
 ---
@@ -41,7 +57,7 @@ owner = Claude（osa-a1）
 │ src/service/request ← axios 换 adapter：invoke("bili_request")                         │
 │ workers/romaji.worker.ts   kuromoji（词典按需下载，经 biu-res:// 读取）               │
 │ workers/auto-lyrics.worker.ts  shared/auto-lyrics 对齐（DTW），PCM 由 Rust 提供        │
-│ <audio src="biu-media://…">  ← 所有远程/本地音频                                       │
+│ <audio src={toMediaUrl()}>  ← 所有远程/本地音频（〔R8〕传输按平台，见 §1.2）           │
 └──────────────┬────────────────────────────── IPC（commands + events）─────────────────┘
                │
 ┌──────────────┴──────────────────────── Rust：src-tauri（crate biu）───────────────────┐
@@ -60,7 +76,7 @@ owner = Claude（osa-a1）
 
 设计原则：
 
-- **网络全部经过 Rust**。系统 webview 没有 Electron 的 `webRequest`，无法统一改请求头和 Set-Cookie。B 站 API 走 `bili_request`；音频走 `biu-media://`。webview 只直接加载图片（hdslb）和极验脚本（见 S6）。
+- **网络全部经过 Rust**。系统 webview 没有 Electron 的 `webRequest`，无法统一改请求头和 Set-Cookie。B 站 API 走 `bili_request`；音频走 `toMediaUrl()` 给出的传输：Mac 用 `biu-media://`，Linux 用 loopback HTTP 代理，Windows 按 S2 结果定（〔R8〕）。webview 只直接加载图片（hdslb）和极验脚本（见 S6）。
 - **算法留在 TS**。`shared/auto-lyrics`（对齐、识别、LRC）和 kuromoji 已经是 TS/JS，放到 Web Worker 里跑，不改写成 Rust。Rust 只负责 Node 才能做的事：网络、解码、文件、窗口、系统集成。
 - **前端适配层保持现有接口**。`src/platform/` 导出与现在 `ElectronAPI` 相同的类型，页面代码不感知换了框架。`window.electron` 在过渡期由适配层赋值。
 
@@ -73,7 +89,7 @@ owner = Claude（osa-a1）
 | `bili/request.rs` | `bili_request` command：method/url/params/body/headers → status/headers/body；URL 白名单（`*.bilibili.com`、`*.hdslb.com`、`*.biliapi.net` 等） | — | axios 在 Electron 下的直接请求 |
 | `bili/wbi.rs`、`bili/ticket.rs` | WBI 签名、`bili_ticket` | `md5`、`hmac`、`sha2` | `ipc/api/wbi.ts`、`network/web-bili-ticket.ts` |
 | `bili/api.rs` | 下载和自动歌词要用的 playurl、audio-stream-url、web-interface/view | `serde` | `ipc/api/*.ts` |
-| `media/protocol.rs` | `biu-media://remote?u=<url>`：转发 Range，带 Referer/UA/cookie，返回 206 + `Content-Range` + `Accept-Ranges` + 正确 `Content-Type`，流式输出；`biu-media://local?p=<path>`：本地文件同样支持 Range；远程host仅放行playurl返回的具体host（不得使用`*.akamaized.net`等通配后缀；M0夹具及写死刷新不进入M2） | `tauri` 异步 URI scheme、`http-range` | `<audio>` 直连 CDN、本地音乐的 `file://` |
+| `media/protocol.rs` | `biu-media://remote?u=<url>`：转发 Range，带 Referer/UA/cookie，返回 206 + `Content-Range` + `Accept-Ranges` + 正确 `Content-Type`；〔R8〕自定义协议只能整体返回 `Response<Vec<u8>>`，每次响应限 1 MiB 并依赖 webview 续请求，只有 loopback HTTP 代理流式输出；`biu-media://local?p=<path>`：本地文件同样支持 Range；远程host仅放行playurl返回的具体host（不得使用`*.akamaized.net`等通配后缀；M0夹具及写死刷新不进入M2） | `tauri` 异步 URI scheme、`http-range` | `<audio>` 直连 CDN、本地音乐的 `file://` |
 | `download/` | `queue.rs`（tokio 信号量，并发数沿用设置）、`core.rs`（分块 Range 下载、暂停/续传/重试，URL 过期时重新取）、`persist.rs`（任务存 `media-downloads` store）、`mux.rs`（见 D2）、`events.rs`（`download:sync`） | `tokio`、`futures` | `ipc/download/*` |
 | `lyrics/` | netease 搜索/歌词、lrclib 搜索 | — | `ipc/api/netease-lyric.ts`、`lrclib-lyric.ts`、`ipc/lyrics.ts` |
 | `autolyrics/` | `sources.rs`（网易云候选、参考音频下载）、`decode.rs`（symphonia：isomp4 + aac + flac → 混成单声道 → 重采样到 22050 Hz → `tauri::ipc::Response` 返回原始 f32 字节） | `symphonia`、`rubato` | `auto-lyrics/decode.ts`、`ffmpeg-resolve.ts`、`sources.ts`、`worker-*.ts` |
@@ -178,12 +194,12 @@ Rust → 前端事件（沿用 channel 名作为事件名）：`auto-lyrics:prog
 
 | # | 内容 | 机器 | 通过标准 | 不通过时的退路 |
 |---|---|---|---|---|
-| S1 | Mac WKWebView 经 `biu-media://` 播放 B 站 fMP4 FLAC（`codecs=flac`/`fLaC`）和 Dolby（`ec-3`）各 3 首 | mac（arm64；有条件再测 x64） | `canPlayType` 返回 `probably`/`maybe`；连续播放 ≥ 60 s 无中断；拖动 5 次都能继续播放；`AudioContext` 波形有非零数据 | FLAC 不行：Mac 上 lossless 自动降级为最高码率 AAC，并在音质设置里标注。ec-3 不行：所有平台按 `canPlayType` 跳过 Dolby（与 Electron 现状一致）。两项都不影响继续 |
-| S2 | 三个系统上经 `biu-media://` 播放 5 分钟 AAC，拖动进度 | mac、pc（WebView2）、Linux（wsl 的 WebKitGTK + 一台 x64 Linux 实机/VM） | 随机拖动 10 次，每次 ≤ 1.5 s 恢复播放；日志显示每次是 Range 请求，没有整文件重拉；播放 30 分钟内存不持续增长；URL 过期后能经刷新地址继续 | 退路 A：改用 `127.0.0.1` 随机端口的本地 HTTP 代理（每次 app 启动生成一个随机 token，本次进程内的请求共用；退出即失效），接口不变。A 也不行：停下报告 |
-| S3 | Linux 上 gst-libav 依赖 | Ubuntu 24.04、Fedora 41+、Arch 的干净 VM（x64；arm64 用 osa-a1 做构建冒烟） | 没装 gst-libav 时，app 能在 3 s 内识别出「无法解码」（`error` 事件或无 `timeupdate`），并提示安装命令；`apt install ./biu.deb` 会自动拉上 `gstreamer1.0-libav`；rpm 声明的依赖在 Fedora 上可解析；装好后 AAC、FLAC 都能播放 | Linux 增加原生播放后端（symphonia + `cpal`，在 Rust 里播放，前端播放器接口加一个实现）。工作量约 +1 个里程碑，需要用户重新批准 |
-| S4 | 二进制体积 | CI（三平台） | 带上计划内全部 crate 和插件 + 现在的 `dist/web`，release profile（`opt-level="s"`、`lto=true`、`codegen-units=1`、`strip=true`、`panic="abort"`）：mac arm64 dmg ≤ 8 MB，win x64 NSIS ≤ 7 MB，deb ≤ 8 MB | 按 `cargo bloat` 排行替换大 crate（例如 `fontdb` 换 `font-kit`、去掉 `rubato` 改用简单重采样、`lofty` 只开需要的格式）。仍超 10 MB：停下报告实际数字，由用户决定 |
-| S5 | 桌面歌词窗口 | mac、pc、Linux X11、Linux Wayland（GNOME、KDE） | 透明背景无黑边；置顶在普通窗口之上（mac 包括全屏 app 之上，与现状一致）；锁定后点击穿透；D3 方案下悬停 1 s 内出现解锁按钮；卡拉 OK 扫光 60 fps，歌词窗口 CPU < 10%（M 系列 Mac / 中端 Windows） | Wayland 上置顶或穿透不行：与 Electron 现状一样标为已知限制。mac/win 上不行：停下报告 |
-| S6 | webview 直接加载的部分 | mac、pc、Linux | `no-referrer` 下 hdslb 封面/头像能加载；二维码登录完整走通；极验验证码能弹出并通过；设置了代理时 webview 里的图片也走代理（`WebviewWindowBuilder::proxy_url`） | 图片不行：图片也走 `biu-media://`（加缓存头）。极验不行：极验页面改由单独的 webview 窗口加载 `bilibili.com` 源。webview 代理不行：只代理 Rust 流量，在设置里写明 |
+| S1 | Mac WKWebView 经 `biu-media://` 播放 fMP4 FLAC（`codecs=flac`/`fLaC`）和 Dolby（`ec-3`）各 3 首。〔R5〕用 ffmpeg 合成的原创音频（FLAC 44.1/16、48/24、96/24；ec-3 2.0、5.1 及一首不同码率的 5.1）验收；真实 B 站样本可选，不阻塞 | mac（arm64；有条件再测 x64） | `canPlayType` 返回 `probably`/`maybe`；连续播放 ≥ 60 s 无中断；拖动 5 次都能继续播放；`AudioContext` 波形有非零数据 | FLAC 不行：Mac 上 lossless 自动降级为最高码率 AAC，并在音质设置里标注。ec-3 不行：所有平台按 `canPlayType` 跳过 Dolby（与 Electron 现状一致）。两项都不影响继续 |
+| S2 | 三个系统上经 `biu-media://` 播放 5 分钟 AAC，拖动进度 | mac、pc（WebView2）、Linux（wsl 的 WebKitGTK + `ubuntu-24.04` x64 runner〔R3〕） | 随机拖动 10 次，每次 ≤ 1.5 s 恢复播放；日志显示每次是 Range 请求，没有整文件重拉；播放 30 分钟内存不持续增长（〔R3〕判定规则见 M0 收尾计划）；URL 过期后能经刷新地址继续（〔R3〕M0 只验夹具，真实 CDN 在 M3 验） | 退路 A：改用 `127.0.0.1` 随机端口的本地 HTTP 代理（每次 app 启动生成一个随机 token，本次进程内的请求共用；退出即失效），接口不变。A 也不行：停下报告 |
+| S3 | Linux 上 gst-libav 依赖 | Ubuntu 24.04、Fedora 41+、Arch 的干净容器（〔R4〕GitHub x64 runner + xvfb；Arch 用 AppImage；arm64 用 osa-a1 做构建冒烟） | 没装 gst-libav 时，app 能在 3 s 内识别出「无法解码」（`error` 事件或无 `timeupdate`），并提示安装命令；`apt install ./biu.deb` 会自动拉上 `gstreamer1.0-libav`；rpm 声明的依赖在 Fedora 上可解析；装好后 AAC、FLAC 都能播放 | Linux 增加原生播放后端（symphonia + `cpal`，在 Rust 里播放，前端播放器接口加一个实现）。工作量约 +1 个里程碑，需要用户重新批准 |
+| S4 | 二进制体积 | CI（三平台） | 带上计划内全部 crate 和插件 + 现在的 `dist/web`，release profile（`opt-level="s"`、`lto=true`、`codegen-units=1`、`strip=true`，〔R2〕全平台不设 `panic="abort"`）：mac arm64 dmg ≤ 8 MB，win x64 NSIS ≤ 7 MB，deb ≤ 8 MB。〔R2〕产物必须内嵌 `dist/web` | 按 `cargo bloat` 排行替换大 crate（例如 `fontdb` 换 `font-kit`、去掉 `rubato` 改用简单重采样、`lofty` 只开需要的格式）。仍超 10 MB：停下报告实际数字，由用户决定 |
+| S5 | 桌面歌词窗口 | mac、pc、Linux X11（〔R6〕wsl 的 WSLg 只作参考；Wayland GNOME、KDE 移到 M4） | 透明背景无黑边；置顶在普通窗口之上（mac 包括全屏 app 之上，与现状一致）；锁定后点击穿透；D3 方案下悬停 1 s 内出现解锁按钮；卡拉 OK 扫光 60 fps，歌词窗口 CPU < 10%（M 系列 Mac / 中端 Windows） | Wayland 上置顶或穿透不行：与 Electron 现状一样标为已知限制。mac/win 上不行：停下报告 |
+| S6 | webview 直接加载的部分 | mac、pc、Linux | `no-referrer` 下 hdslb 封面/头像能加载；〔R7〕二维码登录、极验移到 M2 首项验收；设置了代理时 webview 里的图片也走代理（`WebviewWindowBuilder::proxy_url`） | 图片不行：图片也走 `biu-media://`（加缓存头）。极验不行：极验页面改由单独的 webview 窗口加载 `bilibili.com` 源。webview 代理不行：只代理 Rust 流量，在设置里写明 |
 | S7 | 更新端到端 | mac、pc、Linux（若保留 AppImage） | 用测试仓库发 `0.0.1` → `0.0.2`：后台下载，退出时安装，下次启动是新版本，设置和登录保留。Mac 分别测 `/Applications` 和 `~/Applications`；从 dmg 直接运行（translocated）时进入 manual 模式 | Mac 自动安装不行：Mac 走 manual 模式（下载后提示替换），其他平台照常 |
 | S8 | 系统媒体控制（媒体键、mac 正在播放、Windows SMTC、Linux MPRIS） | mac、pc、Linux | 现有 `navigator.mediaSession` 代码在三个 webview 里都能显示标题封面，媒体键可控制 | 用 `souvlaki` 在 Rust 侧实现，由 `player_state` 驱动 |
 
@@ -207,7 +223,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 
 ### 3.2 路径
 
-1. **最后一个 Electron 版本（桥接版，`1.16.1-autolyrics.6`）**：旧客户端只认带 `autolyrics` 后缀的版本，所以桥接版必须用这个版本号，通过现有 electron-updater 通道送达（Win/Linux AppImage 自动，Mac 和其他照旧手动）。它做三件事：
+1. **最后一个 Electron 版本（桥接版，〔R9〕暂定 `1.16.1-autolyrics.7`，以发布时最新版号 +1 为准）**：`.6` 已占用版号且不含下列功能。`.6` 起 `allowPrerelease=false`，桥接版只需比当前 Latest 大。通过现有 electron-updater 通道送达（Win/Linux AppImage 自动，Mac 经 Squirrel.Mac 自动，须沿用同一张自签名证书）。`≤ .5` 的 Mac ad-hoc 安装仍需手动。它做三件事：
    - 启动时把 `.bilibili.com` 的 cookie（`session.cookies.get`）和解密后的登录信息写到 `appData/Biu/migration/export.json`（0600），带 `exportedAt` 和格式版本号。
    - 关闭 electron-updater 的后续检查，避免对 Tauri release 报「找不到 latest*.yml」。
    - 显示一次引导弹窗：说明新版改用 Tauri、体积变化、需要手动安装一次；按钮「下载新版」打开对应平台的 release 资产链接（按 OS/arch 选好），「稍后」可以在设置页再次打开。
@@ -222,7 +238,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 ### 3.3 验收
 
 - 单元测试：`migrate.rs` 用三类夹具（完整 export、只有 JSON、损坏文件）覆盖导入结果；解密测试用一份由现有 electron-store 生成的 `user-login-info.json` 夹具。
-- 手动：每个平台装 `1.16.1-autolyrics.5` 并登录 → 升级到桥接版 → 按引导装 Tauri 版 → 打开后仍是登录状态，设置、快捷键、桌面歌词位置、歌词缓存一致；Windows 卸载旧版后 Tauri 版数据仍在。
+- 手动：每个平台装 `1.16.1-autolyrics.6`（〔R9〕另测一次 `.5`）并登录 → 升级到桥接版 → 按引导装 Tauri 版 → 打开后仍是登录状态，设置、快捷键、桌面歌词位置、歌词缓存一致；Windows 卸载旧版后 Tauri 版数据仍在。
 
 ---
 
@@ -268,7 +284,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - 验证：`cargo test --release` **6 passed / 0 failed**（Range/416、字节一致性、Host/Origin限制、测试开关/精确夹具范围、畸形URI返回400且服务继续响应）；Node 语法检查、Python 编译检查、`cargo fmt --check` 通过。现有 `dist/web` 快照内嵌为体积负载，文件合计 **2,481,561 字节（2.481561 MB）**，并未声称已完成正式 React 适配。
   - 证据与边界：`spikes/evidence/` 的环境/前端哈希清单、测试输出；`spikes/README.md` 是复现入口。原始大日志、音频、产物和私钥均忽略提交。音频由 GStreamer 生成原创 440 Hz 正弦波，没有提交或下载版权歌曲。用户另行安排 Claude 审查；本执行线程取消原审查，不声明独立审查通过。全平台 M0 尚未验收，不进入 M1。
 - [ ] S1 Mac FLAC / ec-3
-  - 结果：**待在 mac（MateBook，arm64）上运行**，未编造样本或测量。Linux `canPlayType` 在 libav 存在时对 AAC、fMP4 FLAC（flac/fLaC）及 ec-3 返回 `probably`，原生 FLAC 返回 `maybe`；这些仅是 Linux 能力声明，不能替代 Mac 的三首/格式实播。
+  - 结果：**待在 mac（〔R11〕M1 Pro MacBook Pro，arm64）上运行**，未编造样本或测量。Linux `canPlayType` 在 libav 存在时对 AAC、fMP4 FLAC（flac/fLaC）及 ec-3 返回 `probably`，原生 FLAC 返回 `maybe`；这些仅是 Linux 能力声明，不能替代 Mac 的三首/格式实播。
   - 复现：`spikes/m0/` 测试页提供六个用户自备 fMP4 样本入口；每首自动记录连续 60 s、5 次 seek 和波形。文件必须来自用户有权使用的音频，留在忽略的 `fixtures/`，不加入传输包或 Git。
   - 退路：Mac FLAC 不通过则最高码率 AAC 并标注音质降级；ec-3 按 `canPlayType` 跳过。README 的 Mac S1 节给出直接操作步骤及回传字段；Mac x64 仍待有条件补测。
 - [ ] S2 三平台拖动进度
@@ -295,7 +311,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - 缺口：当前解锁按钮为常显原型，完整锁定/悬停显示状态机未实现；不能宣称“1 s内出现解锁按钮”通过。透明无黑边、实体点击穿透、全屏app上方置顶、Mac/Windows CPU<10%均未验证。Wayland限制按原计划记录；Mac/Windows失败仍需报告用户。
 - [ ] S6 图片 / 登录 / 极验 / webview 代理
   - 结果：**图片通过；Linux webview 代理不通过（与 S2 退路 A 冲突），采用『只代理 Rust 流量』**；二维码完整登录/极验、mac / pc仍待验证。no-referrer页面实载hdslb默认头像，**naturalWidth=180 px**；`WebviewWindowBuilder::proxy_url`探针图片加载成功，上游记录代理请求且Referer为空。
-  - 发现：Linux上代理窗口会影响共享WebKit context，连主窗口loopback媒体请求也进入测试代理，从而播放失败。因此Linux采用只代理Rust流量的退路，图片等webview直连，并在设置明示；正式产品策略作为§7 D6待用户拍板。Mac代理探针已启用tauri的`macos-proxy` feature，需macOS 14+，尚未实机验证。
+  - 发现：Linux上代理窗口会影响共享WebKit context，连主窗口loopback媒体请求也进入测试代理，从而播放失败。因此Linux采用只代理Rust流量的退路，图片等webview直连，并在设置明示；正式产品策略已按§7 D6=A确定（用户已拍板 2026-11-03）。Mac代理探针已启用tauri的`macos-proxy` feature，需macOS 14+，尚未实机验证。
   - 缺口：当前独立播放器原型没有二维码/极验最小页面，内嵌正式dist不等于已适配正式登录。未发起扫码授权、未自动点击验证码、未使用真实cookie。README明确此格不能靠外部浏览器或占位页验收，需要补最小登录复现页并由用户操作。
 - [ ] S7 更新端到端
   - 结果：**Linux AppImage 本地测试更新链通过；mac / pc 待运行**。`python3 -m http.server`仅监听127.0.0.1；Tauri updater后台下载并验签，本地测试AppImage **0.0.1→0.0.2** 安装后退出，再次启动确为0.0.2；测试设置和虚拟登录夹具均保留（两个preserved字段为true）。本轮使用补齐媒体插件后的AppImage重跑成功。
@@ -306,6 +322,45 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
   - 退路实测：souvlaki注册`org.mpris.MediaPlayer2.biu_m0`；D-Bus GetAll读到标题`Biu M0 native fixture`、艺术家、300 s时长和封面URL；发送Pause/Play，经Rust事件到前端，HTMLAudio分别记录`paused=true/false`。证据在`spikes/evidence/review-controls-dbus.txt`及摘要。
   - 缺口：真实桌面封面展示、物理媒体键、Mac正在播放和Windows SMTC未验证。当前原型元数据/状态是固定夹具，不是完整player_state同步；Mac/Windows souvlaki接线尚未实现，不把Linux退路结果当成跨平台通过。
 - 产出：spike 结果汇总，D1–D4 按结果确认或调整。
+
+### M0 收尾计划（2026-11-04，已批准）
+
+#### 代码与证据的分支规则
+
+- `spike/tauri-m0-mac`（本分支）是方案和证据的本地主线，禁止推送。
+- `spike/tauri-m0-ci` 是唯一代码线，公开；提交只含 `spikes/` 代码、`.github/workflows/tauri-m0-*.yml`，不含 `spikes/evidence/`。每次推送前运行 `git diff --name-only ff1e6a68..HEAD` 核对。
+- 三台机器 clone `spike/tauri-m0-ci`，夹具和 `dist/web` 由 `m0-inputs.tar.gz` 传输。机器线程只运行和记录，不改代码；原始证据留在机器的 `spikes/evidence/`，由 osa-a1 取回本分支。
+- 现有 `.app`、`Biu.app`、`~/Developer/projects/biu` 不动。spike identifier 是 `com.biu.spike.m0`，与正式版不冲突。
+
+#### 批次
+
+| 批次 | 内容 | 机器 | 执行者 |
+|---|---|---|---|
+| A | harness：S5 锁定/悬停状态机；S8 的 handler 真实控制播放；S1 合成 fMP4 脚本；上述全部提交到 `spike/tauri-m0-ci` | osa-a1 | `antigravity` `gemini-4-argon`，Opus 审查后推送 |
+| B | CI：S4 三平台（含 `dist/web`、修复 `mac-sizes.json` 为空）；S2 Mac custom 与 HTTP 对照各 3600 s；S2 x64 Linux HTTP；S3 三发行版容器；S1 合成样本预跑 | GitHub `macos-26`、`windows-latest`、`ubuntu-24.04` | 同上；Opus 核对 run 结果 |
+| C | S2、S5、S6（图片与代理）、S7（NSIS）、S8 | pc | `antigravity` `gemini-4-argon`，安装 Rust 与 Python（已有 VS Build Tools） |
+| D | S2（HTTP，并复核自定义协议）、S5、S8（WebKitGTK，WSLg） | wsl | `antigravity` `gemini-4-argon`，用 sudo 装 Rust 与 WebKitGTK 依赖 |
+| E | S1、S2（custom 3600 s，真实音频设备）、S5、S6（代理复测）、S7、S8 | mac，需屏幕解锁 | `antigravity` `gemini-4-argon`；不可用时退到 `pi` `gptload-gemini/gemini-4-argon-high` |
+
+A → B、A → C/D/E 串行；C、D、E 可并行。
+
+#### S2 内存判定（〔R3〕，事先固定）
+
+指标是 warmup 600 s 后全段和最后 30 min 的 OLS 斜率，按「全部进程合计」和「Rust 主进程」分别算。
+
+1. 全部进程两段均 ≤ 0：通过。
+2. 否则，满足以下全部条件时记「已知限制」，不阻塞 M1：Rust 主进程两段均 ≤ 0.05 MB/min；全部进程全段 ≤ 1.5 MB/min（约 90 MB/h）；增长集中在 webview 进程；HTTP 对照的增长在同一量级（比值在 0.5–2 之间）。M3 的 1 小时手动验收复查。
+3. 其他情况：内存判未通过，停下报告。若只有自定义协议增长，建议该平台改走 HTTP 退路，由用户决定。
+
+#### 进入 M1 的门槛
+
+| 类别 | 项目 | 规则 |
+|---|---|---|
+| 必须完成 | S2 mac/pc/wsl/x64 runner；S3 容器；S4 三平台；S5 mac/pc | 方案写明的「停下报告」都在这些项里 |
+| 跑完即可，失败走退路 | S1、S6（图片与代理）、S7、S8 | 退路已定义，失败只记录。S8 失败时 Mac/Windows 的 souvlaki 接线在 M3 做并验证 |
+| 不在 M0 验证 | 真实 CDN 与续签 → M3；二维码与极验 → M2；Wayland GNOME/KDE → M4；Mac x64 → M3 手动验收 | 依赖后续里程碑产物或当前没有环境 |
+
+全部批次结束后，Opus 汇总 M0 结果并确认 D1–D4；用户确认后才进入 M1。
 
 ### M1 — 工程骨架与 CI
 - [ ] `src-tauri/` crate、`tauri.conf.json`（identifier `com.biu.wood3n`、三个窗口的配置、CSP、`biu-media`/`biu-res` scheme）
@@ -319,23 +374,23 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 ### M2 — 网络、cookie、登录
 - [ ] `bili/client.rs`、`bili/request.rs`（白名单）、cookie jar 落盘
 - [ ] axios adapter；WBI / bili_ticket；代理设置（34）；cookie 命令（35–36）
-  - M0审查安全约束：M2仅放行playurl返回的具体CDN host；不得复制spike原`*.akamaized.net`后缀白名单、夹具放行或写死403刷新逻辑。spike测试路径须保持env/cfg显式开关，正式请求不能带测试分支。Linux webview代理策略见§7 D6。
-- [ ] 二维码登录、短信/密码登录、极验（按 S6 结论）、退出登录
+  - M0审查安全约束：M2仅放行playurl返回的具体CDN host；不得复制spike原`*.akamaized.net`后缀白名单、夹具放行或写死403刷新逻辑。spike测试路径须保持env/cfg显式开关，正式请求不能带测试分支。Linux代理按§7 D6=A执行（用户已拍板 2026-11-03）：仅代理Rust侧B站API、登录、音频和下载；webview图片等直连并在设置明示，暂不推进B。
+- [ ] 〔R7〕本里程碑第一项：三平台验证二维码登录和极验（原 S6 项，退路不变）；之后做短信/密码登录、退出登录
 - 测试：Rust 单元——WBI 签名用现有 TS 实现生成的测试向量对比；Set-Cookie 写入 jar；白名单拒绝非 B 站域名；代理切换后新请求走代理（wiremock / 本地 HTTP 代理）。前端单元——adapter 把 axios 配置正确转成 `bili_request` 参数并还原响应。手动：登录 → 首页推荐、搜索、收藏夹、动态、个人主页各页面能正常显示，重启后仍登录。
 
 ### M3 — 播放
-- [ ] `media/protocol.rs`（远程 + 本地）、`toMediaUrl()`
+- [ ] `media/protocol.rs`（远程 + 本地）、loopback HTTP 代理（〔R8〕Linux 必需，token 与 Host 校验规则见 S2）、`toMediaUrl()` 按平台选择传输
 - [ ] 音质选择按 `canPlayType` 判断 FLAC/Dolby（S1 结论）
 - [ ] 本地音乐播放改用 `biu-media://local`
 - [ ] URL 过期刷新；波形组件；mediaSession（或 S8 的退路）
-- 测试：Rust 单元——Range 解析（`bytes=0-`、`bytes=100-199`、越界 416）、206 头、白名单、本地路径限制在扫描目录和下载目录内；集成——本地 HTTP 服务器提供测试 fMP4，协议返回的字节与源一致。手动：三平台各播 AAC/FLAC/本地文件各 1 首，拖动、切歌、暂停恢复、播放 1 小时。
+- 测试：Rust 单元——Range 解析（`bytes=0-`、`bytes=100-199`、越界 416）、206 头、白名单、本地路径限制在扫描目录和下载目录内；集成——本地 HTTP 服务器提供测试 fMP4，协议返回的字节与源一致。手动：三平台各播 AAC/FLAC/本地文件各 1 首，拖动、切歌、暂停恢复、播放 1 小时；〔R3〕Mac 复查 WebContent 内存斜率；〔R3〕真实 B 站 CDN 的 Range 与地址续签在此首次验证。
 
 ### M4 — 窗口与系统集成
 - [ ] 托盘（菜单、播放状态）、迷你播放器（39）
 - [ ] 全局快捷键（25–28）、Windows thumbar（54 的一部分）
 - [ ] 桌面歌词窗口（46–53），悬停按 D3；位置持久化与重置
 - [ ] 窗口相关前端调用（40–45）
-- 测试：Rust 单元——快捷键字符串转换（覆盖现有 `shortcut-settings` 默认值）；歌词窗口锁定/悬停状态机。手动：S5 的矩阵全部复测；快捷键在 app 失焦时生效；托盘和 thumbar 按钮控制播放。
+- 测试：Rust 单元——快捷键字符串转换（覆盖现有 `shortcut-settings` 默认值）；歌词窗口锁定/悬停状态机。手动：S5 的矩阵全部复测，〔R6〕含 Wayland GNOME、KDE（需一台 Linux 桌面 VM，M4 开始前由 owner 安排）；快捷键在 app 失焦时生效；托盘和 thumbar 按钮控制播放。
 
 ### M5 — 歌词、罗马音、自动歌词
 - [ ] `lyrics/`（21–23）
@@ -358,7 +413,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 
 ### M8 — 迁移与桥接版
 - [ ] `migrate.rs`（§3.2 第 2 步）、旧版卸载提示（第 3 步）
-- [ ] 桥接版 `1.16.1-autolyrics.6`：在 Electron 代码（基于 master）上加 export、关 updater、引导弹窗
+- [ ] 桥接版（〔R9〕暂定 `1.16.1-autolyrics.7`）：在 Electron 代码（基于 `feat/auto-lyrics-p1`）上加 export、关 updater、引导弹窗
 - 测试：§3.3。
 
 ### M9 — Beta 与切换
@@ -371,7 +426,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 
 ## 6. 分工与审查
 
-派活前在 osa-a1 跑 `agent-quota`，按余量调整。所有执行线程走 T3 `delegate_task`；Mac/Windows 上的 spike 和手动验收派到对应机器（`target.environmentId`）。
+派活前在 osa-a1 跑 `agent-quota`，按余量调整。〔R10〕M0 剩余工作由 Gemini 4 Argon 执行，Opus 审结果；下表 M0 行的 Sol 不再适用，M1 起按派活时的额度重新确认。所有执行线程走 T3 `delegate_task`；Mac/Windows 上的 spike 和手动验收派到对应机器（`target.environmentId`）。
 
 | 工作 | 作者 | 审查 | 理由 |
 |---|---|---|---|
@@ -409,7 +464,7 @@ M1 时核对实际文件名与路径（`StoreNameMap`、`getUserDataPath()`、de
 | D3 | 桌面歌词锁定后的悬停 | A. Rust 每 100 ms 轮询光标位置，进入解锁按钮区域时临时取消穿透；B. 锁定后完全穿透，只能从托盘或快捷键解锁 | **A**（待用户拍板） | 保留现在的交互；轮询开销很小，且只在锁定且窗口可见时运行 |
 | D4 | 按需资源托管 | A. 只用 GitHub Release；B. 只用国内镜像；C. 两者，按顺序回退 | **C**（待用户拍板） | 国内用户访问 GitHub 下载不稳定。sha256 写在随包的清单里，镜像不可信也不影响安全。国内镜像的具体选择（Gitee Release、对象存储等）需要用户提供账号 |
 | D5 | Tauri 首版版本号与 bundle id | A. `2.0.0`，沿用 `com.biu.wood3n`；B. 继续 `-autolyrics.N` 后缀 | **A**（待用户拍板） | 框架换了，主版本号升级表达清楚；Tauri updater 只在 Tauri 版本之间比较，不受旧通道后缀限制。沿用 bundle id 时 Mac 新版直接覆盖旧 `.app` |
-| D6 | Linux 代理策略（M0实测新增） | A. 只代理Rust流量，webview图片等直连并在设置明示；B. 验证独立context或loopback排除后再支持webview代理 | **A，待用户拍板**（M0先采用此退路） | WebKitGTK共享WebContext且ignore_hosts为空，webview代理会接管S2 loopback媒体，导致播放失败；图片探针成功不能算代理方案通过 |
+| D6 | Linux 代理策略（M0实测新增） | A. 只代理Rust流量，webview图片等直连并在设置明示；B. 验证独立context或loopback排除后再支持webview代理 | **A（用户已拍板 2026-11-03）**（M0先采用此退路） | WebKitGTK共享WebContext且ignore_hosts为空，webview代理会接管S2 loopback媒体，导致播放失败；图片探针成功不能算代理方案通过 |
 
 D1：用户已接受推荐默认值（2026-11-02 23:54 SGT）。
 
@@ -427,6 +482,6 @@ D5：用户已接受推荐默认值（2026-11-02 23:54 SGT）。
 |---|---|---|
 | WebKitGTK 各发行版版本差异 | Linux 上播放、透明窗口表现不一 | S3/S5 覆盖三个主流发行版；最低版本写进 deb/rpm 依赖 |
 | B 站接口依赖浏览器行为（极验、风控） | 登录或部分接口失败 | S6 早测；风控相关请求头（`Origin`、UA、`buvid`）在 Rust 侧统一处理 |
-| 卡拉 OK 分支在重写期间继续改 Electron 代码 | 移植遗漏 | M4 开始前对比 `fix/desktop-lyrics-sync` 合入 master 后的 `electron/desktop-lyrics.ts`，差异列入 M4 清单 |
+| 卡拉 OK 分支在重写期间继续改 Electron 代码 | 移植遗漏 | M4 开始前对比 `v1.16.1-autolyrics.6` 与最新发布分支的 `electron/desktop-lyrics.ts`，差异列入 M4 清单〔R9〕 |
 | upstream（wood3n/biu）继续发 Electron 版 | 合并上游功能变难 | M1 起只把上游的前端改动挑选合入；主进程改动按需在 Rust 侧重做 |
 | 签名私钥丢失 | 所有客户端无法自动更新 | 用户备份 `TAURI_SIGNING_PRIVATE_KEY`；丢失时只能手动重装一次 |
