@@ -1,3 +1,5 @@
+import { createTauriAutoLyricsController } from "./auto-lyrics-worker";
+
 export const NOT_IMPLEMENTED_MESSAGE = "未实现";
 
 export function notImplementedError(method: string): Error {
@@ -44,6 +46,38 @@ export async function invokeTauri<T = unknown>(
   return tauri.core.invoke<T>(cmd, args);
 }
 
+export function listenTauriEvent<T = unknown>(
+  eventName: string,
+  cb: (payload: T) => void,
+): VoidFunction {
+  let disposed = false;
+  let unlistenFn: VoidFunction | null = null;
+  const tauri = typeof window !== "undefined" ? getTauri() : undefined;
+  if (tauri?.event?.listen) {
+    void tauri.event
+      .listen<T>(eventName, event => {
+        if (!disposed) {
+          cb(event.payload);
+        }
+      })
+      .then(unlisten => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlistenFn = unlisten;
+        }
+      })
+      .catch(() => {});
+  }
+  return () => {
+    disposed = true;
+    if (unlistenFn) {
+      unlistenFn();
+      unlistenFn = null;
+    }
+  };
+}
+
 let cachedMediaBase: string | null = null;
 let mediaBasePromise: Promise<string> | null = null;
 
@@ -64,6 +98,14 @@ export async function ensureMediaBase(): Promise<string> {
   return mediaBasePromise;
 }
 
+function fileUrlToLocalPath(rawUrl: string): string {
+  const withoutScheme = rawUrl.slice("file://".length);
+  if (/^\/[a-zA-Z]:\//.test(withoutScheme)) {
+    return withoutScheme.slice(1);
+  }
+  return withoutScheme;
+}
+
 export function toMediaUrlSync(rawUrl: string): string {
   if (!rawUrl || !cachedMediaBase) {
     return rawUrl;
@@ -73,6 +115,9 @@ export function toMediaUrlSync(rawUrl: string): string {
   }
   if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
     return `${cachedMediaBase}remote?u=${encodeURIComponent(rawUrl)}`;
+  }
+  if (rawUrl.startsWith("file://")) {
+    return `${cachedMediaBase}local?p=${encodeURIComponent(fileUrlToLocalPath(rawUrl))}`;
   }
   return rawUrl;
 }
@@ -89,6 +134,9 @@ export async function toMediaUrl(rawUrl?: string): Promise<string> {
     if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
       return `${base}remote?u=${encodeURIComponent(rawUrl)}`;
     }
+    if (rawUrl.startsWith("file://")) {
+      return `${base}local?p=${encodeURIComponent(fileUrlToLocalPath(rawUrl))}`;
+    }
     return rawUrl;
   } catch {
     return rawUrl;
@@ -101,13 +149,18 @@ export function unwrapMediaUrl(maybeWrapped?: string): string | undefined {
   }
   try {
     const parsed = new URL(maybeWrapped);
-    if (
-      (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") &&
-      parsed.pathname.endsWith("/remote")
-    ) {
-      const inner = parsed.searchParams.get("u");
-      if (inner) {
-        return inner;
+    if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+      if (parsed.pathname.endsWith("/remote")) {
+        const inner = parsed.searchParams.get("u");
+        if (inner) {
+          return inner;
+        }
+      }
+      if (parsed.pathname.endsWith("/local")) {
+        const localPath = parsed.searchParams.get("p");
+        if (localPath) {
+          return `file://${localPath}`;
+        }
       }
     }
   } catch {
@@ -159,21 +212,10 @@ function installDragRegionObserver(): void {
 }
 
 export const UNIMPLEMENTED_ELECTRON_METHODS = [
-  "selectDirectory",
-  "selectFile",
-  "openDirectory",
-  "showFileInFolder",
-  "getFonts",
   "searchNeteaseSongs",
   "getNeteaseLyrics",
   "searchLrclibLyrics",
   "romanizeLyrics",
-  "autoLyrics.start",
-  "autoLyrics.prefetch",
-  "autoLyrics.cancel",
-  "autoLyrics.onProgress",
-  "scanLocalMusic",
-  "deleteLocalMusicFile",
   "navigate",
   "updatePlaybackState",
   "onShortcutCommand",
@@ -201,18 +243,11 @@ export const UNIMPLEMENTED_ELECTRON_METHODS = [
   "setDesktopLyricsIgnoreMouse",
   "setDesktopLyricsContentHeight",
   "resetDesktopLyricsPosition",
-  "getMediaDownloadTaskList",
-  "syncMediaDownloadTaskList",
-  "addMediaDownloadTask",
-  "addMediaDownloadTaskList",
-  "pauseMediaDownloadTask",
-  "resumeMediaDownloadTask",
-  "retryMediaDownloadTask",
-  "cancelMediaDownloadTask",
-  "clearMediaDownloadTaskList",
 ] as const;
 
 export function createTauriElectronAPI(): ElectronAPI {
+  const autoLyrics = createTauriAutoLyricsController(invokeTauri);
+
   const api: ElectronAPI = {
     getStore: <N extends StoreName>(name: N) =>
       invokeTauri<StoreDataMap[N] | undefined>("store_get", { name }),
@@ -274,24 +309,49 @@ export function createTauriElectronAPI(): ElectronAPI {
       void invokeTauri("devtools_toggle");
     },
 
+    // Step 3: Dialogs, Fonts, Local Music, Download, AutoLyrics
+    selectDirectory: (title?: string) =>
+      invokeTauri<string | null>("select_directory", { title: title ?? null }).then(
+        v => v ?? null,
+      ),
+    selectFile: () =>
+      invokeTauri<string | null>("select_file").then(v => v ?? null),
+    openDirectory: (path?: string) =>
+      invokeTauri<boolean>("open_directory", { path: path ?? null }),
+    showFileInFolder: (filePath: string) =>
+      invokeTauri<boolean>("show_file_in_folder", { filePath }),
+    getFonts: () => invokeTauri<IFontInfo[]>("get_fonts"),
+    scanLocalMusic: (dirs: string[]) =>
+      invokeTauri<LocalMusicItem[]>("scan_local_music", { dirs }),
+    deleteLocalMusicFile: (filePath: string) =>
+      invokeTauri<boolean>("delete_local_music_file", { filePath }),
+
+    getMediaDownloadTaskList: () =>
+      invokeTauri<MediaDownloadTask[]>("download_get_list"),
+    syncMediaDownloadTaskList: (cb: (payload: MediaDownloadBroadcastPayload) => void) =>
+      listenTauriEvent<MediaDownloadBroadcastPayload>("download:sync", cb),
+    addMediaDownloadTask: (task: MediaDownloadInfo) =>
+      invokeTauri<void>("download_add", { task }),
+    addMediaDownloadTaskList: (tasks: MediaDownloadInfo[]) =>
+      invokeTauri<void>("download_add_list", { tasks }),
+    pauseMediaDownloadTask: (id: string) =>
+      invokeTauri<void>("download_pause", { id }),
+    resumeMediaDownloadTask: (id: string) =>
+      invokeTauri<void>("download_resume", { id }),
+    retryMediaDownloadTask: (id: string) =>
+      invokeTauri<void>("download_retry", { id }),
+    cancelMediaDownloadTask: (id: string) =>
+      invokeTauri<void>("download_cancel", { id }),
+    clearMediaDownloadTaskList: () =>
+      invokeTauri<void>("download_clear"),
+
+    autoLyrics,
+
     // Step 2+ unimplemented methods: return explicit "未实现" errors without crashing startup
-    selectDirectory: () => rejectNotImplemented("selectDirectory"),
-    selectFile: () => rejectNotImplemented("selectFile"),
-    openDirectory: () => rejectNotImplemented("openDirectory"),
-    showFileInFolder: () => rejectNotImplemented("showFileInFolder"),
-    getFonts: () => rejectNotImplemented("getFonts"),
     searchNeteaseSongs: () => rejectNotImplemented("searchNeteaseSongs"),
     getNeteaseLyrics: () => rejectNotImplemented("getNeteaseLyrics"),
     searchLrclibLyrics: () => rejectNotImplemented("searchLrclibLyrics"),
     romanizeLyrics: () => rejectNotImplemented("romanizeLyrics"),
-    autoLyrics: {
-      start: () => rejectNotImplemented("autoLyrics.start"),
-      prefetch: () => rejectNotImplemented("autoLyrics.prefetch"),
-      cancel: () => rejectNotImplemented("autoLyrics.cancel"),
-      onProgress: () => noopUnsubscribe("autoLyrics.onProgress"),
-    },
-    scanLocalMusic: () => rejectNotImplemented("scanLocalMusic"),
-    deleteLocalMusicFile: () => rejectNotImplemented("deleteLocalMusicFile"),
     navigate: () => noopUnsubscribe("navigate"),
     updatePlaybackState: () => warnNotImplemented("updatePlaybackState"),
     onShortcutCommand: () => noopUnsubscribe("onShortcutCommand"),
@@ -320,15 +380,6 @@ export function createTauriElectronAPI(): ElectronAPI {
     setDesktopLyricsIgnoreMouse: () => warnNotImplemented("setDesktopLyricsIgnoreMouse"),
     setDesktopLyricsContentHeight: () => warnNotImplemented("setDesktopLyricsContentHeight"),
     resetDesktopLyricsPosition: () => warnNotImplemented("resetDesktopLyricsPosition"),
-    getMediaDownloadTaskList: () => rejectNotImplemented("getMediaDownloadTaskList"),
-    syncMediaDownloadTaskList: () => noopUnsubscribe("syncMediaDownloadTaskList"),
-    addMediaDownloadTask: () => rejectNotImplemented("addMediaDownloadTask"),
-    addMediaDownloadTaskList: () => rejectNotImplemented("addMediaDownloadTaskList"),
-    pauseMediaDownloadTask: () => rejectNotImplemented("pauseMediaDownloadTask"),
-    resumeMediaDownloadTask: () => rejectNotImplemented("resumeMediaDownloadTask"),
-    retryMediaDownloadTask: () => rejectNotImplemented("retryMediaDownloadTask"),
-    cancelMediaDownloadTask: () => rejectNotImplemented("cancelMediaDownloadTask"),
-    clearMediaDownloadTaskList: () => rejectNotImplemented("clearMediaDownloadTaskList"),
   };
 
   return api;

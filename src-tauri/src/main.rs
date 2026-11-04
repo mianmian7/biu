@@ -1,16 +1,35 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod auto_lyrics;
 mod bili;
+mod dialog;
+mod download;
+mod fonts;
+mod local_music;
 mod media;
 mod store;
 
+use auto_lyrics::{
+    auto_lyrics_cache_set, auto_lyrics_decode_audio, auto_lyrics_fetch_audio,
+    auto_lyrics_get_netease_lyric, auto_lyrics_ref_set, auto_lyrics_search_bili_videos,
+    auto_lyrics_search_netease, auto_lyrics_state_snapshot, auto_lyrics_view, AutoLyricsState,
+};
 use bili::{
     bili_request, cookie_get, cookie_set, inject_auth_cookies, parse_proxy_settings_value,
     proxy_set, BiliState,
 };
+use dialog::{open_directory, select_directory, select_file, show_file_in_folder};
+use download::{
+    download_add, download_add_list, download_cancel, download_clear, download_get_list,
+    download_pause, download_resume, download_retry, DownloadManager,
+};
+use fonts::get_fonts;
+use local_music::{delete_local_music_file, scan_local_music};
 use media::{media_base, serve_http, MediaBase};
 use std::sync::Arc;
-use store::{get_saved_proxy_settings, store_clear, store_get, store_set};
+use store::{
+    get_saved_proxy_settings, store_clear, store_get, store_set, sync_allowed_local_dirs_from_store,
+};
 use tauri::{AppHandle, Manager, Runtime};
 
 // Must stay async: a sync command runs on the main thread, and building a window there deadlocks on WebView2.
@@ -22,17 +41,14 @@ async fn ensure_main_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
         let _ = w.set_focus();
         return Ok(());
     }
-    let builder = tauri::WebviewWindowBuilder::new(
-        &app,
-        "main",
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Biu")
-    .inner_size(1200.0, 800.0)
-    .min_inner_size(1200.0, 800.0)
-    .resizable(true)
-    .center()
-    .decorations(false);
+    let builder =
+        tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .title("Biu")
+            .inner_size(1200.0, 800.0)
+            .min_inner_size(1200.0, 800.0)
+            .resizable(true)
+            .center()
+            .decorations(false);
     builder.build().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -69,6 +85,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_log::Builder::new()
                 // Lower levels make cookie_store log Set-Cookie values, including login cookies.
@@ -76,6 +93,22 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .on_page_load(|window, _| {
+            if std::env::var("BIU_SILENT").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            {
+                let _ = window.eval(
+                    r#"(function(){
+                        window.__BIU_SILENT__ = true;
+                        const origPlay = HTMLMediaElement.prototype.play;
+                        HTMLMediaElement.prototype.play = function(...args) {
+                            this.muted = true;
+                            this.volume = 0;
+                            return origPlay.apply(this, args);
+                        };
+                    })();"#,
+                );
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             store_get,
             store_set,
@@ -88,6 +121,30 @@ fn main() {
             ensure_main_window,
             window_close,
             devtools_toggle,
+            select_directory,
+            select_file,
+            open_directory,
+            show_file_in_folder,
+            get_fonts,
+            scan_local_music,
+            delete_local_music_file,
+            download_get_list,
+            download_add,
+            download_add_list,
+            download_pause,
+            download_resume,
+            download_retry,
+            download_cancel,
+            download_clear,
+            auto_lyrics_view,
+            auto_lyrics_search_netease,
+            auto_lyrics_get_netease_lyric,
+            auto_lyrics_search_bili_videos,
+            auto_lyrics_fetch_audio,
+            auto_lyrics_decode_audio,
+            auto_lyrics_state_snapshot,
+            auto_lyrics_cache_set,
+            auto_lyrics_ref_set,
         ])
         .setup(|app| {
             let app_data_dir = app
@@ -98,10 +155,19 @@ fn main() {
             let cookie_path = app_data_dir.join("cookies.json");
             let saved_proxy = parse_proxy_settings_value(get_saved_proxy_settings(app.handle()));
             let bili_state = Arc::new(
-                BiliState::new(cookie_path, saved_proxy)
-                    .expect("failed to initialize BiliState"),
+                BiliState::new(cookie_path, saved_proxy).expect("failed to initialize BiliState"),
             );
+            sync_allowed_local_dirs_from_store(app.handle(), &bili_state);
             app.manage(bili_state.clone());
+
+            let download_mgr = DownloadManager::new(app_data_dir.join("media-downloads.json"));
+            app.manage(download_mgr);
+
+            let auto_lyrics_state = Arc::new(
+                AutoLyricsState::new(app_data_dir.join("auto-lyrics-references.json"))
+                    .expect("failed to initialize AutoLyricsState"),
+            );
+            app.manage(auto_lyrics_state);
 
             let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
             listener.set_nonblocking(true)?;
@@ -200,12 +266,8 @@ mod tests {
             &Url::parse("https://user:pass@api.bilibili.com/x").unwrap()
         ));
 
-        assert!(is_bili_audio_cdn_host(
-            "upos-sz-mirrorcos.bilivideo.com"
-        ));
-        assert!(is_bili_audio_cdn_host(
-            "xy123x45x67x89xy.mcdn.bilivideo.cn"
-        ));
+        assert!(is_bili_audio_cdn_host("upos-sz-mirrorcos.bilivideo.com"));
+        assert!(is_bili_audio_cdn_host("xy123x45x67x89xy.mcdn.bilivideo.cn"));
         assert!(is_bili_audio_cdn_host("upos-hz-mirrorakam.akamaized.net"));
         assert!(!is_bili_audio_cdn_host("other.akamaized.net"));
         assert!(!is_bili_audio_cdn_host("attacker.invalid"));
@@ -250,9 +312,8 @@ mod tests {
         assert!(state2.is_media_url_allowed(
             &Url::parse("https://cn-gdgz-fx-01-01.bilivideo.com/upgcxcode/audio.m4s").unwrap()
         ));
-        assert!(!state2.is_media_url_allowed(
-            &Url::parse("https://evil.example.com/audio.m4s").unwrap()
-        ));
+        assert!(!state2
+            .is_media_url_allowed(&Url::parse("https://evil.example.com/audio.m4s").unwrap()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -288,7 +349,10 @@ mod tests {
             .unwrap_err(),
             403
         );
-        assert_eq!(parse_http_request(&good, "wrongtok", host).unwrap_err(), 403);
+        assert_eq!(
+            parse_http_request(&good, "wrongtok", host).unwrap_err(),
+            403
+        );
     }
 
     #[tokio::test]
@@ -304,8 +368,12 @@ mod tests {
                 let mut req_buf = vec![0u8; 2048];
                 let n = sock.read(&mut req_buf).await.unwrap_or(0);
                 let req_str = String::from_utf8_lossy(&req_buf[..n]);
-                assert!(req_str.to_ascii_lowercase().contains("referer: https://www.bilibili.com/"));
-                assert!(req_str.to_ascii_lowercase().contains("range: bytes=100-199"));
+                assert!(req_str
+                    .to_ascii_lowercase()
+                    .contains("referer: https://www.bilibili.com/"));
+                assert!(req_str
+                    .to_ascii_lowercase()
+                    .contains("range: bytes=100-199"));
                 let slice = &payload_clone[100..200];
                 let header = format!(
                     "HTTP/1.1 206 Partial Content\r\nContent-Type: audio/mp4\r\nContent-Length: {}\r\nContent-Range: bytes 100-199/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
@@ -348,7 +416,8 @@ mod tests {
         {
             let mut client_sock = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
             let target_url = format!("http://{upstream_addr}/audio.m4s");
-            let encoded: String = url::form_urlencoded::byte_serialize(target_url.as_bytes()).collect();
+            let encoded: String =
+                url::form_urlencoded::byte_serialize(target_url.as_bytes()).collect();
             let range_req = format!(
                 "GET /secret-token/remote?u={encoded} HTTP/1.1\r\nHost: {proxy_addr}\r\nOrigin: {}\r\nRange: bytes=100-199\r\n\r\n",
                 app_origin()
@@ -359,7 +428,9 @@ mod tests {
             let split = resp.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
             let head = String::from_utf8_lossy(&resp[..split]);
             assert!(head.starts_with("HTTP/1.1 206"));
-            assert!(head.to_ascii_lowercase().contains("content-range: bytes 100-199/4096"));
+            assert!(head
+                .to_ascii_lowercase()
+                .contains("content-range: bytes 100-199/4096"));
             assert_eq!(&resp[split + 4..], &payload[100..200]);
         }
 
@@ -380,5 +451,184 @@ mod tests {
         )
         .await;
         assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn local_file_proxy_enforces_dir_allowlist_and_streams_range() {
+        let dir =
+            std::env::temp_dir().join(format!("biu-test-local-proxy-{}", uuid::Uuid::new_v4()));
+        let allowed_dir = dir.join("allowed");
+        let forbidden_dir = dir.join("forbidden");
+        std::fs::create_dir_all(&allowed_dir).unwrap();
+        std::fs::create_dir_all(&forbidden_dir).unwrap();
+
+        let allowed_file = allowed_dir.join("track.mp3");
+        let forbidden_file = forbidden_dir.join("secret.mp3");
+        let payload: Vec<u8> = (0..1024u32).map(|i| (i % 253) as u8).collect();
+        std::fs::write(&allowed_file, &payload).unwrap();
+        std::fs::write(&forbidden_file, &payload).unwrap();
+
+        let state = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        state.register_local_dir(&allowed_dir);
+
+        let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        let proxy_server = tokio::spawn(serve_http(
+            proxy_listener,
+            "local-tok".into(),
+            state.clone(),
+        ));
+
+        // 1. Forbidden file should be rejected with 403
+        {
+            let mut sock = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+            let enc: String =
+                url::form_urlencoded::byte_serialize(forbidden_file.to_string_lossy().as_bytes())
+                    .collect();
+            let req = format!(
+                "GET /local-tok/local?p={enc} HTTP/1.1\r\nHost: {proxy_addr}\r\nOrigin: {}\r\n\r\n",
+                app_origin()
+            );
+            sock.write_all(req.as_bytes()).await.unwrap();
+            let mut resp = vec![];
+            sock.read_to_end(&mut resp).await.unwrap();
+            assert!(String::from_utf8_lossy(&resp).starts_with("HTTP/1.1 403"));
+        }
+
+        // 2. Allowed file with Range should return 206 Partial Content
+        {
+            let mut sock = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+            let enc: String =
+                url::form_urlencoded::byte_serialize(allowed_file.to_string_lossy().as_bytes())
+                    .collect();
+            let req = format!(
+                "GET /local-tok/local?p={enc} HTTP/1.1\r\nHost: {proxy_addr}\r\nOrigin: {}\r\nRange: bytes=10-29\r\n\r\n",
+                app_origin()
+            );
+            sock.write_all(req.as_bytes()).await.unwrap();
+            let mut resp = vec![];
+            sock.read_to_end(&mut resp).await.unwrap();
+            let split = resp.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+            let head = String::from_utf8_lossy(&resp[..split]);
+            assert!(head.starts_with("HTTP/1.1 206"));
+            assert!(head
+                .to_ascii_lowercase()
+                .contains("content-range: bytes 10-29/1024"));
+            assert_eq!(&resp[split + 4..], &payload[10..30]);
+        }
+
+        proxy_server.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn step3_download_local_music_fonts_and_auto_lyrics_helpers() {
+        use crate::auto_lyrics::{
+            decode_audio_to_s16le, is_netease_api_url_allowed, parse_duration_seconds,
+            strip_html_tags,
+        };
+        use crate::download::{
+            executable_arch, get_available_output_path, resolve_ffmpeg_path, sanitize_filename,
+            sign_wbi_params_with_keys, split_chunks,
+        };
+        use crate::fonts::list_system_fonts;
+        use crate::local_music::{md5_hex_lower, scan_local_music_dirs};
+
+        // WBI signature deterministic check
+        let signed = sign_wbi_params_with_keys(
+            &[
+                ("bvid".into(), "BV1xx411c7mD".into()),
+                ("cid".into(), "12345".into()),
+            ],
+            "7cd084941338484aae1ad9425b84077c",
+            "4932caff0ff746eab6f01bf08b70ac45",
+            1700000000,
+        );
+        let map: std::collections::HashMap<_, _> = signed.into_iter().collect();
+        assert_eq!(map.get("wts").map(String::as_str), Some("1700000000"));
+        assert_eq!(map.get("w_rid").map(String::len), Some(32));
+
+        // Chunk splitting
+        let chunks = split_chunks("audio", 25 * 1024 * 1024, 10 * 1024 * 1024);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].start, 0);
+        assert_eq!(chunks[0].end, 10 * 1024 * 1024 - 1);
+        assert_eq!(chunks[2].name, "audio.part3");
+        assert_eq!(chunks[2].end, 25 * 1024 * 1024 - 1);
+
+        // Filename sanitization & duplicate path suffixing
+        assert_eq!(
+            sanitize_filename("<em>Hello</em> &amp; World: A/B*C?."),
+            "Hello & World_ A_B_C_"
+        );
+
+        let dir = std::env::temp_dir().join(format!("biu-test-step3-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let desired = dir.join("song.m4a");
+        std::fs::write(&desired, b"1").unwrap();
+        let next = get_available_output_path(&desired).unwrap();
+        assert_eq!(next.file_name().unwrap().to_str().unwrap(), "song (1).m4a");
+        std::fs::remove_file(&desired).unwrap();
+
+        // ELF header detection
+        let mut elf_x64 = vec![0u8; 24];
+        elf_x64[0..4].copy_from_slice(b"\x7fELF");
+        elf_x64[5] = 1;
+        elf_x64[18] = 62;
+        assert_eq!(executable_arch(&elf_x64), Some("x64"));
+
+        // Netease allowlist & HTML/duration helpers
+        assert!(is_netease_api_url_allowed(
+            &Url::parse("https://interface.music.163.com/api/search/get").unwrap()
+        ));
+        assert!(!is_netease_api_url_allowed(
+            &Url::parse("https://evil.com/api/search/get").unwrap()
+        ));
+        assert_eq!(
+            strip_html_tags("<em class=\"keyword\">Test</em> Song"),
+            "Test Song"
+        );
+        assert_eq!(parse_duration_seconds(&json!("03:25")), 205.0);
+        assert_eq!(md5_hex_lower("/tmp/test.mp3").len(), 32);
+
+        // Fonts list works without panicking
+        let _fonts = list_system_fonts();
+
+        // If ffmpeg is available on the host, test generating a short audio file, scanning it, and decoding to s16le PCM
+        if let Ok(ffmpeg) = resolve_ffmpeg_path(None) {
+            let wav_path = dir.join("tone.wav");
+            let status = std::process::Command::new(&ffmpeg)
+                .args([
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=1",
+                    "-ar",
+                    "22050",
+                    "-ac",
+                    "1",
+                    wav_path.to_str().unwrap(),
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            let state = BiliState::new(dir.join("cookies.json"), None).unwrap();
+            let dir_str = dir.to_string_lossy().into_owned();
+            let scanned = scan_local_music_dirs(std::slice::from_ref(&dir_str), &state);
+            assert_eq!(scanned.len(), 1);
+            assert_eq!(scanned[0].title, "tone");
+            assert!(scanned[0].duration.unwrap_or(0.0) >= 1.0);
+
+            let wav_bytes = std::fs::read(&wav_path).unwrap();
+            let pcm = decode_audio_to_s16le(&ffmpeg, &wav_bytes).unwrap();
+            assert!(pcm.len() >= 22050 * 2);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -117,7 +117,9 @@ pub fn mark_manual_edits(previous: &Value, incoming: &Value) -> Value {
             out.insert(key.clone(), entry.clone());
             continue;
         };
-        let old_obj = prev_obj.and_then(|p| p.get(key)).and_then(|v| v.as_object());
+        let old_obj = prev_obj
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.as_object());
         let old_offset = old_obj
             .and_then(|o| o.get("offset"))
             .and_then(|v| v.as_f64())
@@ -181,7 +183,41 @@ pub fn store_set<R: Runtime>(app: AppHandle<R>, name: String, value: Value) -> R
         store.set(k.clone(), v.clone());
     }
     store.save().map_err(|e| e.to_string())?;
+    if name == "app-settings" {
+        use tauri::Manager;
+        if let Some(bili) = app.try_state::<std::sync::Arc<crate::bili::BiliState>>() {
+            sync_allowed_local_dirs_from_value(&bili, &final_val);
+        }
+    }
     Ok(())
+}
+
+pub fn sync_allowed_local_dirs_from_value(bili: &crate::bili::BiliState, val: &Value) {
+    let settings = val.get("appSettings").unwrap_or(val);
+    if let Some(dl_path) = settings
+        .get("downloadPath")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        bili.register_local_dir(std::path::Path::new(dl_path));
+    }
+    if let Some(dirs) = settings.get("localMusicDirs").and_then(|v| v.as_array()) {
+        for d in dirs {
+            if let Some(s) = d.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                bili.register_local_dir(std::path::Path::new(s));
+            }
+        }
+    }
+}
+
+pub fn sync_allowed_local_dirs_from_store<R: Runtime>(
+    app: &AppHandle<R>,
+    bili: &crate::bili::BiliState,
+) {
+    if let Ok(val) = read_store_object(app, "app-settings") {
+        sync_allowed_local_dirs_from_value(bili, &val);
+    }
 }
 
 #[tauri::command]

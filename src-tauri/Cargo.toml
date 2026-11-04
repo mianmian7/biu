@@ -10,6 +10,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["macos-private-api", "macos-proxy"] }
 tauri-plugin-store = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = "2"
@@ -22,10 +23,13 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 hmac = "0.12"
 sha2 = "0.10"
+md-5 = "0.10"
 url = "2"
 log = "0.4"
 uuid = { version = "1", features = ["v4"] }
 dirs = "7"
+fontdb = "0.23"
+lofty = "0.22"
 
 [profile.release]
 opt-level = "s"

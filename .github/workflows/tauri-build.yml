@@ -91,6 +91,29 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Stage ffmpeg sidecar
+        run: |
+          mkdir -p src-tauri/binaries
+          TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
+          case "$TRIPLE" in
+            *windows*)
+              cp electron/ffmpeg/ffmpeg.exe "src-tauri/binaries/ffmpeg-${TRIPLE}.exe"
+              ;;
+            aarch64-apple-darwin*)
+              cp electron/ffmpeg/ffmpeg-mac-arm64 "src-tauri/binaries/ffmpeg-${TRIPLE}"
+              chmod 755 "src-tauri/binaries/ffmpeg-${TRIPLE}"
+              ;;
+            x86_64-apple-darwin*)
+              cp electron/ffmpeg/ffmpeg-mac-x64 "src-tauri/binaries/ffmpeg-${TRIPLE}"
+              chmod 755 "src-tauri/binaries/ffmpeg-${TRIPLE}"
+              ;;
+            x86_64-unknown-linux*)
+              cp electron/ffmpeg/ffmpeg-linux "src-tauri/binaries/ffmpeg-${TRIPLE}"
+              chmod 755 "src-tauri/binaries/ffmpeg-${TRIPLE}"
+              ;;
+          esac
+          ls -la src-tauri/binaries/
+
       - name: Build Tauri bundles (${{ matrix.bundles }})
         env:
           CI: "true"
