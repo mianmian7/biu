@@ -1,0 +1,61 @@
+name: Mac Squirrel spike
+
+# seamless-update 方案步骤 1：在 GitHub macOS runner 上用临时自签名证书验证 Squirrel.Mac 跨版本更新。
+on:
+  push:
+    branches: [spike/mac-squirrel]
+  workflow_dispatch:
+
+jobs:
+  spike:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      HUSKY: 0
+      BIU_UPDATE_FEED_URL: http://127.0.0.1:8765
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+
+      - name: Temp signing cert (方案 5.1 的做法)
+        run: |
+          spikes/mac-squirrel/gen-cert.sh "$RUNNER_TEMP/cert"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert/biu-test.cer"
+
+      - name: Build A
+        run: |
+          npm pkg set version=1.16.1-autolyrics.90
+          pnpm build
+          mv dist/artifacts "$RUNNER_TEMP/A"
+      - name: Build B
+        run: |
+          npm pkg set version=1.16.1-autolyrics.91
+          pnpm build
+          mv dist/artifacts "$RUNNER_TEMP/B"
+
+      - name: Signature check (步骤 1.3)
+        run: |
+          mkdir -p "$RUNNER_TEMP/ev"
+          for app in "$RUNNER_TEMP"/A/mac/Biu.app "$RUNNER_TEMP"/A/mac-arm64/Biu.app; do
+            codesign -dv --verbose=2 "$app" 2>&1 | tee -a "$RUNNER_TEMP/ev/sign.txt"
+            codesign -d -r- "$app" 2>&1 | tee -a "$RUNNER_TEMP/ev/sign.txt"
+            codesign --verify --deep --strict "$app"
+            codesign -dv --verbose=2 "$app" 2>&1 | grep -q 'Authority=Biu Test Signing'
+            codesign -d -r- "$app" 2>&1 | grep -q 'certificate leaf = H"'
+          done
+          ls -la "$RUNNER_TEMP/A" "$RUNNER_TEMP/B" | tee "$RUNNER_TEMP/ev/artifacts.txt"
+
+      - name: Update E2E (步骤 1.4–1.6)
+        run: spikes/mac-squirrel/run-update.sh "$RUNNER_TEMP/A" "$RUNNER_TEMP/B" "$RUNNER_TEMP/ev" 1.16.1-autolyrics.90 1.16.1-autolyrics.91
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-squirrel-evidence
+          path: ${{ runner.temp }}/ev
