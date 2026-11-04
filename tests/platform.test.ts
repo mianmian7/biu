@@ -167,4 +167,107 @@ describe("platform ElectronAPI compatibility and media URL wrapping", () => {
       isPlaying: true,
     });
   });
+  test("Step 3 methods invoke corresponding Tauri commands and wrap file:// URLs", async () => {
+    const invokeMock = vi.fn(async (cmd: string, _args?: Record<string, unknown>) => {
+      if (cmd === "media_base") return "http://127.0.0.1:43210/secret-token/";
+      if (cmd === "select_directory") return "/home/user/Music";
+      if (cmd === "select_file") return "/usr/bin/ffmpeg";
+      if (cmd === "open_directory") return true;
+      if (cmd === "show_file_in_folder") return true;
+      if (cmd === "get_fonts") return ["DejaVu Sans", "Liberation Serif"];
+      if (cmd === "scan_local_music") return [{ id: "abc", title: "Song", filePath: "/home/user/Music/a.mp3" }];
+      if (cmd === "delete_local_music_file") return true;
+      if (cmd === "download_get_list")
+        return [{ id: "dl-1", title: "Video", status: "completed", outputFileType: "audio" }];
+      return undefined;
+    });
+    const listenMock = vi.fn(async () => () => {});
+    (window as any).__TAURI__ = {
+      core: { invoke: invokeMock },
+      event: { listen: listenMock },
+    };
+
+    const api = createTauriElectronAPI();
+    expect(await api.selectDirectory("Pick")).toBe("/home/user/Music");
+    expect(invokeMock).toHaveBeenCalledWith("select_directory", { title: "Pick" });
+
+    expect(await api.selectFile()).toBe("/usr/bin/ffmpeg");
+    expect(await api.openDirectory("/home/user/Music")).toBe(true);
+    expect(await api.showFileInFolder("/home/user/Music/a.mp3")).toBe(true);
+    expect(await api.getFonts()).toEqual(["DejaVu Sans", "Liberation Serif"]);
+    expect(await api.scanLocalMusic(["/home/user/Music"])).toHaveLength(1);
+    expect(await api.deleteLocalMusicFile("/home/user/Music/a.mp3")).toBe(true);
+
+    expect(await api.getMediaDownloadTaskList()).toHaveLength(1);
+    await api.addMediaDownloadTask({ outputFileType: "audio", title: "Test", bvid: "BV1xx411c7mD" });
+    expect(invokeMock).toHaveBeenCalledWith("download_add", {
+      task: { outputFileType: "audio", title: "Test", bvid: "BV1xx411c7mD" },
+    });
+    await api.pauseMediaDownloadTask("dl-1");
+    await api.resumeMediaDownloadTask("dl-1");
+    await api.retryMediaDownloadTask("dl-1");
+    await api.cancelMediaDownloadTask("dl-1");
+    await api.clearMediaDownloadTaskList();
+
+    const unsub = api.syncMediaDownloadTaskList(() => {});
+    expect(listenMock).toHaveBeenCalledWith("download:sync", expect.any(Function));
+    unsub();
+
+    const localWrapped = await toMediaUrl("file:///home/user/Music/song.flac");
+    expect(localWrapped).toBe("http://127.0.0.1:43210/secret-token/local?p=%2Fhome%2Fuser%2FMusic%2Fsong.flac");
+    expect(unwrapMediaUrl(localWrapped)).toBe("file:///home/user/Music/song.flac");
+  });
+
+  test("auto-lyrics worker alignment and Tauri AutoLyrics controller match AUTO_LYRICS_ALGO_VERSION", async () => {
+    const { alignAudioInWorker, createTauriAutoLyricsController, pcmS16leToFloat32 } =
+      await import("@/platform/auto-lyrics-worker");
+    const { AUTO_LYRICS_ALGO_VERSION } = await import("../electron/auto-lyrics/service");
+
+    expect(AUTO_LYRICS_ALGO_VERSION).toBe("p1-gap-dtw-6");
+
+    // 1. PCM s16le conversion
+    const s16 = new Int16Array([0, 16384, -32768]);
+    const f32 = pcmS16leToFloat32(new Uint8Array(s16.buffer));
+    expect(f32[0]).toBeCloseTo(0);
+    expect(f32[1]).toBeCloseTo(0.5);
+    expect(f32[2]).toBeCloseTo(-1.0);
+
+    // 2. Worker alignment on synthetic 22050Hz signal (studio vs 1.0s delayed live)
+    const sr = 22050;
+    const studioPcm = new Float32Array(sr * 12);
+    const livePcm = new Float32Array(sr * 13);
+    for (let i = 0; i < studioPcm.length; i++) {
+      const t = i / sr;
+      if (t >= 1 && t <= 10) {
+        const val = Math.sin(2 * Math.PI * (220 + 20 * Math.floor(t)) * t) * 0.6;
+        studioPcm[i] = val;
+        if (i + sr < livePcm.length) {
+          livePcm[i + sr] = val;
+        }
+      }
+    }
+
+    let coarseCalled = false;
+    const aligned = await alignAudioInWorker(
+      {
+        studios: [studioPcm],
+        live: livePcm,
+        lines: [
+          { idx: 0, studio_start: 2.0, text: "First line" },
+          { idx: 1, studio_start: 5.0, text: "Second line" },
+        ],
+      },
+      new AbortController().signal,
+      () => {
+        coarseCalled = true;
+      },
+    );
+    expect(coarseCalled).toBe(true);
+    expect(aligned.lines).toHaveLength(2);
+    expect(aligned.lines[0].liveStartSec).toBeGreaterThan(2.2);
+
+    // 3. Cancellation on controller
+    const controller = createTauriAutoLyricsController(async () => undefined as any);
+    await expect(controller.cancel("BV1xx411c7mD-1")).resolves.toBeUndefined();
+  });
 });

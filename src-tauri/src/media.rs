@@ -150,13 +150,153 @@ pub async fn serve_http(listener: tokio::net::TcpListener, token: String, state:
     }
 }
 
+pub fn parse_byte_range(range_header: Option<&str>, total_len: u64) -> Option<(u64, u64, u16)> {
+    let Some(r) = range_header else {
+        let end = total_len.saturating_sub(1);
+        return Some((0, end, 200));
+    };
+    let spec = r.strip_prefix("bytes=")?;
+    let (start_str, end_str) = spec.split_once('-')?;
+    if total_len == 0 {
+        return None;
+    }
+    if start_str.is_empty() {
+        let suffix: u64 = end_str.parse().ok()?;
+        if suffix == 0 {
+            return None;
+        }
+        let start = total_len.saturating_sub(suffix);
+        return Some((start, total_len - 1, 206));
+    }
+    let start: u64 = start_str.parse().ok()?;
+    if start >= total_len {
+        return None;
+    }
+    let end: u64 = if end_str.is_empty() {
+        total_len - 1
+    } else {
+        end_str.parse::<u64>().ok()?.min(total_len - 1)
+    };
+    if start > end {
+        return None;
+    }
+    Some((start, end, 206))
+}
+
+pub fn local_audio_mime(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "wav" => "audio/wav",
+        "m4a" | "aac" => "audio/mp4",
+        "ogg" => "audio/ogg",
+        "wma" => "audio/x-ms-wma",
+        "aiff" => "audio/aiff",
+        _ => "application/octet-stream",
+    }
+}
+
+pub async fn serve_local_file(
+    socket: &mut tokio::net::TcpStream,
+    is_head: bool,
+    range: Option<&str>,
+    allow_origin: &str,
+    state: &BiliState,
+    raw_path: &str,
+) -> Result<(), String> {
+    use tokio::io::AsyncSeekExt;
+
+    let path = std::path::PathBuf::from(raw_path);
+    if !state.is_local_file_allowed(&path) {
+        let _ = socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 403 Forbidden\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await;
+        return Err(format!("local file path not allowlisted: {raw_path}"));
+    }
+
+    let mut file = match tokio::fs::File::open(&path).await {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await;
+            return Err(e.to_string());
+        }
+    };
+
+    let total_len = file.metadata().await.map_err(|e| e.to_string())?.len();
+    let Some((start, end, status)) = parse_byte_range(range, total_len) else {
+        let _ = socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 416 Range Not Satisfiable\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nContent-Range: bytes */{total_len}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await;
+        return Ok(());
+    };
+
+    let count = if total_len == 0 { 0 } else { end - start + 1 };
+    let content_type = local_audio_mime(&path);
+    let reason = if status == 206 {
+        "Partial Content"
+    } else {
+        "OK"
+    };
+    let content_range = if status == 206 {
+        format!("content-range: bytes {start}-{end}/{total_len}\r\n")
+    } else {
+        String::new()
+    };
+
+    let header = format!(
+        "HTTP/1.1 {status} {reason}\r\nConnection: close\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nAccess-Control-Expose-Headers: Content-Range, Accept-Ranges, Content-Length\r\nCache-Control: no-store\r\ncontent-type: {content_type}\r\ncontent-length: {count}\r\n{content_range}accept-ranges: bytes\r\n\r\n"
+    );
+
+    socket
+        .write_all(header.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !is_head && count > 0 {
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut take = file.take(count);
+        let _ = tokio::io::copy(&mut take, socket).await;
+    }
+    let _ = socket.shutdown().await;
+    Ok(())
+}
+
 pub async fn http_media(
     socket: &mut tokio::net::TcpStream,
     req: tauri::http::Request<Vec<u8>>,
     allow_origin: &str,
     state: &BiliState,
 ) -> Result<(), String> {
-    let range = req.headers().get("range").and_then(|x| x.to_str().ok());
+    let range = req
+        .headers()
+        .get("range")
+        .and_then(|x| x.to_str().ok())
+        .map(|s| s.to_string());
     let u = Url::parse(&req.uri().to_string()).map_err(|e| e.to_string())?;
     let q: HashMap<_, _> = u.query_pairs().into_owned().collect();
 
@@ -196,6 +336,29 @@ pub async fn http_media(
                 return Err(format!("kuromoji dict {status}"));
             }
         }
+    }
+
+    if u.host_str() == Some("local") {
+        let Some(p) = q.get("p") else {
+            let _ = socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 400 Bad Request\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await;
+            return Err("missing p query param".into());
+        };
+        return serve_local_file(
+            socket,
+            req.method() == "HEAD",
+            range.as_deref(),
+            allow_origin,
+            state,
+            p,
+        )
+        .await;
     }
 
     if u.host_str() != Some("remote") {

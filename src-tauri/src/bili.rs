@@ -57,6 +57,7 @@ pub struct BiliState {
     pub cookie_path: PathBuf,
     pub client: RwLock<reqwest::Client>,
     pub allowed_media_hosts: RwLock<HashSet<String>>,
+    pub allowed_local_dirs: RwLock<HashSet<PathBuf>>,
 }
 
 impl BiliState {
@@ -69,6 +70,35 @@ impl BiliState {
             cookie_path,
             client: RwLock::new(client),
             allowed_media_hosts: RwLock::new(HashSet::new()),
+            allowed_local_dirs: RwLock::new(HashSet::new()),
+        })
+    }
+
+    pub fn register_local_dir(&self, dir: &Path) {
+        if let Ok(canon) = fs::canonicalize(dir) {
+            self.allowed_local_dirs.write().unwrap().insert(canon);
+        } else {
+            self.allowed_local_dirs
+                .write()
+                .unwrap()
+                .insert(dir.to_path_buf());
+        }
+    }
+
+    pub fn is_local_file_allowed(&self, path: &Path) -> bool {
+        let Ok(canon_file) = fs::canonicalize(path) else {
+            return false;
+        };
+        if !canon_file.is_file() {
+            return false;
+        }
+        let dirs = self.allowed_local_dirs.read().unwrap();
+        dirs.iter().any(|dir| {
+            if let Ok(canon_dir) = fs::canonicalize(dir) {
+                canon_file.starts_with(&canon_dir)
+            } else {
+                canon_file.starts_with(dir)
+            }
         })
     }
 

@@ -313,8 +313,9 @@ export const usePlayList = create<State & Action>()(
         const { playId, list } = get();
         const currentPlayItem = list.find(item => item.id === playId);
         if (currentPlayItem?.source === "local" && currentPlayItem?.audioUrl) {
-          if (audio.src !== currentPlayItem.audioUrl) {
-            audio.src = currentPlayItem.audioUrl;
+          const mediaUrl = await toMediaUrl(currentPlayItem.audioUrl);
+          if (audio.src !== mediaUrl) {
+            audio.src = mediaUrl;
           }
           const currentTime = usePlayProgress.getState().currentTime;
           if (typeof currentTime === "number" && currentTime > 0) {
@@ -1102,7 +1103,7 @@ usePlayList.subscribe(async (state, prevState) => {
         }
       }
       if (playItem?.source === "local" && playItem?.audioUrl && audio.paused) {
-        resetAudioAndPlay(playItem.audioUrl);
+        resetAudioAndPlay(await toMediaUrl(playItem.audioUrl));
         return;
       }
       if (isUrlValid(playItem?.audioUrl) && audio.paused) {

@@ -49,8 +49,10 @@ owner = Claude（osa-a1）
 
 ### 第 3 步：下载与本地
 
-- [ ] 下载、本地音乐、字体、对话框。
-- [ ] 自动歌词。
+- [x] 下载、本地音乐、字体、对话框。
+  已在 `src-tauri/` 实现 ffmpeg sidecar（`externalBin`）与媒体下载队列（暂停/继续/重试/取消/清空、流式转封装为 m4a/mp3、任务与设置持久化）、`lofty` 本地音乐扫描与删除、`fontdb` 系统字体枚举、`tauri-plugin-dialog`/`opener` 对话框，以及基于白名单目录的 loopback 本地音频流式代理（`206 Partial Content`）。
+- [x] 自动歌词。
+  已将 `shared/auto-lyrics/` 对齐管线接入 Webview Web Worker（`AUTO_LYRICS_ALGO_VERSION = "p1-gap-dtw-6"`），在 Rust 实现 B 站音频拉取、ffmpeg sidecar `s16le` 22050Hz 单声道 PCM 解码、网易云与 B 站参考音源检索（host 白名单）及应用数据目录缓存持久化。
 - 用户验收：下载一首，本地播放，自动歌词能出结果。
 
 ### 第 4 步：替换 Electron
