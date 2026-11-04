@@ -1,0 +1,472 @@
+name: Tauri M0 Matrix
+
+on:
+  push:
+    branches: [spike/tauri-m0-ci]
+  workflow_dispatch:
+    inputs:
+      skip_soak:
+        description: "Skip 3600 s S2 soak jobs"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-dist:
+    runs-on: ubuntu-24.04
+    env:
+      HUSKY: 0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Use Node.js lts
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+
+      - name: Configure Git to use HTTPS instead of SSH
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build web frontend (dist/web)
+        run: npx rsbuild build --config-loader native -c /dev/null --entry ./src/index.tsx
+
+      - name: Fallback to full pnpm build if needed
+        if: failure()
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build || test -f dist/web/index.html
+
+      - name: Verify dist/web is non-empty
+        run: |
+          test -f dist/web/index.html
+          find dist/web -type f
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-assets
+          path: dist/web
+
+  s4-mac:
+    needs: web-dist
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      CI: "true"
+    defaults:
+      run:
+        working-directory: spikes
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Download web-assets into spikes/m0/web/assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-assets
+          path: spikes/m0/web/assets
+
+      - name: Verify web/assets is non-empty
+        run: test -f m0/web/assets/index.html
+
+      - run: rustup default stable && rustc --version && sw_vers && uname -m
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build dmg (S4)
+        working-directory: spikes/m0
+        run: CI=true ../node_modules/.bin/tauri build --ci --bundles dmg
+
+      - name: Measure sizes (S4)
+        run: |
+          mkdir -p evidence
+          python3 scripts/sizes_ci.py --bundle-dir m0/src-tauri/target/release/bundle --web-dir m0/web --out evidence/mac-sizes.json
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s4-mac-evidence
+          path: spikes/evidence
+
+  s4-win:
+    needs: web-dist
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CI: "true"
+    defaults:
+      run:
+        working-directory: spikes
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Download web-assets into spikes/m0/web/assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-assets
+          path: spikes/m0/web/assets
+
+      - name: Verify web/assets is non-empty
+        run: test -f m0/web/assets/index.html
+
+      - run: rustup default stable && rustc --version
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build nsis (S4)
+        working-directory: spikes/m0
+        run: CI=true ../node_modules/.bin/tauri build --ci --bundles nsis
+
+      - name: Measure sizes (S4)
+        run: |
+          mkdir -p evidence
+          python scripts/sizes_ci.py --bundle-dir m0/src-tauri/target/release/bundle --web-dir m0/web --out evidence/win-sizes.json
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s4-win-evidence
+          path: spikes/evidence
+
+  s4-linux-x64:
+    needs: web-dist
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CI: "true"
+    defaults:
+      run:
+        working-directory: spikes
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Download web-assets into spikes/m0/web/assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-assets
+          path: spikes/m0/web/assets
+
+      - name: Verify web/assets is non-empty
+        run: test -f m0/web/assets/index.html
+
+      - name: Install Linux Tauri build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config patchelf libfuse2
+
+      - run: rustup default stable && rustc --version && uname -a
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build deb, rpm, appimage (S4)
+        working-directory: spikes/m0
+        run: APPIMAGE_EXTRACT_AND_RUN=1 CI=true ../node_modules/.bin/tauri build --ci --bundles deb,rpm,appimage
+
+      - name: Measure sizes (S4)
+        run: |
+          mkdir -p evidence
+          python3 scripts/sizes_ci.py --bundle-dir m0/src-tauri/target/release/bundle --web-dir m0/web --out evidence/linux-x64-sizes.json
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s4-linux-x64-evidence
+          path: spikes/evidence
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64-bundles
+          path: |
+            spikes/m0/src-tauri/target/release/bundle/deb/*.deb
+            spikes/m0/src-tauri/target/release/bundle/rpm/*.rpm
+            spikes/m0/src-tauri/target/release/bundle/appimage/*.AppImage
+
+  s2-mac:
+    if: ${{ !inputs.skip_soak }}
+    runs-on: macos-26
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [custom, http]
+    env:
+      CI: "true"
+      RUST_BACKTRACE: full
+    defaults:
+      run:
+        working-directory: spikes
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - run: rustup default stable && rustc --version && sw_vers && uname -m
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build app bundle only (separate from dmg so .app is preserved)
+        working-directory: spikes/m0
+        run: ../node_modules/.bin/tauri build --ci --bundles app
+
+      - name: Prepare synthetic fixtures
+        run: python3 scripts/make_fixtures_mac.py m0/fixtures && mkdir -p m0/private evidence
+
+      - name: S2 ${{ matrix.transport }} 3600 s soak
+        env:
+          MATRIX_TRANSPORT: ${{ matrix.transport }}
+        run: |
+          python3 scripts/fixture_server.py --fixtures m0/fixtures --log "evidence/mac-s2-${MATRIX_TRANSPORT}-server.jsonl" &
+          SERVER_PID=$!
+          sleep 2
+          ps -axo pid=,comm= | awk '/com.apple.WebKit./{print $1}' | python3 -c 'import sys,json;print(json.dumps([int(x) for x in sys.stdin.read().split()]))' > m0/private/webkit-baseline.json
+          cd m0
+          export BIU_SPIKE_FIXTURES=1 BIU_FIXTURES="$PWD/fixtures" BIU_LOG="$PWD/../evidence/mac-s2-${MATRIX_TRANSPORT}.jsonl"
+          if [ "$MATRIX_TRANSPORT" = "custom" ]; then
+            export BIU_MODE=custom
+          else
+            export BIU_MODE=full
+          fi
+          export BIU_SOAK_SECONDS=3600
+          set +e
+          ./src-tauri/target/release/bundle/macos/'Biu M0.app'/Contents/MacOS/biu-m0 > "../evidence/mac-s2-${MATRIX_TRANSPORT}-console.log" 2>&1 &
+          APP=$!
+          python3 ../scripts/sample_memory_mac.py --pid "$APP" --baseline private/webkit-baseline.json --seconds 3900 --out "../evidence/mac-s2-${MATRIX_TRANSPORT}-memory.jsonl" &
+          MEM_PID=$!
+          ( sleep 4200; kill -TERM "$APP" 2>/dev/null ) &
+          WATCHDOG=$!
+          wait "$APP"; code=$?
+          kill -TERM "$WATCHDOG" "$MEM_PID" "$SERVER_PID" 2>/dev/null || true
+          echo "exit=$code" | tee "../evidence/mac-s2-${MATRIX_TRANSPORT}-exit.txt"
+          cd ..
+          python3 scripts/analyze_memory_rule.py --memory "evidence/mac-s2-${MATRIX_TRANSPORT}-memory.jsonl" --out "evidence/mac-s2-${MATRIX_TRANSPORT}-rule.json" || true
+          python3 scripts/analyze_soak.py --events "evidence/mac-s2-${MATRIX_TRANSPORT}.jsonl" --memory "evidence/mac-s2-${MATRIX_TRANSPORT}-memory.jsonl" --server "evidence/mac-s2-${MATRIX_TRANSPORT}-server.jsonl" --out "evidence/mac-s2-${MATRIX_TRANSPORT}-soak" || true
+          python3 - "$MATRIX_TRANSPORT" <<'PY'
+          import json, collections, sys
+          t = sys.argv[1]
+          ev = [json.loads(l) for l in open(f'evidence/mac-s2-{t}.jsonl') if l.strip()]
+          print(dict(collections.Counter(e.get('event') for e in ev)))
+          if ev:
+              print('last', ev[-1])
+          if not any(e.get('event') == 'complete' for e in ev):
+              sys.exit(f'mac-s2-{t} did not reach complete')
+          PY
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2-mac-${{ matrix.transport }}-evidence
+          path: spikes/evidence
+
+  s2-mac-rule:
+    if: ${{ !inputs.skip_soak && always() }}
+    needs: s2-mac
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: spikes
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download custom soak evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: s2-mac-custom-evidence
+          path: spikes/evidence/custom
+        continue-on-error: true
+
+      - name: Download http soak evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: s2-mac-http-evidence
+          path: spikes/evidence/http
+        continue-on-error: true
+
+      - name: Evaluate S2 Mac memory rule with control
+        run: |
+          mkdir -p evidence/rule
+          CUSTOM_MEM="evidence/custom/mac-s2-custom-memory.jsonl"
+          HTTP_MEM="evidence/http/mac-s2-http-memory.jsonl"
+          if [ -s "$CUSTOM_MEM" ] && [ -s "$HTTP_MEM" ]; then
+            python3 scripts/analyze_memory_rule.py --memory "$CUSTOM_MEM" --control "$HTTP_MEM" --out evidence/rule/mac-s2-rule.json
+          elif [ -s "$CUSTOM_MEM" ]; then
+            python3 scripts/analyze_memory_rule.py --memory "$CUSTOM_MEM" --out evidence/rule/mac-s2-rule.json
+          else
+            echo "Missing custom memory jsonl" >&2
+            exit 1
+          fi
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2-mac-rule-evidence
+          path: spikes/evidence/rule
+
+  s2-linux-x64:
+    if: ${{ !inputs.skip_soak }}
+    needs: web-dist
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CI: "true"
+      RUST_BACKTRACE: full
+    defaults:
+      run:
+        working-directory: spikes
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Download web-assets into spikes/m0/web/assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-assets
+          path: spikes/m0/web/assets
+
+      - name: Install Linux runtime & GStreamer packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config xvfb dbus-x11 openbox gstreamer1.0-tools gstreamer1.0-libav gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+
+      - run: rustup default stable && rustc --version
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Prepare Linux fixtures
+        run: bash scripts/prepare_linux.sh
+
+      - name: Build release binary
+        working-directory: spikes/m0/src-tauri
+        run: cargo build --release
+
+      - name: Run 3600 s HTTP fallback soak under xvfb
+        run: |
+          dbus-run-session -- xvfb-run -a python3 scripts/run_linux.py --root . --mode full --seconds 3600 --name linux-x64-s2
+          python3 scripts/check_evidence.py playback evidence/linux-x64-s2.jsonl
+          python3 scripts/analyze_soak.py --events evidence/linux-x64-s2.jsonl --memory evidence/linux-x64-s2-memory.jsonl --server evidence/linux-x64-s2-server.jsonl --out evidence/linux-x64-soak
+          python3 scripts/analyze_memory_rule.py --memory evidence/linux-x64-s2-memory.jsonl --out evidence/linux-x64-rule.json
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2-linux-x64-evidence
+          path: spikes/evidence
+
+  s1-mac:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      CI: "true"
+      RUST_BACKTRACE: full
+    defaults:
+      run:
+        working-directory: spikes
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      - run: rustup default stable && rustc --version && sw_vers && uname -m
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build app bundle
+        working-directory: spikes/m0
+        run: ../node_modules/.bin/tauri build --ci --bundles app
+
+      - name: Generate base & S1 synthetic fMP4 fixtures
+        run: |
+          mkdir -p evidence m0/fixtures
+          python3 scripts/make_fixtures_mac.py m0/fixtures
+          python3 scripts/make_fixtures_s1.py m0/fixtures | tee evidence/mac-s1-ffprobe.jsonl
+
+      - name: Run BIU_MODE=s1
+        working-directory: spikes/m0
+        run: |
+          export BIU_SPIKE_FIXTURES=1 BIU_FIXTURES="$PWD/fixtures" BIU_LOG="$PWD/../evidence/mac-s1.jsonl" BIU_MODE=s1
+          set +e
+          ./src-tauri/target/release/bundle/macos/'Biu M0.app'/Contents/MacOS/biu-m0 > ../evidence/mac-s1-console.log 2>&1 &
+          APP=$!
+          ( sleep 900; kill -TERM "$APP" 2>/dev/null ) &
+          WATCHDOG=$!
+          wait "$APP"; code=$?
+          kill -TERM "$WATCHDOG" 2>/dev/null || true
+          echo "exit=$code" | tee ../evidence/mac-s1-exit.txt
+          test "$code" -eq 0
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-mac-evidence
+          path: spikes/evidence
+
+  s3:
+    needs: s4-linux-x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ["ubuntu:24.04", "fedora:41", "fedora:latest", "archlinux:latest"]
+    container:
+      image: ${{ matrix.container }}
+    steps:
+      - name: Bootstrap git, ca-certificates, and python3 in container
+        run: |
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates python3
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y git ca-certificates python3
+          elif command -v pacman >/dev/null 2>&1; then
+            pacman -Sy --noconfirm git ca-certificates python
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Download Linux x64 installer bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x64-bundles
+          path: /tmp/s3-bundles
+
+      - name: Run S3 container verification
+        env:
+          MATRIX_CONTAINER: ${{ matrix.container }}
+        run: |
+          SLUG=$(echo "$MATRIX_CONTAINER" | tr ':/' '--')
+          mkdir -p spikes/evidence
+          python3 spikes/scripts/run_s3_container.py --distro "$MATRIX_CONTAINER" --bundle-dir /tmp/s3-bundles --root spikes --out "spikes/evidence/s3-${SLUG}.json"
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-${{ strategy.job-index }}-evidence
+          path: spikes/evidence

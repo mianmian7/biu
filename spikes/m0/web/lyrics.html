@@ -1,3 +1,32 @@
-<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:transparent;color:white;font:40px sans-serif}#unlock{font:16px sans-serif;width:100px;height:40px}#line{background:linear-gradient(90deg,#48e9e9 0%,#48e9e9 var(--p),white var(--p));color:transparent;background-clip:text;white-space:nowrap}</style><button id="unlock">解锁区域</button><div id="line">Biu M0 卡拉 OK 扫光 — transparency prototype</div><script>
-let start=performance.now(),frames=0;function frame(t){frames++;document.body.style.setProperty('--p',`${(t/60)%100}%`);if(t-start<60000)requestAnimationFrame(frame);else window.__TAURI__.core.invoke('report',{event:{event:'lyrics_frames',frames,ms:t-start,fps:frames/((t-start)/1000)}});}requestAnimationFrame(frame);
+<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:transparent;color:white;font:40px sans-serif}#controls{height:40px}#lock,#unlock{font:16px sans-serif;width:100px;height:40px}#unlock{display:none}#line{background:linear-gradient(90deg,#48e9e9 0%,#48e9e9 var(--p),white var(--p));color:transparent;background-clip:text;white-space:nowrap}</style><div id="controls"><button id="lock">锁定</button><button id="unlock">解锁</button></div><div id="line">Biu M0 卡拉 OK 扫光 — transparency prototype</div><script>
+const {invoke}=window.__TAURI__.core,{listen}=window.__TAURI__.event;
+const lockBtn=document.querySelector('#lock'),unlockBtn=document.querySelector('#unlock');
+let state='unlocked',interactive=true;
+function render(next,showUnlock=false){
+  state=next;
+  lockBtn.style.display=state==='unlocked'?'inline-block':'none';
+  unlockBtn.style.display=state==='locked'&&showUnlock?'inline-block':'none';
+}
+lockBtn.onclick=()=>invoke('lyrics_set_state',{state:'locked'});
+unlockBtn.onclick=()=>invoke('lyrics_set_state',{state:'unlocked'});
+listen('lyrics-state',({payload})=>render(payload.state,false));
+listen('lyrics-hover',({payload})=>{
+  render('locked',!!payload.entered);
+  const ms=payload.entered?Math.max(0,Date.now()-payload.entered_unix_ms):0;
+  invoke('report',{event:{event:'lyrics_hover',entered:!!payload.entered,ms}});
+});
+invoke('mode').then(c=>{interactive=c.mode==='interactive';});
+let start=performance.now(),frames=0;
+function frame(t){
+  frames++;
+  document.body.style.setProperty('--p',`${(t/60)%100}%`);
+  if(t-start>=60000){
+    const elapsed=t-start;
+    invoke('report',{event:{event:'lyrics_frames',frames,ms:elapsed,fps:frames/(elapsed/1000)}});
+    if(interactive){start=t;frames=0;requestAnimationFrame(frame);}
+  }else{
+    requestAnimationFrame(frame);
+  }
+}
+requestAnimationFrame(frame);
 </script>

@@ -86,6 +86,7 @@ async fn media(
     let now = Instant::now();
     let url = url::Url::parse(&req.uri().to_string()).map_err(|e| e.to_string())?;
     let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+    let round = q.get("round").and_then(|s| s.parse::<u64>().ok());
     let range = req.headers().get("range").and_then(|v| v.to_str().ok());
     let mut response;
     if url.host_str() == Some("local") || url.path().contains("/local") {
@@ -179,7 +180,7 @@ async fn media(
         "Content-Range,Accept-Ranges".parse().unwrap(),
     );
     record(
-        json!({"event":"range", "range":range, "status":response.status().as_u16(), "bytes":response.body().len(), "ms":now.elapsed().as_secs_f64()*1000.0}),
+        json!({"event":"range", "round":round, "range":range, "status":response.status().as_u16(), "bytes":response.body().len(), "ms":now.elapsed().as_secs_f64()*1000.0}),
     );
     Ok(response)
 }
@@ -407,8 +408,41 @@ fn finish(app: tauri::AppHandle) {
 fn mode() -> Value {
     json!({"mode": std::env::var("BIU_MODE").unwrap_or_else(|_| "interactive".into()), "seconds": std::env::var("BIU_SOAK_SECONDS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(1800)})
 }
+struct LyricsState {
+    locked: Arc<AtomicBool>,
+    hovered: Arc<AtomicBool>,
+}
+fn apply_lyrics_state(app: &tauri::AppHandle, locked: bool) -> Result<(), String> {
+    let state = app.state::<LyricsState>();
+    state.locked.store(locked, Ordering::Relaxed);
+    state.hovered.store(false, Ordering::Relaxed);
+    if let Some(w) = app.get_webview_window("lyrics") {
+        w.set_ignore_cursor_events(locked)
+            .map_err(|e| e.to_string())?;
+        let label = if locked { "locked" } else { "unlocked" };
+        let _ = w.emit("lyrics-state", json!({"state": label}));
+        record(json!({"event":"lyrics_state","state": label}));
+    }
+    Ok(())
+}
+#[tauri::command]
+fn lyrics_set_state(app: tauri::AppHandle, state: Option<String>) -> Result<String, String> {
+    let current = app.state::<LyricsState>().locked.load(Ordering::Relaxed);
+    let next = match state.as_deref() {
+        Some("locked") => true,
+        Some("unlocked") => false,
+        Some("toggle") | None => !current,
+        Some(_) => return Err("invalid lyrics state".into()),
+    };
+    apply_lyrics_state(&app, next)?;
+    Ok(if next { "locked" } else { "unlocked" }.into())
+}
 #[tauri::command]
 fn lyrics(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("lyrics") {
+        let _ = w.show();
+        return Ok(());
+    }
     let w = tauri::WebviewWindowBuilder::new(
         &app,
         "lyrics",
@@ -421,8 +455,17 @@ fn lyrics(app: tauri::AppHandle) -> Result<(), String> {
     .always_on_top(true)
     .build()
     .map_err(|e| e.to_string())?;
-    w.set_ignore_cursor_events(true)
+    let initial_locked = std::env::var("BIU_MODE")
+        .map(|m| m != "interactive")
+        .unwrap_or(false);
+    let ls = app.state::<LyricsState>();
+    ls.locked.store(initial_locked, Ordering::Relaxed);
+    ls.hovered.store(false, Ordering::Relaxed);
+    w.set_ignore_cursor_events(initial_locked)
         .map_err(|e| e.to_string())?;
+    let initial_label = if initial_locked { "locked" } else { "unlocked" };
+    let _ = w.emit("lyrics-state", json!({"state": initial_label}));
+    record(json!({"event":"lyrics_state","state": initial_label}));
     let alive = Arc::new(AtomicBool::new(true));
     let destroyed = alive.clone();
     w.on_window_event(move |event| {
@@ -430,6 +473,8 @@ fn lyrics(app: tauri::AppHandle) -> Result<(), String> {
             destroyed.store(false, Ordering::Relaxed);
         }
     });
+    let locked = ls.locked.clone();
+    let hovered = ls.hovered.clone();
     std::thread::spawn(move || {
         let started = Instant::now();
         let mut last_heartbeat = 0;
@@ -439,18 +484,34 @@ fn lyrics(app: tauri::AppHandle) -> Result<(), String> {
                 record(json!({"event":"lyrics_poll_alive","seconds":seconds}));
                 last_heartbeat = seconds;
             }
-            if let (Ok(cursor), Ok(pos)) = (w.cursor_position(), w.outer_position()) {
-                let hit = cursor.x >= pos.x as f64
-                    && cursor.x < pos.x as f64 + 100.
-                    && cursor.y >= pos.y as f64
-                    && cursor.y < pos.y as f64 + 60.;
-                let _ = w.set_ignore_cursor_events(!hit);
+            if locked.load(Ordering::Relaxed) && w.is_visible().unwrap_or(false) {
+                if let (Ok(cursor), Ok(pos)) = (w.cursor_position(), w.outer_position()) {
+                    let hit = cursor.x >= pos.x as f64
+                        && cursor.x < pos.x as f64 + 100.
+                        && cursor.y >= pos.y as f64
+                        && cursor.y < pos.y as f64 + 60.;
+                    let was_hovered = hovered.swap(hit, Ordering::Relaxed);
+                    if hit != was_hovered {
+                        let t0 = Instant::now();
+                        let _ = w.set_ignore_cursor_events(!hit);
+                        let unix_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        let _ = w.emit(
+                            "lyrics-hover",
+                            json!({"entered": hit, "entered_unix_ms": unix_ms, "rust_ms": t0.elapsed().as_secs_f64() * 1000.0}),
+                        );
+                    }
+                }
+            } else {
+                hovered.store(false, Ordering::Relaxed);
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     });
     record(
-        json!({"event":"lyrics_api", "transparent":true,"always_on_top":true,"ignore_cursor":true,"poll_ms":100}),
+        json!({"event":"lyrics_api", "transparent":true,"always_on_top":true,"ignore_cursor":initial_locked,"poll_ms":100}),
     );
     Ok(())
 }
@@ -654,6 +715,7 @@ fn main() {
             finish,
             mode,
             lyrics,
+            lyrics_set_state,
             dependency_probe,
             media_base,
             update_test,
@@ -665,6 +727,10 @@ fn main() {
             let port = listener.local_addr()?.port();
             let token = uuid::Uuid::new_v4().to_string();
             app.manage(MediaBase(format!("http://127.0.0.1:{port}/{token}/")));
+            app.manage(LyricsState {
+                locked: Arc::new(AtomicBool::new(false)),
+                hovered: Arc::new(AtomicBool::new(false)),
+            });
             tauri::async_runtime::spawn(async move {
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
                 serve_http(listener, token, server_client).await;
@@ -693,8 +759,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn ensure_test_fixtures() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let dir = std::env::temp_dir().join("biu-m0-cargo-test-fixtures");
+            let _ = fs::create_dir_all(&dir);
+            let aac = dir.join("aac.m4a");
+            if !aac.exists() {
+                let _ = fs::write(&aac, vec![42u8; 4096]);
+            }
+            std::env::set_var("BIU_SPIKE_FIXTURES", "1");
+            std::env::set_var("BIU_FIXTURES", &dir);
+            std::env::set_var("BIU_LOG", dir.join("test.jsonl"));
+        });
+    }
     #[tokio::test]
     async fn local_protocol_bytes_and_416() {
+        ensure_test_fixtures();
         let req = tauri::http::Request::builder()
             .uri("biu-media://local?name=aac.m4a")
             .header("Range", "bytes=100-199")
@@ -726,6 +807,7 @@ mod tests {
     }
     #[tokio::test]
     async fn http_fallback_bytes() {
+        ensure_test_fixtures();
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -801,6 +883,7 @@ mod tests {
     }
     #[tokio::test]
     async fn http_wire_rejects_bad_input_and_stays_alive() {
+        ensure_test_fixtures();
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

@@ -39,6 +39,18 @@ async function waveform() {
   await report({event:'waveform',max:Math.max(...samples.map(Math.abs)),state:ctx.state});
   // Leave the graph connected for the soak.
 }
+async function runSample(name) {
+  try {
+    mediaBase=undefined;
+    await report({event:'sample_start',name,codecs:Object.fromEntries(['audio/mp4; codecs="flac"','audio/mp4; codecs="fLaC"','audio/mp4; codecs="ec-3"'].map(m=>[m,audio.canPlayType(m)]))});
+    await load(scheme('local',{name}));const start=performance.now(),startTime=audio.currentTime;
+    await sleep(60000);
+    if(audio.paused||audio.error||audio.currentTime<startTime+58)throw Error('60 s continuous playback failed');
+    await report({event:'sample_continuous',name,ms:performance.now()-start,time:audio.currentTime});
+    for(const fraction of [0.7,0.1,0.5,0.3,0.8]){const target=audio.duration*fraction,start=performance.now();const done=eventOnce(audio,'seeked');audio.currentTime=target;await done;await sleep(150);if(audio.paused||audio.error||Math.abs(audio.currentTime-target)>2)throw Error('sample seek failed');await report({event:'sample_seek',name,target,ms:performance.now()-start});}
+    await waveform();await report({event:'sample_complete',name});
+  }catch(e){await report({event:'sample_failed',name,message:String(e)});}
+}
 async function missing() {
   const start=performance.now();let updates=0;
   audio.addEventListener('timeupdate',()=>updates++);
@@ -53,9 +65,16 @@ async function missing() {
   await invoke('finish');
 }
 async function run(config) {
-  if(config.mode!=='custom')mediaBase=await invoke('media_base');
+  if(config.mode!=='custom'&&config.mode!=='s1')mediaBase=await invoke('media_base');
   await report({event:'transport',kind:mediaBase?'loopback-http-token':'custom-scheme'});
   await report({event:'environment',userAgent:navigator.userAgent,mediaSession:!!navigator.mediaSession,codecs:Object.fromEntries(['audio/mp4; codecs="mp4a.40.2"','audio/mp4; codecs="flac"','audio/mp4; codecs="fLaC"','audio/mp4; codecs="ec-3"','audio/flac'].map(m=>[m,audio.canPlayType(m)]))});
+  if(config.mode==='s1') {
+    for(const name of ['flac-1.m4a','flac-2.m4a','flac-3.m4a','dolby-1.m4a','dolby-2.m4a','dolby-3.m4a']){
+      await runSample(name);
+    }
+    audio.pause();audio.removeAttribute('src');audio.load();
+    await report({event:'complete',mode:'s1'});await invoke('finish');return;
+  }
   if(config.mode==='missing')return missing();
   if(config.mode==='verify-update') {
     await report(await invoke('update_verify'));await invoke('finish');return;
@@ -82,7 +101,17 @@ async function run(config) {
   if(navigator.mediaSession) {
     navigator.mediaSession.metadata=new MediaMetadata({title:'Biu M0 sine fixture',artist:'Synthetic test',album:'M0',artwork:[{src:'http://127.0.0.1:18765/art.svg',sizes:'128x128',type:'image/svg+xml'}]});
     navigator.mediaSession.playbackState='playing';
-    for(const action of ['play','pause','previoustrack','nexttrack'])navigator.mediaSession.setActionHandler(action,()=>report({event:'media_action',action}));
+    for(const action of ['play','pause','previoustrack','nexttrack']){
+      navigator.mediaSession.setActionHandler(action,async()=>{
+        const before_paused=audio.paused,before_time=audio.currentTime;
+        if(action==='play')await audio.play();
+        else if(action==='pause')audio.pause();
+        else if(action==='previoustrack')audio.currentTime=Math.max(0,audio.currentTime-30);
+        else if(action==='nexttrack')audio.currentTime=Math.min(audio.duration||Infinity,audio.currentTime+30);
+        const after_paused=audio.paused,after_time=audio.currentTime;
+        await report({event:'media_action',action,before_paused,after_paused,before_time,after_time,before:{paused:before_paused,time:before_time},after:{paused:after_paused,time:after_time}});
+      });
+    }
   }
   let seed=2401;
   const targets=Array.from({length:10},()=>{seed=(Math.imul(1664525,seed)+1013904223)>>>0;return 10+Math.floor(seed/4294967296*280);});
@@ -117,19 +146,7 @@ async function run(config) {
   audio.pause();audio.removeAttribute('src');audio.load();await sleep(500);
   await report({event:'complete',rounds:round});await invoke('finish');
 }
-document.querySelector('#sample-run').onclick=async()=>{
-  const name=document.querySelector('#sample').value;
-  try {
-    mediaBase=undefined;
-    await report({event:'sample_start',name,codecs:Object.fromEntries(['audio/mp4; codecs="flac"','audio/mp4; codecs="fLaC"','audio/mp4; codecs="ec-3"'].map(m=>[m,audio.canPlayType(m)]))});
-    await load(scheme('local',{name}));const start=performance.now(),startTime=audio.currentTime;
-    await sleep(60000);
-    if(audio.paused||audio.error||audio.currentTime<startTime+58)throw Error('60 s continuous playback failed');
-    await report({event:'sample_continuous',name,ms:performance.now()-start,time:audio.currentTime});
-    for(const fraction of [0.7,0.1,0.5,0.3,0.8]){const target=audio.duration*fraction,start=performance.now();const done=eventOnce(audio,'seeked');audio.currentTime=target;await done;await sleep(150);if(audio.paused||audio.error||Math.abs(audio.currentTime-target)>2)throw Error('sample seek failed');await report({event:'sample_seek',name,target,ms:performance.now()-start});}
-    await waveform();await report({event:'sample_complete',name});
-  }catch(e){await report({event:'sample_failed',name,message:String(e)});}
-};
+document.querySelector('#sample-run').onclick=()=>runSample(document.querySelector('#sample').value);
 document.querySelector('#lyrics').onclick=()=>invoke('lyrics');
 document.querySelector('#run').onclick=()=>run({seconds:60}).catch(e=>report({event:'failure',message:String(e)}));
 invoke('mode').then(config=>{if(config.mode!=='interactive')run(config).catch(async e=>{await report({event:'failure',message:String(e)});await invoke('finish');});});
