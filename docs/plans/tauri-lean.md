@@ -58,7 +58,8 @@ owner = Claude（osa-a1）
 ### 第 4 步：替换 Electron
 
 - [ ] Tauri updater 和发布流程。
-- [ ] 老用户设置和登录迁移。
+- [x] 老用户设置和登录迁移。
+  已在 `feat/tauri-bridge`（`1.16.1-autolyrics.7`）实现启动完成与更新安装前原子导出全部 `StoreNameMap` store（含解密后的 `user-login-info`）及 `*.bilibili.com` cookie 到 `tauri-migration.json`（权限 `0600`）。已在 `feat/tauri-s4b` 新增 `src-tauri/src/migration.rs`，首次启动且无 `migration.json` 时从 Electron `userData` 导入 `tauri-migration.json`（或回退读取明文 store JSON 并按 `conf` 的 PBKDF2-HMAC-SHA512 + AES-256-CBC 解密 `user-login-info.json`），跳过过期 cookie、不覆盖已有 Tauri 数据与 cookie，且不删改 Electron 原文件。
 - [ ] 补其余架构，删除 `electron/` 和 Electron 依赖。
 - 用户验收：从 Electron 版升级，设置和登录都在。
 
