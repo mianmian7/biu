@@ -37,6 +37,7 @@ owner = Claude（osa-a1）
 - [x] CI 出三个包。
   已新增 `.github/workflows/tauri-build.yml`，在 `feat/tauri` push 与 `workflow_dispatch` 时零 secrets 构建 macOS arm64 dmg（ad-hoc 签名，`CI=true`）、Windows x64 NSIS、Linux x64 deb 与含 `gst-libav` 的 AppImage，上传产物并打印字节数。
 - 用户验收：装上，登录，搜歌，播放，拖进度。
+  2026-11-05 用户在 Mac 上验收通过：扫码登录、播放正常。首次播放弹过一次 “The operation timed out”，之后正常；日志为空，来源未定位，第 2 步补超时和日志。
 
 ### 第 2 步：日常功能
 
@@ -56,6 +57,20 @@ owner = Claude（osa-a1）
 - [ ] 老用户设置和登录迁移。
 - [ ] 补其余架构，删除 `electron/` 和 Electron 依赖。
 - 用户验收：从 Electron 版升级，设置和登录都在。
+
+## 第 2–4 步实施决定（owner 2026-11-05 补充）
+
+用户 2026-11-05 授权：之后的测试由 owner 自行安排，不再询问用户，推进到全部完成。以下决定在原目标内细化，按此授权直接执行。
+
+- **请求超时：** `bili_request` 和媒体代理加 `connect_timeout` 10 s、整体超时按 axios `timeout`（默认 15 s）；GET 遇连接或超时错误重试 1 次；失败写 `warn` 日志，只记 host 和 path，不记 query 和 cookie。播放错误也写日志。
+- **ffmpeg：** 沿用 `electron/ffmpeg/` 里的精简二进制，作 Tauri sidecar（`externalBin`）打包，下载转封装和自动歌词解码都用它。dmg 仍须 ≤ 10 MB。
+- **罗马音词典：** kuromoji 词典 18 MB，不打进安装包。首次需要罗马音时下载到应用数据目录（npmmirror 优先，jsdelivr 备用，校验 sha256），之后离线使用。
+- **自动歌词对齐：** `shared/auto-lyrics/` 的 TS 代码放进 webview 的 Web Worker 运行；解码走 ffmpeg sidecar。
+- **桌面歌词、迷你播放器：** 独立 Tauri 窗口；透明、置顶、点击穿透用 Tauri 窗口 API。
+- **媒体键：** 三平台用 `souvlaki`（M0 已证明 Linux 的 `mediaSession` 不可用）。
+- **网易云、lrclib：** Rust 命令转发，host 白名单。
+- **测试：** 执行者在 osa-a1 的 xvfb 里自动测试，一律静音（`BIU_SILENT=1` 时 `audio.muted = true`），匿名账号。Mac 实机只在第 4 步结束时由 owner 做一次静音冒烟。不使用用户的登录 cookie。
+- **CI：** Mac job 改用 `macos-15`（`macos-26` arm64 两次排队超时被取消）。
 
 ## 分工
 
