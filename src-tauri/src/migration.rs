@@ -78,6 +78,9 @@ pub struct MigrationMarker {
     pub complete: bool,
     #[serde(default)]
     pub pending: Vec<String>,
+    /// Items already imported (or with nothing to import); retries skip them.
+    #[serde(default)]
+    pub done: Vec<String>,
     #[serde(default)]
     pub attempts: u32,
 }
@@ -562,6 +565,26 @@ fn read_raw_disk_store(tauri_data_dir: &Path, name: &str) -> Option<Value> {
     serde_json::from_slice::<Value>(&bytes).ok()
 }
 
+/// Reads one Electron store file: `Ok(None)` when it does not exist, `Err` when it exists
+/// but cannot be read, parsed or decrypted.
+fn read_raw_electron_store(electron_dir: &Path, store_name: &str) -> Result<Option<Value>, String> {
+    let filename = store_filename(store_name)?;
+    let src_file = electron_dir.join(&filename);
+    if !src_file.is_file() {
+        return Ok(None);
+    }
+    let raw_bytes = fs::read(&src_file).map_err(|e| format!("read {filename}: {e}"))?;
+    if store_name == "user-login-info" {
+        decrypt_conf_store(&raw_bytes, USER_LOGIN_INFO_ENCRYPTION_KEY)
+            .map(Some)
+            .map_err(|e| format!("decrypt {filename}: {e}"))
+    } else {
+        serde_json::from_slice::<Value>(&raw_bytes)
+            .map(Some)
+            .map_err(|e| format!("parse {filename}: {e}"))
+    }
+}
+
 fn is_bilibili_domain(domain: &str) -> bool {
     let trimmed = domain.trim().trim_start_matches('.').to_ascii_lowercase();
     trimmed == "bilibili.com" || trimmed.ends_with(".bilibili.com")
@@ -738,7 +761,14 @@ where
         return None;
     }
     let attempts = previous.as_ref().map_or(0, |p| p.attempts) + 1;
+    // Items finished on an earlier attempt are never imported again, so a retry cannot bring
+    // back data (cookies, tokens, cache) the user removed after the first run.
+    let mut done: Vec<String> = previous
+        .as_ref()
+        .map(|p| p.done.clone())
+        .unwrap_or_default();
     let mut pending: Vec<String> = Vec::new();
+    let is_done = |done: &Vec<String>, item: &str| done.iter().any(|d| d == item);
 
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -774,9 +804,12 @@ where
                 None
             }
             None => {
+                // The export exists but cannot be read now: import stores from the raw files
+                // and keep cookies and localStorage pending for the next start.
                 log::warn!(
-                    "[migration] failed to parse tauri-migration.json, falling back to raw store files"
+                    "[migration] failed to read tauri-migration.json, falling back to raw store files"
                 );
+                pending.push("export".to_string());
                 None
             }
         }
@@ -784,92 +817,99 @@ where
         None
     };
 
-    if let Some(export) = export_payload {
-        source_kind = "tauri-migration.json".to_string();
-        for &store_name in MIGRATABLE_STORES {
-            let incoming = export.stores.get(store_name).cloned().or_else(|| {
-                // desktop-lyrics might not be in StoreNameMap in tauri-migration.json, fall back to desktop-lyrics.json if present
-                if store_name == "desktop-lyrics" {
-                    let dl_path = electron_dir.join("desktop-lyrics.json");
-                    fs::read(dl_path)
-                        .ok()
-                        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-                } else {
-                    None
-                }
-            });
-            let Some(incoming_val) = incoming else {
-                continue;
-            };
-            let existing_disk = read_raw_disk_store(tauri_data_dir, store_name);
-            if let Some(merged) =
-                merge_store_without_overwriting(store_name, existing_disk.as_ref(), &incoming_val)
-            {
-                match write_store(store_name, merged) {
-                    Ok(()) => imported_stores.push(store_name.to_string()),
-                    Err(e) => {
-                        log::warn!("[migration] failed to write store {store_name}: {e}");
-                        pending.push(store_name.to_string());
-                    }
+    // One store: Some(value) to merge, None when the source has nothing, Err when unreadable.
+    let mut import_store = |store_name: &str,
+                            incoming: Result<Option<Value>, String>,
+                            done: &mut Vec<String>,
+                            pending: &mut Vec<String>,
+                            imported: &mut Vec<String>| {
+        match incoming {
+            Err(e) => {
+                log::warn!("[migration] cannot read store {store_name}: {e}");
+                pending.push(store_name.to_string());
+            }
+            Ok(None) => done.push(store_name.to_string()),
+            Ok(Some(incoming_val)) => {
+                let existing_disk = read_raw_disk_store(tauri_data_dir, store_name);
+                match merge_store_without_overwriting(
+                    store_name,
+                    existing_disk.as_ref(),
+                    &incoming_val,
+                ) {
+                    None => done.push(store_name.to_string()),
+                    Some(merged) => match write_store(store_name, merged) {
+                        Ok(()) => {
+                            imported.push(store_name.to_string());
+                            done.push(store_name.to_string());
+                        }
+                        Err(e) => {
+                            log::warn!("[migration] failed to write store {store_name}: {e}");
+                            pending.push(store_name.to_string());
+                        }
+                    },
                 }
             }
         }
-        let (cookies_ok, cookies_failed) =
-            import_cookies_into_bili_state(bili_state, &export.cookies);
-        imported_cookies = cookies_ok;
-        if cookies_failed > 0 {
-            pending.push("cookies".to_string());
+    };
+
+    if let Some(export) = export_payload {
+        source_kind = "tauri-migration.json".to_string();
+        for &store_name in MIGRATABLE_STORES {
+            if is_done(&done, store_name) {
+                continue;
+            }
+            let incoming = match export.stores.get(store_name) {
+                Some(v) => Ok(Some(v.clone())),
+                // desktop-lyrics is not in the export's StoreNameMap; read its own file.
+                None if store_name == "desktop-lyrics" => {
+                    read_raw_electron_store(&electron_dir, store_name)
+                }
+                None => Ok(None),
+            };
+            import_store(
+                store_name,
+                incoming,
+                &mut done,
+                &mut pending,
+                &mut imported_stores,
+            );
         }
-        if let Some(entries) = &export.local_storage {
-            if let Err(e) = write_local_storage_file(tauri_data_dir, entries) {
-                log::warn!("[migration] failed to stage localStorage: {e}");
-                pending.push("localStorage".to_string());
+        if !is_done(&done, "cookies") {
+            let (cookies_ok, cookies_failed) =
+                import_cookies_into_bili_state(bili_state, &export.cookies);
+            imported_cookies = cookies_ok;
+            if cookies_failed > 0 {
+                pending.push("cookies".to_string());
+            } else {
+                done.push("cookies".to_string());
+            }
+        }
+        if !is_done(&done, "localStorage") {
+            let staged = match &export.local_storage {
+                Some(entries) => write_local_storage_file(tauri_data_dir, entries),
+                None => Ok(()),
+            };
+            match staged {
+                Ok(()) => done.push("localStorage".to_string()),
+                Err(e) => {
+                    log::warn!("[migration] failed to stage localStorage: {e}");
+                    pending.push("localStorage".to_string());
+                }
             }
         }
     } else {
         for &store_name in MIGRATABLE_STORES {
-            let Ok(filename) = store_filename(store_name) else {
-                continue;
-            };
-            let src_file = electron_dir.join(&filename);
-            if !src_file.is_file() {
+            if is_done(&done, store_name) {
                 continue;
             }
-            let Ok(raw_bytes) = fs::read(&src_file) else {
-                log::warn!("[migration] failed to read {:?}", src_file);
-                pending.push(store_name.to_string());
-                continue;
-            };
-            let parsed_val = if store_name == "user-login-info" {
-                match decrypt_conf_store(&raw_bytes, USER_LOGIN_INFO_ENCRYPTION_KEY) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        log::warn!("[migration] skipping encrypted user-login-info.json ({e})");
-                        continue;
-                    }
-                }
-            } else {
-                match serde_json::from_slice::<Value>(&raw_bytes) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        log::warn!("[migration] skipping invalid JSON in {filename}: {e}");
-                        continue;
-                    }
-                }
-            };
-
-            let existing_disk = read_raw_disk_store(tauri_data_dir, store_name);
-            if let Some(merged) =
-                merge_store_without_overwriting(store_name, existing_disk.as_ref(), &parsed_val)
-            {
-                match write_store(store_name, merged) {
-                    Ok(()) => imported_stores.push(store_name.to_string()),
-                    Err(e) => {
-                        log::warn!("[migration] failed to write store {store_name}: {e}");
-                        pending.push(store_name.to_string());
-                    }
-                }
-            }
+            let incoming = read_raw_electron_store(&electron_dir, store_name);
+            import_store(
+                store_name,
+                incoming,
+                &mut done,
+                &mut pending,
+                &mut imported_stores,
+            );
         }
     }
 
@@ -882,6 +922,7 @@ where
         imported_cookies,
         complete: pending.is_empty(),
         pending,
+        done,
         attempts,
     };
 
@@ -1394,9 +1435,16 @@ mod tests {
         assert_eq!(staged.len(), 1);
         assert_eq!(staged["user-token"], "{\"state\":{}}");
 
-        // Second run retries and completes; cookies are not duplicated.
+        // The user logs out before the retry: finished items must not come back.
+        bili.cookies.lock().unwrap().clear();
+        fs::remove_file(tauri_dir.join(LOCAL_STORAGE_FILE)).unwrap();
+
+        // Second run retries only app-settings and completes.
         let marker =
             migrate_from_candidates_in_dir(&tauri_dir, &candidates, &bili).expect("retry runs");
+        assert_eq!(bili.get_cookie("SESSDATA"), None);
+        assert!(read_migrated_local_storage(&tauri_dir).is_empty());
+        assert_eq!(marker.imported_stores, vec!["app-settings".to_string()]);
         assert!(marker.complete);
         assert_eq!(marker.attempts, 2);
         assert_eq!(marker.imported_cookies, 0);
@@ -1405,6 +1453,40 @@ mod tests {
 
         // Third run is skipped.
         assert!(migrate_from_candidates_in_dir(&tauri_dir, &candidates, &bili).is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unreadable_sources_stay_pending() {
+        let root = std::env::temp_dir().join(format!("biu-mig-bad-{}", uuid::Uuid::new_v4()));
+        let electron_dir = root.join("electron-Biu");
+        let tauri_dir = root.join("tauri-data");
+        fs::create_dir_all(&electron_dir).unwrap();
+        fs::create_dir_all(&tauri_dir).unwrap();
+        // No export file; app-settings is corrupt, user-login-info cannot be decrypted.
+        fs::write(electron_dir.join("app-settings.json"), b"{not json").unwrap();
+        fs::write(electron_dir.join("user-login-info.json"), b"garbage").unwrap();
+        fs::write(
+            electron_dir.join("shortcut-settings.json"),
+            b"{\"enableGlobalShortcuts\":false}",
+        )
+        .unwrap();
+        let bili = BiliState::new(tauri_dir.join("cookies.json"), None).unwrap();
+        let candidates = vec![electron_dir.clone()];
+
+        let marker = migrate_from_candidates_in_dir(&tauri_dir, &candidates, &bili).unwrap();
+        assert!(!marker.complete);
+        assert!(marker.pending.contains(&"app-settings".to_string()));
+        assert!(marker.pending.contains(&"user-login-info".to_string()));
+        assert!(marker.done.contains(&"shortcut-settings".to_string()));
+
+        // An unreadable export keeps the run incomplete so cookies can be retried later.
+        fs::write(electron_dir.join(ELECTRON_EXPORT_FILE), b"{broken").unwrap();
+        let marker = migrate_from_candidates_in_dir(&tauri_dir, &candidates, &bili).unwrap();
+        assert!(!marker.complete);
+        assert!(marker.pending.contains(&"export".to_string()));
+        assert!(!marker.done.contains(&"cookies".to_string()));
+        assert_eq!(marker.attempts, 2);
         let _ = fs::remove_dir_all(&root);
     }
 }
