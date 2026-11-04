@@ -134,8 +134,9 @@ Sol 审查 `8eaf2533` 和桥接版 `1a835bb6`，结论“暂不建议发布”�
 - [x] Mac 签名链：用 `workflow_dispatch` 跑 `release.yml`（只构建不发布），在 Mac 上对正式签名的 zip 执行 `codesign --verify -R`，条件取 `.6` 的 designated requirement。（owner）
   2026-11-05 部分完成：run 41902247789（`3b2fc916`）六目标通过，mac arm64 dmg 5.5 MB。Mac 上 `.6` release zip 的 DR 为 `identifier "com.biu.wood3n" and certificate leaf = H"9580df08…529b3c"`；`2.0.0` zip 同证书同 DR，`codesign --verify --deep --strict -R=<.6 DR>` 通过。`.7` 包构建后再验 `.6 DR → .7`。
   2026-11-05 完成：`.7` 正式 release（run 41915450554，桥接 `81fff3de`，Intel Mac runner 选 Xcode 26 后构建）的 arm64、x64 zip DR 同上，Mac 上 `codesign --verify --deep --strict -R=<.6 DR>` 都输出 VERIFY_OK。`.6 → .7 → 2.0.0` 三个版本 DR 相同。
-- [ ] Mac 实机静音冒烟：装 `2.0.0`，静音启动，设置和登录都在。（owner）
+- [x] Mac 实机静音冒烟：装 `2.0.0`，静音启动，设置和登录都在。（owner）
   2026-11-05 核对：用户 Mac 的 `/Applications/Biu.app` 已是第 1 步的 Tauri 测试包（7.9 MB、ad-hoc、版本号 `.6`、无 updater），Electron `.6` 不在了，这台 Mac 上测不了 `.6 → .7` 一跳。用户需手动装 `2.0.0` dmg；Tauri 数据目录 `com.biu.wood3n` 里的扫码登录保留，Electron 目录 `Biu` 的 store 按原样合并。
+  2026-11-05 完成：`v2.0.0` 正式 release（run 41923225326，第 1 次 macos-arm64 打 dmg 遇 hdiutil `Resource busy`，重跑通过）。Mac 上备份第 1 步测试包和数据到 `~/biu-smoke-backup-20261105`，装 `Biu-2.0.0-mac-arm64.dmg`（13 MB，DR 同 `.6`），`open --env BIU_SILENT=1` 启动。迁移 `complete=true`、`pending=[]`，从 Electron 目录导入 `app-settings`（27 项）和 `shortcut-settings`（3 项），与原值逐项一致；cookie 含 `SESSDATA`、`bili_jct`、`DedeUserID`；启动 1 s 后 renderer 重写 `user-login-info.json`，`isLogin=true`；日志无 error/warn。sshd 无屏幕录制权限，没有截图。线上 `latest*.yml` 带 `tag: v1.16.1-autolyrics.7`，`tauri*.yml` 和 `latest.json` 为 `2.0.0`。
 
 ## 分工
 
