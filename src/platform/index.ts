@@ -207,14 +207,7 @@ function installDragRegionObserver(): void {
   });
 }
 
-export const UNIMPLEMENTED_ELECTRON_METHODS = [
-  "checkAppUpdate",
-  "onUpdateAvailable",
-  "getUpdateMode",
-  "downloadAppUpdate",
-  "onDownloadAppProgress",
-  "quitAndInstall",
-] as const;
+export const UNIMPLEMENTED_ELECTRON_METHODS = [] as const;
 
 export function createTauriElectronAPI(): ElectronAPI {
   const autoLyrics = createTauriAutoLyricsController(invokeTauri);
@@ -365,13 +358,13 @@ export function createTauriElectronAPI(): ElectronAPI {
 
     autoLyrics,
 
-    // Step 4 unimplemented methods: return explicit "未实现" errors without crashing startup
-    checkAppUpdate: () => rejectNotImplemented("checkAppUpdate"),
-    onUpdateAvailable: () => noopUnsubscribe("onUpdateAvailable"),
-    getUpdateMode: () => rejectNotImplemented("getUpdateMode"),
-    downloadAppUpdate: () => rejectNotImplemented("downloadAppUpdate"),
-    onDownloadAppProgress: () => noopUnsubscribe("onDownloadAppProgress"),
-    quitAndInstall: () => rejectNotImplemented("quitAndInstall"),
+    // Step 4: App Updater
+    checkAppUpdate: () => invokeTauri<CheckAppUpdateResult>("check_app_update"),
+    onUpdateAvailable: cb => listenTauriEvent<{ latestVersion: string; releaseNotes?: string }>("app:update-available", cb),
+    getUpdateMode: () => invokeTauri<AppUpdateMode>("get_update_mode"),
+    downloadAppUpdate: () => invokeTauri<void>("download_app_update"),
+    onDownloadAppProgress: cb => listenTauriEvent<DownloadAppMessage>("app:update-message", cb),
+    quitAndInstall: () => invokeTauri<boolean>("quit_and_install"),
   };
 
   return api;

@@ -249,6 +249,7 @@ pub fn quit_application<R: Runtime>(app: &AppHandle<R>) {
     if let Some(dl_state) = app.try_state::<Arc<DesktopLyricsState>>() {
         destroy_desktop_lyrics_window(app, &dl_state);
     }
+    crate::updater::install_downloaded_update_on_exit(app);
     log::info!("[tray] quitting application");
     app.exit(0);
 }

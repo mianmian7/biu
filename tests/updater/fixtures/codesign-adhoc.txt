@@ -1,5 +1,0 @@
-Executable=/Applications/Biu.app/Contents/MacOS/Biu
-Identifier=com.biu.wood3n
-CodeDirectory v=20400 flags=0x2(adhoc) hashes=0+0 location=embedded
-Signature=adhoc
-TeamIdentifier=not set

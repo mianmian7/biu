@@ -61,12 +61,12 @@
       "labels": ["deps:eslint"]
     },
     {
-      "matchPackagePatterns": ["^electron"],
-      "groupName": "electron ecosystem",
+      "matchPackagePatterns": ["^@tauri-apps/"],
+      "groupName": "tauri ecosystem",
       "automerge": false,
       "stabilityDays": 7,
       "schedule": ["before 6am on monday"],
-      "labels": ["deps:electron"]
+      "labels": ["deps:tauri"]
     },
     {
       "matchPackagePatterns": ["^react", "^@types/react"],
@@ -132,12 +132,10 @@
         "^zod$",
         "^moment",
         "^classnames$",
-        "^cookie$",
         "^es-toolkit$",
         "^filesize$",
         "^spark-md5$",
         "^jsencrypt$",
-        "^font-list$",
         "^ahooks$",
         "^react-hook-form$",
         "^@hookform/",
@@ -149,7 +147,7 @@
     },
     {
       "description": "Disable updates for selected packages",
-      "matchPackageNames": ["fluent-ffmpeg", "framer-motion"],
+      "matchPackageNames": ["framer-motion"],
       "enabled": false
     }
   ]

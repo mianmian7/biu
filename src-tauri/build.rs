@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn stage_ffmpeg_sidecar() {
-    println!("cargo:rerun-if-changed=../electron/ffmpeg");
+    println!("cargo:rerun-if-changed=ffmpeg");
     let Ok(target) = env::var("TARGET") else {
         return;
     };
@@ -16,17 +16,25 @@ fn stage_ffmpeg_sidecar() {
     let dest_name = format!("ffmpeg-{target}{ext}");
     let dest_path = binaries_dir.join(&dest_name);
 
-    let ffmpeg_root = manifest_dir.join("..").join("electron").join("ffmpeg");
+    let ffmpeg_root = manifest_dir.join("ffmpeg");
     let src_candidate = if is_windows {
-        Some(ffmpeg_root.join("ffmpeg.exe"))
+        if target.starts_with("aarch64-") && ffmpeg_root.join("ffmpeg-win-arm64.exe").exists() {
+            Some(ffmpeg_root.join("ffmpeg-win-arm64.exe"))
+        } else {
+            Some(ffmpeg_root.join("ffmpeg.exe"))
+        }
     } else if target.contains("apple-darwin") {
         if target.starts_with("aarch64-") {
             Some(ffmpeg_root.join("ffmpeg-mac-arm64"))
         } else {
             Some(ffmpeg_root.join("ffmpeg-mac-x64"))
         }
-    } else if target.contains("linux") && target.starts_with("x86_64-") {
-        Some(ffmpeg_root.join("ffmpeg-linux"))
+    } else if target.contains("linux") {
+        if target.starts_with("aarch64-") {
+            Some(ffmpeg_root.join("ffmpeg-linux-arm64"))
+        } else {
+            Some(ffmpeg_root.join("ffmpeg-linux"))
+        }
     } else {
         None
     };
@@ -41,13 +49,13 @@ fn stage_ffmpeg_sidecar() {
         return;
     }
 
-    // Fallback for targets without a prebuilt binary in electron/ffmpeg (e.g. aarch64-unknown-linux-gnu local dev/test):
-    // create a small wrapper script or copy system ffmpeg if present so Tauri externalBin bundling succeeds.
+    // Fallback for targets without a prebuilt binary in src-tauri/ffmpeg (e.g. aarch64-unknown-linux-gnu local dev/test):
+    // copy system ffmpeg if present or create a small wrapper script so Tauri externalBin bundling succeeds.
     if !dest_path.exists() {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let script = b"#!/bin/sh\nexec /usr/bin/ffmpeg \"$@\"\n";
+            let script = b"#!/bin/sh\nexec ffmpeg \"$@\"\n";
             let _ = fs::write(&dest_path, script);
             let _ = fs::set_permissions(&dest_path, fs::Permissions::from_mode(0o755));
         }

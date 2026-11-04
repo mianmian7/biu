@@ -1,4 +1,4 @@
-import log from "electron-log/renderer";
+import log from "./logger";
 import moment from "moment";
 
 import { toMediaUrl, unwrapMediaUrl } from "@/platform";

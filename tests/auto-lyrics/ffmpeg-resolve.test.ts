@@ -6,7 +6,7 @@ import {
   DecodeUnavailableError,
   executableArch,
   selectRunnableFfmpeg,
-} from "../../electron/auto-lyrics/ffmpeg-resolve";
+} from "../../shared/auto-lyrics/ffmpeg-resolve";
 
 function elf(machine: number): Uint8Array {
   const header = new Uint8Array(64);
@@ -48,7 +48,7 @@ describe("ffmpeg selection on a mismatched bundle", () => {
   });
 
   it("recognizes the shipped linux ffmpeg as x64", () => {
-    const shipped = readFileSync("electron/ffmpeg/ffmpeg-linux").subarray(0, 64);
+    const shipped = readFileSync("src-tauri/ffmpeg/ffmpeg-linux").subarray(0, 64);
     expect(executableArch(shipped)).toBe("x64");
   });
 

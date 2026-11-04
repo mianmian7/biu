@@ -11,17 +11,76 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare-release:
+    name: Prepare Draft Release
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Ensure draft release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "$TAG" --generate-notes --repo "$REPO"
+          fi
+
   build:
-    name: Build on ${{ matrix.os }}
+    name: Build (${{ matrix.name }})
+    needs: [prepare-release]
+    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped')
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     env:
-      HUSKY: 0
+      CI: "true"
+      HUSKY: "0"
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-26, windows-latest, ubuntu-latest]
+        include:
+          # macOS arm64 hosted runners keep timing out in the queue; cross-compile both arches on Intel.
+          - name: macos-arm64
+            os: macos-15-intel
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+            arch_label: arm64
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+            arch_label: x64
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            arch_label: x64
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            bundles: nsis
+            arch_label: arm64
+          - name: linux-x64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+            arch_label: x64
+            deb_arch: amd64
+            appimage_arch: x86_64
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: deb,appimage
+            arch_label: arm64
+            deb_arch: arm64
+            appimage_arch: arm64
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -32,7 +91,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
 
-      - name: Use Node.js lts
+      - name: Use Node.js
         uses: actions/setup-node@v4
         with:
           node-version-file: ".nvmrc"
@@ -41,11 +100,37 @@ jobs:
       - name: Configure Git to use HTTPS instead of SSH
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Install Linux dependencies (including gst-libav)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            patchelf \
+            libfuse2 \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good
 
-      # electron-builder 的 CSC_LINK 自建 keychain 在 macos-26 上 set-key-partition-list 解锁失败，
-      # 所以自己建 keychain 导入证书，只给 electron-builder 传 CSC_NAME（见 docs/plans/seamless-update.md 步骤 1 结果）。
+      - name: Setup Rust stable
+        run: |
+          rustup default stable
+          rustup target add "${{ matrix.target }}"
+          rustc --version
+          cargo --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
       - name: Import Mac signing certificate
         if: runner.os == 'macOS'
         env:
@@ -67,37 +152,112 @@ jobs:
           rm "$RUNNER_TEMP/biu-codesign.p12"
           security find-identity -v -p codesigning | grep -q '"Biu Self-Signed Code Signing"'
 
-      - name: Build & Publish
+      - name: Build Tauri bundles (${{ matrix.name }})
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_NAME: ${{ runner.os == 'macOS' && 'Biu Self-Signed Code Signing' || '' }}
-        run: pnpm build
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && 'Biu Self-Signed Code Signing' || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          pnpm exec tauri build --ci --bundles "${{ matrix.bundles }}" --target "${{ matrix.target }}"
 
       - name: Verify Mac signature
         if: runner.os == 'macOS'
         run: |
-          for app in dist/artifacts/mac/Biu.app dist/artifacts/mac-arm64/Biu.app; do
-            codesign -dv --verbose=2 "$app" 2>&1 | grep -q 'Authority=Biu Self-Signed Code Signing' || { echo "::error::$app not signed with Biu Self-Signed Code Signing"; exit 1; }
-            codesign -d -r- "$app" 2>&1 | grep -q 'certificate leaf = H"' || { echo "::error::$app designated requirement is not certificate-based"; exit 1; }
-            codesign --verify --deep --strict "$app"
-          done
+          app="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Biu.app"
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -q 'Authority=Biu Self-Signed Code Signing' || { echo "::error::$app not signed with Biu Self-Signed Code Signing"; exit 1; }
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -q 'Identifier=com.biu.wood3n' || { echo "::error::$app identifier is not com.biu.wood3n"; exit 1; }
+          codesign -d -r- "$app" 2>&1 | grep -q 'certificate leaf = H"' || { echo "::error::$app designated requirement is not certificate-based"; exit 1; }
+          codesign --verify --deep --strict "$app"
+
+      - name: Stage release assets (${{ matrix.name }})
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          mkdir -p release-assets
+
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            dmg_file=$(ls "$BUNDLE_DIR"/dmg/*.dmg | head -n 1)
+            cp "$dmg_file" "release-assets/Biu-${VERSION}-mac-${{ matrix.arch_label }}.dmg"
+            ditto -c -k --keepParent "$BUNDLE_DIR/macos/Biu.app" "release-assets/Biu-${VERSION}-mac-${{ matrix.arch_label }}.zip"
+            cp "$BUNDLE_DIR/macos/Biu.app.tar.gz" "release-assets/Biu-${VERSION}-mac-${{ matrix.arch_label }}.app.tar.gz"
+            cp "$BUNDLE_DIR/macos/Biu.app.tar.gz.sig" "release-assets/Biu-${VERSION}-mac-${{ matrix.arch_label }}.app.tar.gz.sig"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            exe_file=$(ls "$BUNDLE_DIR"/nsis/*-setup.exe | head -n 1)
+            cp "$exe_file" "release-assets/Biu-${VERSION}-win-setup-${{ matrix.arch_label }}.exe"
+            cp "${exe_file}.sig" "release-assets/Biu-${VERSION}-win-setup-${{ matrix.arch_label }}.exe.sig"
+          elif [ "${{ runner.os }}" = "Linux" ]; then
+            deb_file=$(ls "$BUNDLE_DIR"/deb/*.deb | head -n 1)
+            appimage_file=$(ls "$BUNDLE_DIR"/appimage/*.AppImage | head -n 1)
+            cp "$deb_file" "release-assets/Biu-${VERSION}-linux-${{ matrix.deb_arch }}.deb"
+            cp "$appimage_file" "release-assets/Biu-${VERSION}-linux-${{ matrix.appimage_arch }}.AppImage"
+            cp "${appimage_file}.sig" "release-assets/Biu-${VERSION}-linux-${{ matrix.appimage_arch }}.AppImage.sig"
+          fi
+          ls -lh release-assets/
+
+      - name: Upload staged release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.name }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
 
   publish-release:
     name: Publish Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Download all staged release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate Tauri latest.json and electron-updater latest*.yml feeds
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          node scripts/electron-updater-feed.mjs \
+            --dir release-assets \
+            --out-dir release-assets \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --repo-url "https://github.com/${REPO}"
+          ls -lh release-assets/
+
+      - name: Upload assets to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release upload "$TAG" release-assets/* --clobber --repo "$REPO"
+
       - name: Publish release (remove draft)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "${{ github.ref_name }}" --draft=false --repo "${{ github.repository }}"
+
       - name: Mark as stable
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "${{ github.ref_name }}" --prerelease=false --repo "${{ github.repository }}"
+
       - name: Mark as latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

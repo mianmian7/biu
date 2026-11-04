@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { markManualEdits } from "../../electron/auto-lyrics/manual-cache";
+import { markManualEdits } from "../../shared/auto-lyrics/manual-cache";
 
 describe("renderer lyrics edits", () => {
   const entry: MusicLyrics = { lyrics: "[00:01]line", source: "auto", offset: 0 };

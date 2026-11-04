@@ -13,6 +13,7 @@ mod media_keys;
 mod shortcut;
 mod store;
 mod tray;
+mod updater;
 
 use auto_lyrics::{
     auto_lyrics_cache_set, auto_lyrics_decode_audio, auto_lyrics_fetch_audio,
@@ -49,6 +50,7 @@ use store::{
     get_saved_proxy_settings, store_clear, store_get, store_set, sync_allowed_local_dirs_from_store,
 };
 use tauri::{AppHandle, Manager, Runtime};
+use updater::{check_app_update, download_app_update, get_update_mode, quit_and_install};
 
 // Must stay async: a sync command runs on the main thread, and building a window there deadlocks on WebView2.
 #[tauri::command]
@@ -128,6 +130,8 @@ fn main() {
         )
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -209,6 +213,10 @@ fn main() {
             auto_lyrics_state_snapshot,
             auto_lyrics_cache_set,
             auto_lyrics_ref_set,
+            check_app_update,
+            get_update_mode,
+            download_app_update,
+            quit_and_install,
         ])
         .setup(|app| {
             let app_data_dir = app
@@ -260,6 +268,8 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 shortcut::register_all_shortcuts_internal(&shortcut_app);
             });
+
+            updater::setup_updater(app.handle());
 
             Ok(())
         })

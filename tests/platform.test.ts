@@ -16,25 +16,50 @@ describe("platform ElectronAPI compatibility and media URL wrapping", () => {
     delete (window as any).__TAURI__;
   });
 
-  test("all Step 2+ unimplemented methods return explicit '未实现' errors or warnings without throwing synchronously", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const api = createTauriElectronAPI() as Record<string, any>;
+  test("UNIMPLEMENTED_ELECTRON_METHODS is empty after Step 4 updater implementation", () => {
+    expect(UNIMPLEMENTED_ELECTRON_METHODS).toEqual([]);
+  });
 
-    for (const key of UNIMPLEMENTED_ELECTRON_METHODS) {
-      const target = key.includes(".") ? key.split(".").reduce((acc, part) => acc?.[part], api) : api[key];
-      expect(typeof target).toBe("function");
-
-      const result = target();
-      if (result && typeof result.then === "function") {
-        await expect(result).rejects.toThrow(NOT_IMPLEMENTED_MESSAGE);
-      } else if (typeof result === "function") {
-        // Unsubscribe function returned by event listener stubs
-        expect(() => result()).not.toThrow();
-        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(NOT_IMPLEMENTED_MESSAGE));
-      } else {
-        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(NOT_IMPLEMENTED_MESSAGE));
+  test("Step 4 updater methods invoke corresponding Tauri commands and listen to events", async () => {
+    const invokeMock = vi.fn(async (cmd: string) => {
+      if (cmd === "check_app_update") {
+        return { isUpdateAvailable: true, latestVersion: "1.16.2", releaseNotes: "notes" };
       }
-    }
+      if (cmd === "get_update_mode") return "auto";
+      if (cmd === "download_app_update") return undefined;
+      if (cmd === "quit_and_install") return true;
+      return undefined;
+    });
+    const listenMock = vi.fn(async () => () => {});
+    (window as any).__TAURI__ = {
+      core: { invoke: invokeMock },
+      event: { listen: listenMock },
+    };
+
+    const api = createTauriElectronAPI();
+    expect(await api.checkAppUpdate()).toEqual({
+      isUpdateAvailable: true,
+      latestVersion: "1.16.2",
+      releaseNotes: "notes",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("check_app_update", undefined);
+
+    expect(await api.getUpdateMode()).toBe("auto");
+    expect(invokeMock).toHaveBeenCalledWith("get_update_mode", undefined);
+
+    await api.downloadAppUpdate();
+    expect(invokeMock).toHaveBeenCalledWith("download_app_update", undefined);
+
+    expect(await api.quitAndInstall()).toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith("quit_and_install", undefined);
+
+    const offAvail = api.onUpdateAvailable(() => {});
+    expect(listenMock).toHaveBeenCalledWith("app:update-available", expect.any(Function));
+    offAvail();
+
+    const offProg = api.onDownloadAppProgress(() => {});
+    expect(listenMock).toHaveBeenCalledWith("app:update-message", expect.any(Function));
+    offProg();
   });
 
   test("Step 1 methods invoke corresponding Tauri commands", async () => {
@@ -221,7 +246,7 @@ describe("platform ElectronAPI compatibility and media URL wrapping", () => {
   test("auto-lyrics worker alignment and Tauri AutoLyrics controller match AUTO_LYRICS_ALGO_VERSION", async () => {
     const { alignAudioInWorker, createTauriAutoLyricsController, pcmS16leToFloat32 } =
       await import("@/platform/auto-lyrics-worker");
-    const { AUTO_LYRICS_ALGO_VERSION } = await import("../electron/auto-lyrics/service");
+    const { AUTO_LYRICS_ALGO_VERSION } = await import("../shared/auto-lyrics/service");
 
     expect(AUTO_LYRICS_ALGO_VERSION).toBe("p1-gap-dtw-6");
 

@@ -2,7 +2,7 @@ import React, { useEffect } from "react";
 import { ErrorBoundary } from "react-error-boundary";
 import { Outlet, useLocation } from "react-router";
 
-import log from "electron-log/renderer";
+import log from "@/common/utils/logger";
 
 import ConfirmModal from "@/components/confirm-modal";
 import Fallback from "@/components/error-fallback";

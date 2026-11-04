@@ -32,7 +32,7 @@ jobs:
           filters: |
             core:
               - 'src/**'
-              - 'electron/**'
+              - 'src-tauri/**'
               - 'shared/**'
               - 'plugins/**'
               - 'rsbuild.config.ts'

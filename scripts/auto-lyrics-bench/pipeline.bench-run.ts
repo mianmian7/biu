@@ -12,15 +12,60 @@ import { z } from "zod";
 import type { SongCandidate } from "../../shared/auto-lyrics/identify";
 import type { AutoLyricsResult } from "../../shared/auto-lyrics/service-types";
 
-import { AutoLyricsService } from "../../electron/auto-lyrics/service";
-import { sources } from "../../electron/auto-lyrics/sources";
+import { AutoLyricsService } from "../../shared/auto-lyrics/service";
 import { generateLrc } from "../../shared/auto-lyrics";
 import { lyricAnchors, selectReference } from "../../shared/auto-lyrics/align";
 import { normalize } from "../../shared/auto-lyrics/identify";
 import { algorithm, dataRoot, Measurement, root, writeReport } from "./common";
 
-vi.mock("../../electron/network/cookie", () => ({ getCookieString: async () => "" }));
-vi.mock("../../electron/ipc/api/wbi", () => ({ encodeParamsWbi: async () => ({}) }));
+async function liveNeteaseSearch(query: string, signal: AbortSignal): Promise<SongCandidate[]> {
+  const res = await fetch(
+    `https://music.163.com/api/search/get?s=${encodeURIComponent(query)}&type=1&limit=20&offset=0`,
+    { method: "POST", signal, headers: { Referer: "https://music.163.com" } },
+  );
+  const data = (await res.json()) as {
+    code?: number;
+    result?: {
+      songs?: {
+        id?: number;
+        name?: string;
+        duration?: number;
+        artists?: { name?: string }[];
+        alias?: string[];
+        transNames?: string[];
+      }[];
+    };
+  };
+  if (data.code !== 200) throw new Error(`Netease search: ${data.code}`);
+  return (data.result?.songs ?? []).flatMap(song =>
+    song.id && song.name && song.duration
+      ? [
+          {
+            id: song.id,
+            name: song.name,
+            artists: (song.artists ?? []).flatMap(a => (a.name ? [a.name] : [])),
+            duration: song.duration / 1000,
+            aliases: [...(song.alias ?? []), ...(song.transNames ?? [])],
+          },
+        ]
+      : [],
+  );
+}
+
+async function liveNeteaseLyric(songId: number, signal: AbortSignal) {
+  const res = await fetch(`https://music.163.com/api/song/lyric?id=${songId}&lv=1&kv=1&tv=-1&rv=-1`, {
+    signal,
+    headers: { Referer: "https://music.163.com" },
+  });
+  const data = (await res.json()) as {
+    code?: number;
+    lrc?: { lyric?: string };
+    tlyric?: { lyric?: string };
+    romalrc?: { lyric?: string };
+  };
+  if (data.code !== 200) throw new Error(`Netease lyric: ${data.code}`);
+  return { lrc: data.lrc?.lyric ?? "", tlyric: data.tlyric?.lyric, romalrc: data.romalrc?.lyric };
+}
 
 const STUDIO: Record<string, string> = { 名もなき何もかも: "nanimo", 空の箱: "sora", 爆ぜて咲く: "haze" };
 
@@ -100,9 +145,9 @@ test.skipIf(!dataRoot)("pipeline: identify -> netease lyric -> reference -> coar
     sources: {
       search:
         process.env.AUTO_LYRICS_NETEASE === "live"
-          ? sources.search
+          ? liveNeteaseSearch
           : recordedSearch(path.join(data, "identify_eval_results-1.16.2.json")),
-      lyric: sources.lyric,
+      lyric: liveNeteaseLyric,
       async references(song) {
         const name = Object.entries(STUDIO).find(([title]) => song.name.startsWith(title))?.[1];
         if (!name) return [];

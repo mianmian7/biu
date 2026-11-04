@@ -31,6 +31,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["deb", "appimage", "dmg", "nsis"],
     "externalBin": ["binaries/ffmpeg"],
     "icon": [
@@ -51,15 +52,24 @@
       }
     },
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "Biu Self-Signed Code Signing"
     },
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "windows/hooks.nsh"
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/mianmian7/biu/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFGMzA4MkVDNkQyN0EzQTAKUldTZ295ZHQ3SUl3cndwamp2cU96cEE1UWJJR2tPREtVTkt1T2k0Z2IwWk04bzYwSGlKei92Y08K"
     }
   }
 }

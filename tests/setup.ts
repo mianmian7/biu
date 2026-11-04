@@ -67,7 +67,7 @@ if (typeof g.window.removeEventListener !== "function") {
 g.window.electron = undefined;
 g.Audio = FakeAudio as any;
 
-vi.mock("electron-log/renderer", () => {
+vi.mock("@/common/utils/logger", () => {
   const logger = {
     error: vi.fn(),
     warn: vi.fn(),

@@ -195,7 +195,7 @@ pub fn resolve_ffmpeg_path(user_setting: Option<&str>) -> Result<PathBuf, String
         }
     }
 
-    // Dev workspace fallbacks (src-tauri/binaries or electron/ffmpeg)
+    // Dev workspace fallbacks (src-tauri/binaries or src-tauri/ffmpeg)
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     if let Ok(entries) = fs::read_dir(manifest_dir.join("binaries")) {
         for entry in entries.flatten() {
@@ -208,7 +208,7 @@ pub fn resolve_ffmpeg_path(user_setting: Option<&str>) -> Result<PathBuf, String
             }
         }
     }
-    let repo_ffmpeg_dir = manifest_dir.join("..").join("electron").join("ffmpeg");
+    let repo_ffmpeg_dir = manifest_dir.join("ffmpeg");
     let bundled_name = if cfg!(windows) {
         "ffmpeg.exe"
     } else if cfg!(target_os = "macos") {

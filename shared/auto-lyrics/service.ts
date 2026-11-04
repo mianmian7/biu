@@ -1,12 +1,12 @@
-import type { Identification, IdentifyInput, SongCandidate } from "../../shared/auto-lyrics/identify";
-import type { ReferenceCandidate } from "../../shared/auto-lyrics/reference";
-import type { AutoLyricsParams, AutoLyricsProgress, AutoLyricsResult } from "../../shared/auto-lyrics/service-types";
-import type { AlignLine, AlignResult, GlobalOffset } from "../../shared/auto-lyrics/types";
+import type { Identification, IdentifyInput, SongCandidate } from "./identify";
+import type { ReferenceCandidate } from "./reference";
+import type { AutoLyricsParams, AutoLyricsProgress, AutoLyricsResult } from "./service-types";
+import type { AlignLine, AlignResult, GlobalOffset } from "./types";
 
-import { selectReference, verifyScore } from "../../shared/auto-lyrics/align";
-import { identifyBySearch, LIVE, normalize, unmentionedNote } from "../../shared/auto-lyrics/identify";
-import { generateLrc, mapCompanionLrc, parseLrc } from "../../shared/auto-lyrics/lrc";
-import { checkVocalOnset, rankReferences } from "../../shared/auto-lyrics/reference";
+import { selectReference, verifyScore } from "./align";
+import { identifyBySearch, LIVE, normalize, unmentionedNote } from "./identify";
+import { generateLrc, mapCompanionLrc, parseLrc } from "./lrc";
+import { checkVocalOnset, rankReferences } from "./reference";
 import { isDecodeUnavailable } from "./ffmpeg-resolve";
 
 // Alignment quality gate, not proof of song identity. Different releases of the right song may also fail.

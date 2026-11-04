@@ -1,12 +1,12 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 
-import type { AutoLyricsDependencies } from "../../electron/auto-lyrics/service";
+import type { AutoLyricsDependencies } from "../../shared/auto-lyrics/service";
 import type { ReferenceCandidate } from "../../shared/auto-lyrics/reference";
 import type { AutoLyricsParams, AutoLyricsProgress } from "../../shared/auto-lyrics/service-types";
 
-import { DecodeUnavailableError } from "../../electron/auto-lyrics/ffmpeg-resolve";
-import { AUTO_LYRICS_ALGO_VERSION, AutoLyricsService } from "../../electron/auto-lyrics/service";
+import { DecodeUnavailableError } from "../../shared/auto-lyrics/ffmpeg-resolve";
+import { AUTO_LYRICS_ALGO_VERSION, AutoLyricsService } from "../../shared/auto-lyrics/service";
 
 const params: AutoLyricsParams = {
   bvid: "BVcurrent",

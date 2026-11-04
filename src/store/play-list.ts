@@ -1,5 +1,5 @@
 import { addToast } from "@heroui/react";
-import log from "electron-log/renderer";
+import log from "@/common/utils/logger";
 import { shuffle } from "es-toolkit/array";
 import { remove } from "es-toolkit/array";
 import { uniqueId } from "es-toolkit/compat";

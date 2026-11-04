@@ -7,8 +7,8 @@ import type {
 } from "../../shared/auto-lyrics/service-types";
 import type { AlignLine, AlignResult, GlobalOffset } from "../../shared/auto-lyrics/types";
 
-import { DecodeUnavailableError } from "../../electron/auto-lyrics/ffmpeg-resolve";
-import { AutoLyricsService } from "../../electron/auto-lyrics/service";
+import { DecodeUnavailableError } from "../../shared/auto-lyrics/ffmpeg-resolve";
+import { AutoLyricsService } from "../../shared/auto-lyrics/service";
 import {
   alignLinesGapDTW,
   estimateGlobalOffset,
