@@ -76,6 +76,22 @@ owner = Claude（osa-a1）
 - **测试：** 执行者在 osa-a1 的 xvfb 里自动测试，一律静音（`BIU_SILENT=1` 时 `audio.muted = true`），匿名账号。Mac 实机只在第 4 步结束时由 owner 做一次静音冒烟。不使用用户的登录 cookie。
 - **CI：** Mac job 改用 `macos-15`（`macos-26` arm64 两次排队超时被取消）。
 
+## 第 4 步设计（owner 2026-11-05 补充）
+
+现状：Electron 版 `.6` 的 Mac 包用自签名证书「Biu Self-Signed Code Signing」签名，electron-updater（`allowPrerelease=false`）读 GitHub latest release 的 `latest*.yml`，Mac 走 Squirrel.Mac，只校验新包是否满足 designated requirement（`identifier "com.biu.wood3n" and certificate leaf = H"…"`）。Tauri 版的 identifier 也是 `com.biu.wood3n`。
+
+- **版本：** 桥接版 `1.16.1-autolyrics.7`（Electron），Tauri 首发 `2.0.0`。
+- **桥接版（4b）：** 分支 `feat/tauri-bridge`，从 `feat/auto-lyrics-p1` 开。启动时和安装更新前，把全部 store（`user-login-info` 解密后）和 `*.bilibili.com` cookie 写到 Electron userData 下的 `tauri-migration.json`（0600，`version: 1`）。其余行为不变。
+- **Tauri 导入（4b）：** 首次启动、且应用数据里没有迁移标记时，读 Electron userData（mac `~/Library/Application Support/Biu`，win `%APPDATA%\Biu`，linux `~/.config/Biu`）里的 `tauri-migration.json`，导入 store 和 cookie。没有导出文件时，直接读明文 store JSON，并解密 `user-login-info`（electron-store aes-256-cbc），cookie 跳过、需重新登录。导入后写标记，不删除 Electron 数据。
+- **发布（4a）：** `release.yml` 改为 Tauri 构建，由 `v*` tag 触发。产物：
+  - 各平台安装包。
+  - Tauri updater 的 `latest.json`，供 Tauri 版之间更新。
+  - electron-updater 兼容文件，让 Electron 版直接升级到 Tauri 版：`latest-mac.yml` + `Biu-<ver>-mac-<arch>.zip`（Tauri `.app`，用同一自签名证书签名），`latest.yml` + NSIS 安装包，`latest-linux*.yml` + AppImage。
+- **Windows 过渡（4a）：** NSIS 安装钩子发现 Electron 版（`%LOCALAPPDATA%\Programs\biu`）时，静默卸载旧程序（保留用户数据），装完启动新版本。
+- **架构（4a）：** 补 mac x64、win arm64、linux arm64；`electron/ffmpeg` 移到 `src-tauri/ffmpeg/`；删除 `electron/` 和 Electron 依赖。
+- **签名密钥：** Tauri updater 私钥在 osa-a1 的 `~/.config/biu/tauri-updater.key`（0600），已存为仓库 secret `TAURI_SIGNING_PRIVATE_KEY`（密码为空）。私钥丢失后 Tauri 版无法自动更新。
+- **发布权限：** 执行者不推 tag、不发 release。owner 测完后发布 `.7`，再发 `2.0.0`。
+
 ## 分工
 
 | 步骤 | 执行 | 审查 |
