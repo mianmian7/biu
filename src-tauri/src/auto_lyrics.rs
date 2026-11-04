@@ -184,7 +184,18 @@ pub fn strip_html_tags(input: &str) -> String {
     out
 }
 
+const FFMPEG_DECODE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const MAX_FFMPEG_STDERR_BYTES: usize = 16 * 1024;
+
 pub fn decode_audio_to_s16le(ffmpeg_path: &Path, data: &[u8]) -> Result<Vec<u8>, String> {
+    decode_audio_to_s16le_with_timeout(ffmpeg_path, data, FFMPEG_DECODE_TIMEOUT)
+}
+
+pub fn decode_audio_to_s16le_with_timeout(
+    ffmpeg_path: &Path,
+    data: &[u8],
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
     let mut cmd = Command::new(ffmpeg_path);
     cmd.args([
         "-hide_banner",
@@ -224,19 +235,80 @@ pub fn decode_audio_to_s16le(ffmpeg_path: &Path, data: &[u8]) -> Result<Vec<u8>,
         let _ = stdin.write_all(&input_vec);
     });
 
-    let mut pcm_bytes = Vec::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        stdout
-            .read_to_end(&mut pcm_bytes)
-            .map_err(|e| e.to_string())?;
-    }
-    let mut stderr_str = String::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut stderr_str);
-    }
+    let stdout_opt = child.stdout.take();
+    let stdout_handle = std::thread::spawn(move || -> Result<Vec<u8>, String> {
+        let mut pcm_bytes = Vec::new();
+        if let Some(mut stdout) = stdout_opt {
+            stdout
+                .read_to_end(&mut pcm_bytes)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(pcm_bytes)
+    });
+
+    let stderr_opt = child.stderr.take();
+    let stderr_handle = std::thread::spawn(move || -> String {
+        let Some(mut stderr) = stderr_opt else {
+            return String::new();
+        };
+        let mut tail = VecDeque::<u8>::with_capacity(MAX_FFMPEG_STDERR_BYTES);
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stderr.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            let slice = &buf[..n];
+            if slice.len() >= MAX_FFMPEG_STDERR_BYTES {
+                tail.clear();
+                tail.extend(
+                    slice[slice.len() - MAX_FFMPEG_STDERR_BYTES..]
+                        .iter()
+                        .copied(),
+                );
+            } else {
+                let overflow = (tail.len() + slice.len()).saturating_sub(MAX_FFMPEG_STDERR_BYTES);
+                for _ in 0..overflow {
+                    tail.pop_front();
+                }
+                tail.extend(slice.iter().copied());
+            }
+        }
+        let bytes: Vec<u8> = tail.into_iter().collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    });
+
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = writer_handle.join();
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
+                    return Err("ffmpeg decode timed out".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writer_handle.join();
+                let _ = stdout_handle.join();
+                let _ = stderr_handle.join();
+                return Err(e.to_string());
+            }
+        }
+    };
 
     let _ = writer_handle.join();
-    let status = child.wait().map_err(|e| e.to_string())?;
+    let pcm_bytes = stdout_handle
+        .join()
+        .map_err(|_| "ffmpeg stdout reader panicked".to_string())??;
+    let stderr_str = stderr_handle.join().unwrap_or_default();
+
     if !status.success() {
         let code = status.code().unwrap_or(-1);
         return Err(format!("ffmpeg exited {code}: {stderr_str}"));
@@ -749,4 +821,63 @@ pub fn auto_lyrics_ref_set(
     value: Value,
 ) -> Result<(), String> {
     auto_state.set_reference(id, value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn decode_audio_drains_large_stderr_without_hanging_and_enforces_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("biu-autolyrics-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        // 1. Fake ffmpeg that floods stderr (>256 KB) and writes valid s16le PCM to stdout
+        let flood_script = dir.join("fake-ffmpeg-flood.sh");
+        fs::write(
+            &flood_script,
+            "#!/bin/sh\ncat >/dev/null\ndd if=/dev/zero bs=4096 count=80 2>/dev/null | tr '\\0' 'E' >&2\nprintf 'ABCD'\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&flood_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let pcm = decode_audio_to_s16le(&flood_script, b"dummy-input").unwrap();
+        assert_eq!(pcm, b"ABCD".to_vec());
+
+        // 2. Fake ffmpeg that floods stderr and exits with non-zero code
+        let fail_script = dir.join("fake-ffmpeg-fail.sh");
+        fs::write(
+            &fail_script,
+            "#!/bin/sh\ncat >/dev/null\ndd if=/dev/zero bs=4096 count=80 2>/dev/null | tr '\\0' 'X' >&2\nprintf 'FINAL_ERR_TAIL' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fail_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = decode_audio_to_s16le(&fail_script, b"dummy-input").unwrap_err();
+        assert!(err.contains("FINAL_ERR_TAIL"), "err was: {err}");
+
+        // 3. Fake ffmpeg that hangs and gets killed by timeout
+        let hang_script = dir.join("fake-ffmpeg-hang.sh");
+        fs::write(&hang_script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&hang_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let start = std::time::Instant::now();
+        let timeout_err = decode_audio_to_s16le_with_timeout(
+            &hang_script,
+            b"dummy-input",
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(
+            timeout_err.contains("timed out"),
+            "timeout_err was: {timeout_err}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(5));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
