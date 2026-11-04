@@ -18,6 +18,7 @@ interface BiliRequestPayload {
   params?: Record<string, unknown>;
   body?: string;
   headers?: Record<string, string>;
+  timeoutMs?: number;
 }
 
 interface BiliResponsePayload {
@@ -26,10 +27,7 @@ interface BiliResponsePayload {
   body: string;
 }
 
-function serializeRequestBody(
-  config: InternalAxiosRequestConfig,
-  headers: Record<string, string>,
-): string | undefined {
+function serializeRequestBody(config: InternalAxiosRequestConfig, headers: Record<string, string>): string | undefined {
   const data = config.data;
   if (data === undefined || data === null) {
     return undefined;
@@ -97,12 +95,10 @@ export const biliAdapter: AxiosAdapter = async (config: InternalAxiosRequestConf
   const requestPayload: BiliRequestPayload = {
     method: (config.method || "get").toUpperCase(),
     url: resolvedUrl,
-    params:
-      config.params && typeof config.params === "object"
-        ? (config.params as Record<string, unknown>)
-        : undefined,
+    params: config.params && typeof config.params === "object" ? (config.params as Record<string, unknown>) : undefined,
     body,
     headers: headersObj,
+    timeoutMs: typeof config.timeout === "number" && config.timeout > 0 ? config.timeout : 15000,
   };
 
   const res = await invokeTauri<BiliResponsePayload>("bili_request", {
@@ -141,7 +137,7 @@ export const biliAdapter: AxiosAdapter = async (config: InternalAxiosRequestConf
 };
 
 const axiosConfig: CreateAxiosDefaults = {
-  timeout: 10000,
+  timeout: 15000,
   withCredentials: true,
   adapter: biliAdapter,
 };

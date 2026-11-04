@@ -86,11 +86,7 @@ pub fn parse_http_request(
     Ok((req, allow_origin))
 }
 
-pub async fn serve_http(
-    listener: tokio::net::TcpListener,
-    token: String,
-    state: Arc<BiliState>,
-) {
+pub async fn serve_http(listener: tokio::net::TcpListener, token: String, state: Arc<BiliState>) {
     let expected_host = match listener.local_addr() {
         Ok(a) => a.to_string(),
         Err(_) => return,
@@ -149,9 +145,7 @@ pub async fn serve_http(
                     .await;
                 return;
             }
-            if let Err(e) = http_media(&mut socket, req, &allow_origin, &state).await {
-                log::warn!("[media_proxy] error: {e}");
-            }
+            let _ = http_media(&mut socket, req, &allow_origin, &state).await;
         });
     }
 }
@@ -165,6 +159,44 @@ pub async fn http_media(
     let range = req.headers().get("range").and_then(|x| x.to_str().ok());
     let u = Url::parse(&req.uri().to_string()).map_err(|e| e.to_string())?;
     let q: HashMap<_, _> = u.query_pairs().into_owned().collect();
+
+    if u.host_str() == Some("kuromoji") {
+        let name = q.get("name").map(|s| s.as_str()).unwrap_or("");
+        let app_data_dir = state
+            .cookie_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        match crate::lyrics::read_kuromoji_dict_file(app_data_dir, name) {
+            Ok(bytes) => {
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = socket.write_all(header.as_bytes()).await;
+                if req.method() != "HEAD" {
+                    let _ = socket.write_all(&bytes).await;
+                }
+                let _ = socket.shutdown().await;
+                return Ok(());
+            }
+            Err(status) => {
+                let reason = if status == 403 {
+                    "Forbidden"
+                } else {
+                    "Not Found"
+                };
+                let _ = socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status} {reason}\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+                return Err(format!("kuromoji dict {status}"));
+            }
+        }
+    }
 
     if u.host_str() != Some("remote") {
         let _ = socket
@@ -217,28 +249,77 @@ pub async fn http_media(
                 .as_bytes(),
             )
             .await;
-        return Err(format!(
-            "upstream host denied: {}",
-            parsed.host_str().unwrap_or("")
-        ));
+        let host = parsed.host_str().unwrap_or("");
+        log::warn!(
+            "[media_proxy] {} {}{} denied by allowlist",
+            req.method(),
+            host,
+            parsed.path()
+        );
+        return Err(format!("upstream host denied: {host}"));
     }
 
     let is_head = req.method() == "HEAD";
-    let mut request = if is_head {
-        state.client().head(parsed.clone())
-    } else {
-        state.client().get(parsed.clone())
-    }
-    .header("Referer", BILI_REFERER)
-    .header("Origin", BILI_ORIGIN);
+    let method_str = req.method().as_str().to_string();
+    let range_owned = range.map(|r| r.to_string());
+    let build_upstream_req = || {
+        let mut request = if is_head {
+            state.client().head(parsed.clone())
+        } else {
+            state.client().get(parsed.clone())
+        }
+        .timeout(std::time::Duration::from_secs(15))
+        .header("Referer", BILI_REFERER)
+        .header("Origin", BILI_ORIGIN);
 
-    if let Some(r) = range {
-        request = request.header("Range", r);
-    }
+        if let Some(r) = &range_owned {
+            request = request.header("Range", r);
+        }
+        request
+    };
 
-    let response = match request.send().await {
+    let response = match build_upstream_req().send().await {
         Ok(r) => r,
+        Err(e) if e.is_connect() || e.is_timeout() => {
+            log::warn!(
+                "[media_proxy] {} {}{} retrying once after error: {}",
+                method_str,
+                parsed.host_str().unwrap_or(""),
+                parsed.path(),
+                crate::bili::sanitize_reqwest_error(&e)
+            );
+            match build_upstream_req().send().await {
+                Ok(r) => r,
+                Err(e2) => {
+                    let msg = crate::bili::sanitize_reqwest_error(&e2);
+                    log::warn!(
+                        "[media_proxy] {} {}{} failed: {}",
+                        method_str,
+                        parsed.host_str().unwrap_or(""),
+                        parsed.path(),
+                        msg
+                    );
+                    let _ = socket
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 502 Bad Gateway\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                    return Err(msg);
+                }
+            }
+        }
         Err(e) => {
+            let msg = crate::bili::sanitize_reqwest_error(&e);
+            log::warn!(
+                "[media_proxy] {} {}{} failed: {}",
+                method_str,
+                parsed.host_str().unwrap_or(""),
+                parsed.path(),
+                msg
+            );
             let _ = socket
                 .write_all(
                     format!(
@@ -247,7 +328,7 @@ pub async fn http_media(
                     .as_bytes(),
                 )
                 .await;
-            return Err(e.to_string());
+            return Err(msg);
         }
     };
 

@@ -1,3 +1,5 @@
+import { romanizeLyricLines } from "./romaji";
+
 export const NOT_IMPLEMENTED_MESSAGE = "未实现";
 
 export function notImplementedError(method: string): Error {
@@ -22,10 +24,7 @@ type TauriGlobal = {
     invoke: <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
   };
   event?: {
-    listen: <T = unknown>(
-      event: string,
-      handler: (event: { payload: T }) => void,
-    ) => Promise<VoidFunction>;
+    listen: <T = unknown>(event: string, handler: (event: { payload: T }) => void) => Promise<VoidFunction>;
   };
 };
 
@@ -33,15 +32,45 @@ function getTauri(): TauriGlobal | undefined {
   return (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
 }
 
-export async function invokeTauri<T = unknown>(
-  cmd: string,
-  args?: Record<string, unknown>,
-): Promise<T> {
+export async function invokeTauri<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const tauri = getTauri();
   if (!tauri?.core?.invoke) {
     throw new Error(`[tauri] invoke unavailable for command: ${cmd}`);
   }
   return tauri.core.invoke<T>(cmd, args);
+}
+
+export function listenTauriEvent<T = unknown>(eventName: string, cb: (payload: T) => void): VoidFunction {
+  let disposed = false;
+  let unlisten: VoidFunction | null = null;
+  const tauri = getTauri();
+  if (tauri?.event?.listen) {
+    void tauri.event
+      .listen<T>(eventName, event => {
+        if (!disposed) {
+          try {
+            cb(event.payload);
+          } catch (err) {
+            console.error(`[tauri] event listener error for ${eventName}:`, err);
+          }
+        }
+      })
+      .then(fn => {
+        if (disposed) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch(() => {});
+  }
+  return () => {
+    disposed = true;
+    if (unlisten) {
+      unlisten();
+      unlisten = null;
+    }
+  };
 }
 
 let cachedMediaBase: string | null = null;
@@ -101,10 +130,7 @@ export function unwrapMediaUrl(maybeWrapped?: string): string | undefined {
   }
   try {
     const parsed = new URL(maybeWrapped);
-    if (
-      (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") &&
-      parsed.pathname.endsWith("/remote")
-    ) {
+    if ((parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") && parsed.pathname.endsWith("/remote")) {
       const inner = parsed.searchParams.get("u");
       if (inner) {
         return inner;
@@ -164,43 +190,18 @@ export const UNIMPLEMENTED_ELECTRON_METHODS = [
   "openDirectory",
   "showFileInFolder",
   "getFonts",
-  "searchNeteaseSongs",
-  "getNeteaseLyrics",
-  "searchLrclibLyrics",
-  "romanizeLyrics",
   "autoLyrics.start",
   "autoLyrics.prefetch",
   "autoLyrics.cancel",
   "autoLyrics.onProgress",
   "scanLocalMusic",
   "deleteLocalMusicFile",
-  "navigate",
-  "updatePlaybackState",
-  "onShortcutCommand",
-  "registerShortcut",
-  "unregisterShortcut",
-  "registerAllShortcuts",
-  "unregisterAllShortcuts",
-  "onPlayerCommand",
   "checkAppUpdate",
   "onUpdateAvailable",
   "getUpdateMode",
   "downloadAppUpdate",
   "onDownloadAppProgress",
   "quitAndInstall",
-  "toggleMiniPlayer",
-  "syncDesktopLyrics",
-  "onDesktopLyricsContent",
-  "getDesktopLyricsContent",
-  "onDesktopLyricsToggleRequested",
-  "onDesktopLyricsLockToggleRequested",
-  "sendDesktopLyricsCommand",
-  "onDesktopLyricsCommand",
-  "startDesktopLyricsDrag",
-  "endDesktopLyricsDrag",
-  "setDesktopLyricsIgnoreMouse",
-  "setDesktopLyricsContentHeight",
-  "resetDesktopLyricsPosition",
   "getMediaDownloadTaskList",
   "syncMediaDownloadTaskList",
   "addMediaDownloadTask",
@@ -214,24 +215,18 @@ export const UNIMPLEMENTED_ELECTRON_METHODS = [
 
 export function createTauriElectronAPI(): ElectronAPI {
   const api: ElectronAPI = {
-    getStore: <N extends StoreName>(name: N) =>
-      invokeTauri<StoreDataMap[N] | undefined>("store_get", { name }),
-    setStore: <N extends StoreName>(name: N, value: StoreDataMap[N]) =>
-      invokeTauri<void>("store_set", { name, value }),
-    clearStore: (name: StoreName) =>
-      invokeTauri<boolean>("store_clear", { name }).then(() => undefined),
+    getStore: <N extends StoreName>(name: N) => invokeTauri<StoreDataMap[N] | undefined>("store_get", { name }),
+    setStore: <N extends StoreName>(name: N, value: StoreDataMap[N]) => invokeTauri<void>("store_set", { name, value }),
+    clearStore: (name: StoreName) => invokeTauri<boolean>("store_clear", { name }).then(() => undefined),
 
-    getCookie: (key: string) =>
-      invokeTauri<string | null>("cookie_get", { key }).then(v => v ?? undefined),
+    getCookie: (key: string) => invokeTauri<string | null>("cookie_get", { key }).then(v => v ?? undefined),
     setCookie: (name: string, value: string, expirationDate?: number) =>
       invokeTauri<void>("cookie_set", { payload: { name, value, expirationDate } }),
 
-    setProxySettings: (proxySettings: ProxySettings) =>
-      invokeTauri<void>("proxy_set", { proxySettings }),
+    setProxySettings: (proxySettings: ProxySettings) => invokeTauri<void>("proxy_set", { proxySettings }),
 
     getPlatform: () => detectPlatform(),
-    getAppVersion: () =>
-      invokeTauri<string>("plugin:app|version").catch(() => "1.16.1-autolyrics.6"),
+    getAppVersion: () => invokeTauri<string>("plugin:app|version").catch(() => "1.16.1-autolyrics.6"),
     isDev: () => Promise.resolve(Boolean(import.meta.env?.DEV)),
 
     openExternal: async (url: string) => {
@@ -252,8 +247,7 @@ export function createTauriElectronAPI(): ElectronAPI {
     closeWindow: () => {
       void invokeTauri("window_close");
     },
-    isMaximized: () =>
-      invokeTauri<boolean>("plugin:window|is_maximized", { label: "main" }).catch(() => false),
+    isMaximized: () => invokeTauri<boolean>("plugin:window|is_maximized", { label: "main" }).catch(() => false),
     onWindowMaximizeChange: cb => {
       const handler = () => {
         void api.isMaximized().then(cb);
@@ -261,8 +255,7 @@ export function createTauriElectronAPI(): ElectronAPI {
       window.addEventListener("resize", handler);
       return () => window.removeEventListener("resize", handler);
     },
-    isFullScreen: () =>
-      invokeTauri<boolean>("plugin:window|is_fullscreen", { label: "main" }).catch(() => false),
+    isFullScreen: () => invokeTauri<boolean>("plugin:window|is_fullscreen", { label: "main" }).catch(() => false),
     onWindowFullScreenChange: cb => {
       const handler = () => {
         void api.isFullScreen().then(cb);
@@ -274,16 +267,82 @@ export function createTauriElectronAPI(): ElectronAPI {
       void invokeTauri("devtools_toggle");
     },
 
-    // Step 2+ unimplemented methods: return explicit "未实现" errors without crashing startup
+    // Step 2 methods
+    searchNeteaseSongs: params => invokeTauri<SearchSongByNeteaseResponse>("lyrics_search_netease", { params }),
+    getNeteaseLyrics: params => invokeTauri<GetLyricsByNeteaseResponse>("lyrics_get_netease", { params }),
+    searchLrclibLyrics: params => invokeTauri<SearchSongByLrclibResponse[]>("lyrics_search_lrclib", { params }),
+    romanizeLyrics: lines => romanizeLyricLines(lines),
+
+    navigate: cb => listenTauriEvent<string>("router:navigate", cb),
+    updatePlaybackState: isPlaying => {
+      void invokeTauri("update_playback_state", { isPlaying }).catch(() => {});
+    },
+    onShortcutCommand: cb => listenTauriEvent<ShortcutCommand>("shortcut:triggered", cb),
+    registerShortcut: ({ id, accelerator }) => invokeTauri<boolean>("shortcut_register", { id, accelerator }),
+    unregisterShortcut: id => invokeTauri<void>("shortcut_unregister", { id }),
+    registerAllShortcuts: () => invokeTauri<void>("shortcut_register_all"),
+    unregisterAllShortcuts: () => invokeTauri<void>("shortcut_unregister_all"),
+    onPlayerCommand: cb => {
+      const offPrev = listenTauriEvent("player:prev", () => cb("prev"));
+      const offNext = listenTauriEvent("player:next", () => cb("next"));
+      const offToggle = listenTauriEvent("player:toggle", () => cb("toggle"));
+      return () => {
+        offPrev();
+        offNext();
+        offToggle();
+      };
+    },
+
+    toggleMiniPlayer: () => invokeTauri<void>("toggle_mini_player"),
+    syncDesktopLyrics: payload => {
+      void invokeTauri("desktop_lyrics_sync", { payload }).catch(() => {});
+    },
+    onDesktopLyricsContent: cb => {
+      const offContent = listenTauriEvent<DesktopLyricsPayload>("desktop-lyrics:content", cb);
+      const offInside = listenTauriEvent("desktop-lyrics:cursor-inside", () => {
+        const target = document.querySelector("#root > div");
+        target?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+      });
+      const offLeave = listenTauriEvent("desktop-lyrics:cursor-leave", () => {
+        const target = document.querySelector("#root > div");
+        target?.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+      });
+      return () => {
+        offContent();
+        offInside();
+        offLeave();
+      };
+    },
+    getDesktopLyricsContent: () =>
+      invokeTauri<DesktopLyricsPayload | null>("desktop_lyrics_get_content").then(v => v ?? undefined),
+    onDesktopLyricsToggleRequested: cb => listenTauriEvent("desktop-lyrics:toggle-requested", () => cb()),
+    onDesktopLyricsLockToggleRequested: cb => listenTauriEvent("desktop-lyrics:lock-toggle-requested", () => cb()),
+    sendDesktopLyricsCommand: command => {
+      void invokeTauri("desktop_lyrics_command", { command }).catch(() => {});
+    },
+    onDesktopLyricsCommand: cb => listenTauriEvent<DesktopLyricsCommand>("desktop-lyrics:command", cb),
+    startDesktopLyricsDrag: () => {
+      void invokeTauri("desktop_lyrics_start_drag").catch(() => {});
+    },
+    endDesktopLyricsDrag: () => {
+      void invokeTauri("desktop_lyrics_end_drag").catch(() => {});
+    },
+    setDesktopLyricsIgnoreMouse: ignore => {
+      void invokeTauri("desktop_lyrics_set_ignore_mouse", { ignore }).catch(() => {});
+    },
+    setDesktopLyricsContentHeight: height => {
+      void invokeTauri("desktop_lyrics_set_content_height", { height }).catch(() => {});
+    },
+    resetDesktopLyricsPosition: () => {
+      void invokeTauri("desktop_lyrics_reset_position").catch(() => {});
+    },
+
+    // Step 3+ unimplemented methods: return explicit "未实现" errors without crashing startup
     selectDirectory: () => rejectNotImplemented("selectDirectory"),
     selectFile: () => rejectNotImplemented("selectFile"),
     openDirectory: () => rejectNotImplemented("openDirectory"),
     showFileInFolder: () => rejectNotImplemented("showFileInFolder"),
     getFonts: () => rejectNotImplemented("getFonts"),
-    searchNeteaseSongs: () => rejectNotImplemented("searchNeteaseSongs"),
-    getNeteaseLyrics: () => rejectNotImplemented("getNeteaseLyrics"),
-    searchLrclibLyrics: () => rejectNotImplemented("searchLrclibLyrics"),
-    romanizeLyrics: () => rejectNotImplemented("romanizeLyrics"),
     autoLyrics: {
       start: () => rejectNotImplemented("autoLyrics.start"),
       prefetch: () => rejectNotImplemented("autoLyrics.prefetch"),
@@ -292,34 +351,12 @@ export function createTauriElectronAPI(): ElectronAPI {
     },
     scanLocalMusic: () => rejectNotImplemented("scanLocalMusic"),
     deleteLocalMusicFile: () => rejectNotImplemented("deleteLocalMusicFile"),
-    navigate: () => noopUnsubscribe("navigate"),
-    updatePlaybackState: () => warnNotImplemented("updatePlaybackState"),
-    onShortcutCommand: () => noopUnsubscribe("onShortcutCommand"),
-    registerShortcut: () => rejectNotImplemented("registerShortcut"),
-    unregisterShortcut: () => rejectNotImplemented("unregisterShortcut"),
-    registerAllShortcuts: () => rejectNotImplemented("registerAllShortcuts"),
-    unregisterAllShortcuts: () => rejectNotImplemented("unregisterAllShortcuts"),
-    onPlayerCommand: () => noopUnsubscribe("onPlayerCommand"),
     checkAppUpdate: () => rejectNotImplemented("checkAppUpdate"),
     onUpdateAvailable: () => noopUnsubscribe("onUpdateAvailable"),
     getUpdateMode: () => rejectNotImplemented("getUpdateMode"),
     downloadAppUpdate: () => rejectNotImplemented("downloadAppUpdate"),
     onDownloadAppProgress: () => noopUnsubscribe("onDownloadAppProgress"),
     quitAndInstall: () => rejectNotImplemented("quitAndInstall"),
-    toggleMiniPlayer: () => rejectNotImplemented("toggleMiniPlayer"),
-    syncDesktopLyrics: () => warnNotImplemented("syncDesktopLyrics"),
-    onDesktopLyricsContent: () => noopUnsubscribe("onDesktopLyricsContent"),
-    getDesktopLyricsContent: () => rejectNotImplemented("getDesktopLyricsContent"),
-    onDesktopLyricsToggleRequested: () => noopUnsubscribe("onDesktopLyricsToggleRequested"),
-    onDesktopLyricsLockToggleRequested: () =>
-      noopUnsubscribe("onDesktopLyricsLockToggleRequested"),
-    sendDesktopLyricsCommand: () => warnNotImplemented("sendDesktopLyricsCommand"),
-    onDesktopLyricsCommand: () => noopUnsubscribe("onDesktopLyricsCommand"),
-    startDesktopLyricsDrag: () => warnNotImplemented("startDesktopLyricsDrag"),
-    endDesktopLyricsDrag: () => warnNotImplemented("endDesktopLyricsDrag"),
-    setDesktopLyricsIgnoreMouse: () => warnNotImplemented("setDesktopLyricsIgnoreMouse"),
-    setDesktopLyricsContentHeight: () => warnNotImplemented("setDesktopLyricsContentHeight"),
-    resetDesktopLyricsPosition: () => warnNotImplemented("resetDesktopLyricsPosition"),
     getMediaDownloadTaskList: () => rejectNotImplemented("getMediaDownloadTaskList"),
     syncMediaDownloadTaskList: () => noopUnsubscribe("syncMediaDownloadTaskList"),
     addMediaDownloadTask: () => rejectNotImplemented("addMediaDownloadTask"),

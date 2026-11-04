@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "windows": ["main"],
+  "windows": ["main", "desktop-lyrics", "mini-player"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",

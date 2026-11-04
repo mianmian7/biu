@@ -117,7 +117,9 @@ pub fn mark_manual_edits(previous: &Value, incoming: &Value) -> Value {
             out.insert(key.clone(), entry.clone());
             continue;
         };
-        let old_obj = prev_obj.and_then(|p| p.get(key)).and_then(|v| v.as_object());
+        let old_obj = prev_obj
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.as_object());
         let old_offset = old_obj
             .and_then(|o| o.get("offset"))
             .and_then(|v| v.as_f64())

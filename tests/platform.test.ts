@@ -1,4 +1,3 @@
-import { StoreNameMap } from "@shared/store";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
@@ -9,6 +8,7 @@ import {
   unwrapMediaUrl,
 } from "@/platform";
 import { biliAdapter } from "@/service/request";
+import { StoreNameMap } from "@shared/store";
 
 describe("platform ElectronAPI compatibility and media URL wrapping", () => {
   beforeEach(() => {
@@ -21,9 +21,7 @@ describe("platform ElectronAPI compatibility and media URL wrapping", () => {
     const api = createTauriElectronAPI() as Record<string, any>;
 
     for (const key of UNIMPLEMENTED_ELECTRON_METHODS) {
-      const target = key.includes(".")
-        ? key.split(".").reduce((acc, part) => acc?.[part], api)
-        : api[key];
+      const target = key.includes(".") ? key.split(".").reduce((acc, part) => acc?.[part], api) : api[key];
       expect(typeof target).toBe("function");
 
       const result = target();
@@ -40,7 +38,7 @@ describe("platform ElectronAPI compatibility and media URL wrapping", () => {
   });
 
   test("Step 1 methods invoke corresponding Tauri commands", async () => {
-    const invokeMock = vi.fn(async (cmd: string, _args?: Record<string, unknown>) => {
+    const invokeMock = vi.fn(async (cmd: string) => {
       if (cmd === "store_get") return { appSettings: { audioQuality: "auto" } };
       if (cmd === "store_clear") return true;
       if (cmd === "cookie_get") return "cookie-val";
@@ -110,7 +108,63 @@ describe("platform ElectronAPI compatibility and media URL wrapping", () => {
         method: "GET",
         url: "https://api.bilibili.com/x/web-interface/nav",
         params: { foo: "bar" },
+        timeoutMs: 15000,
       }),
+    });
+  });
+
+  test("Step 2 methods invoke lyrics, desktop lyrics, mini player, shortcut, and media key commands", async () => {
+    const invokeMock = vi.fn(async (cmd: string) => {
+      if (cmd === "lyrics_search_netease") return { result: { songs: [], songCount: 0 } };
+      if (cmd === "lyrics_get_netease") return { lrc: { lyric: "[00:00.00]hi" } };
+      if (cmd === "lyrics_search_lrclib") return [{ id: 1, plainLyrics: "hi" }];
+      if (cmd === " shortcut_register" || cmd === "shortcut_register") return true;
+      return undefined;
+    });
+    (window as any).__TAURI__ = {
+      core: { invoke: invokeMock },
+      event: {
+        listen: vi.fn(async () => () => {}),
+        emit: vi.fn(async () => {}),
+      },
+    };
+
+    const api = createTauriElectronAPI();
+
+    expect(await api.searchNeteaseSongs({ s: "test", offset: 0, limit: 5, type: 1 })).toEqual({
+      result: { songs: [], songCount: 0 },
+    });
+    expect(invokeMock).toHaveBeenCalledWith("lyrics_search_netease", {
+      params: { s: "test", offset: 0, limit: 5, type: 1 },
+    });
+
+    expect(await api.getNeteaseLyrics({ id: 42 })).toEqual({
+      lrc: { lyric: "[00:00.00]hi" },
+    });
+    expect(invokeMock).toHaveBeenCalledWith("lyrics_get_netease", {
+      params: { id: 42 },
+    });
+
+    expect(await api.searchLrclibLyrics({ q: "query" })).toEqual([{ id: 1, plainLyrics: "hi" }]);
+    expect(invokeMock).toHaveBeenCalledWith("lyrics_search_lrclib", {
+      params: { q: "query" },
+    });
+
+    api.sendDesktopLyricsCommand("togglePlay");
+    expect(invokeMock).toHaveBeenCalledWith("desktop_lyrics_command", { command: "togglePlay" });
+
+    await api.toggleMiniPlayer();
+    expect(invokeMock).toHaveBeenCalledWith("toggle_mini_player", undefined);
+
+    expect(await api.registerShortcut({ id: "togglePlay", accelerator: "CommandOrControl+Shift+P" })).toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith("shortcut_register", {
+      id: "togglePlay",
+      accelerator: "CommandOrControl+Shift+P",
+    });
+
+    api.updatePlaybackState(true);
+    expect(invokeMock).toHaveBeenCalledWith("update_playback_state", {
+      isPlaying: true,
     });
   });
 });

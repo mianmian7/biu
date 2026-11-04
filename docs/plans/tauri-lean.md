@@ -41,8 +41,10 @@ owner = Claude（osa-a1）
 
 ### 第 2 步：日常功能
 
-- [ ] 歌词、罗马音、桌面歌词、迷你播放器。
-- [ ] 托盘、全局快捷键、媒体键。
+- [x] 歌词、罗马音、桌面歌词、迷你播放器。
+  已实现 `src-tauri/src/lyrics.rs`（网易云与 LRCLIB host 白名单转发、Kuromoji 词典按需从 npmmirror/jsdelivr 下载至应用数据目录并做 12 文件 SHA-256 校验，webview 经 `DecompressionStream` 解压分词生成罗马音，安装包零词典体积）与 `src-tauri/src/desktop_lyrics.rs`（异步创建透明置顶无边框 `desktop-lyrics` / `mini-player` 窗口，`set_ignore_cursor_events` 点击穿透与解锁悬停恢复、光标拖动与 `desktop-lyrics.json` 位置持久化），并补齐 `bili_request` 与媒体代理 `connect_timeout` 10s、axios `timeoutMs`、GET 1 次重试及脱敏 `warn` 日志。
+- [x] 托盘、全局快捷键、媒体键。
+  已实现 `src-tauri/src/tray.rs`（托盘菜单、状态同步、左键唤起主窗、关闭主窗按设置隐藏到托盘）、`src-tauri/src/shortcut.rs`（`tauri-plugin-global-shortcut` 异步注册/注销与冲突检测）与 `src-tauri/src/media_keys.rs`（`souvlaki` 三平台媒体键与系统 Now Playing 状态同步）。
 - 用户验收：桌面歌词透明、置顶、点击穿透，媒体键可用。
 
 ### 第 3 步：下载与本地

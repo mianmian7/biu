@@ -1,14 +1,32 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bili;
+mod desktop_lyrics;
+mod lyrics;
 mod media;
+mod media_keys;
+mod shortcut;
 mod store;
+mod tray;
 
 use bili::{
     bili_request, cookie_get, cookie_set, inject_auth_cookies, parse_proxy_settings_value,
     proxy_set, BiliState,
 };
+use desktop_lyrics::{
+    desktop_lyrics_command, desktop_lyrics_end_drag, desktop_lyrics_get_content,
+    desktop_lyrics_reset_position, desktop_lyrics_set_content_height,
+    desktop_lyrics_set_ignore_mouse, desktop_lyrics_start_drag, desktop_lyrics_sync,
+    toggle_mini_player, DesktopLyricsState,
+};
+use lyrics::{
+    kuromoji_ensure_dict, lyrics_get_netease, lyrics_search_lrclib, lyrics_search_netease,
+};
 use media::{media_base, serve_http, MediaBase};
+use media_keys::update_playback_state;
+use shortcut::{
+    shortcut_register, shortcut_register_all, shortcut_unregister, shortcut_unregister_all,
+};
 use std::sync::Arc;
 use store::{get_saved_proxy_settings, store_clear, store_get, store_set};
 use tauri::{AppHandle, Manager, Runtime};
@@ -22,26 +40,38 @@ async fn ensure_main_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
         let _ = w.set_focus();
         return Ok(());
     }
-    let builder = tauri::WebviewWindowBuilder::new(
-        &app,
-        "main",
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Biu")
-    .inner_size(1200.0, 800.0)
-    .min_inner_size(1200.0, 800.0)
-    .resizable(true)
-    .center()
-    .decorations(false);
+    let builder =
+        tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .title("Biu")
+            .inner_size(1200.0, 800.0)
+            .min_inner_size(1200.0, 800.0)
+            .resizable(true)
+            .center()
+            .decorations(false);
     builder.build().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn window_close<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    // Hiding needs a tray to bring the window back; the tray arrives in step 2.
-    app.exit(0);
+    let _ = tray::handle_main_window_close_request(&app);
     Ok(())
+}
+
+#[tauri::command]
+fn frontend_log(level: String, message: String) {
+    match level.to_ascii_lowercase().as_str() {
+        "error" => log::error!("[frontend] {message}"),
+        "warn" | "warning" => log::warn!("[frontend] {message}"),
+        _ => log::info!("[frontend] {message}"),
+    }
+}
+
+#[tauri::command]
+fn is_silent_mode() -> bool {
+    std::env::var("BIU_SILENT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -61,6 +91,7 @@ fn devtools_toggle<R: Runtime>(app: AppHandle<R>) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            desktop_lyrics::destroy_mini_player(app);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
                 let _ = w.show();
@@ -76,6 +107,16 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if tray::handle_main_window_close_request(window.app_handle()) {
+                        api.prevent_close();
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             store_get,
             store_set,
@@ -87,7 +128,27 @@ fn main() {
             media_base,
             ensure_main_window,
             window_close,
+            frontend_log,
+            is_silent_mode,
             devtools_toggle,
+            lyrics_search_netease,
+            lyrics_get_netease,
+            lyrics_search_lrclib,
+            kuromoji_ensure_dict,
+            desktop_lyrics_sync,
+            desktop_lyrics_get_content,
+            desktop_lyrics_command,
+            desktop_lyrics_start_drag,
+            desktop_lyrics_end_drag,
+            desktop_lyrics_set_ignore_mouse,
+            desktop_lyrics_set_content_height,
+            desktop_lyrics_reset_position,
+            toggle_mini_player,
+            shortcut_register,
+            shortcut_unregister,
+            shortcut_register_all,
+            shortcut_unregister_all,
+            update_playback_state,
         ])
         .setup(|app| {
             let app_data_dir = app
@@ -98,10 +159,15 @@ fn main() {
             let cookie_path = app_data_dir.join("cookies.json");
             let saved_proxy = parse_proxy_settings_value(get_saved_proxy_settings(app.handle()));
             let bili_state = Arc::new(
-                BiliState::new(cookie_path, saved_proxy)
-                    .expect("failed to initialize BiliState"),
+                BiliState::new(cookie_path, saved_proxy).expect("failed to initialize BiliState"),
             );
             app.manage(bili_state.clone());
+            app.manage(Arc::new(DesktopLyricsState::default()));
+
+            if let Err(e) = tray::setup_tray(app.handle()) {
+                log::warn!("[tray] failed to initialize system tray: {e}");
+            }
+            media_keys::setup_media_keys(app.handle());
 
             let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
             listener.set_nonblocking(true)?;
@@ -118,6 +184,11 @@ fn main() {
             let auth_state = bili_state.clone();
             tauri::async_runtime::spawn(async move {
                 inject_auth_cookies(auth_state).await;
+            });
+
+            let shortcut_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                shortcut::register_all_shortcuts_internal(&shortcut_app);
             });
 
             Ok(())
@@ -200,12 +271,8 @@ mod tests {
             &Url::parse("https://user:pass@api.bilibili.com/x").unwrap()
         ));
 
-        assert!(is_bili_audio_cdn_host(
-            "upos-sz-mirrorcos.bilivideo.com"
-        ));
-        assert!(is_bili_audio_cdn_host(
-            "xy123x45x67x89xy.mcdn.bilivideo.cn"
-        ));
+        assert!(is_bili_audio_cdn_host("upos-sz-mirrorcos.bilivideo.com"));
+        assert!(is_bili_audio_cdn_host("xy123x45x67x89xy.mcdn.bilivideo.cn"));
         assert!(is_bili_audio_cdn_host("upos-hz-mirrorakam.akamaized.net"));
         assert!(!is_bili_audio_cdn_host("other.akamaized.net"));
         assert!(!is_bili_audio_cdn_host("attacker.invalid"));
@@ -250,9 +317,8 @@ mod tests {
         assert!(state2.is_media_url_allowed(
             &Url::parse("https://cn-gdgz-fx-01-01.bilivideo.com/upgcxcode/audio.m4s").unwrap()
         ));
-        assert!(!state2.is_media_url_allowed(
-            &Url::parse("https://evil.example.com/audio.m4s").unwrap()
-        ));
+        assert!(!state2
+            .is_media_url_allowed(&Url::parse("https://evil.example.com/audio.m4s").unwrap()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -288,7 +354,10 @@ mod tests {
             .unwrap_err(),
             403
         );
-        assert_eq!(parse_http_request(&good, "wrongtok", host).unwrap_err(), 403);
+        assert_eq!(
+            parse_http_request(&good, "wrongtok", host).unwrap_err(),
+            403
+        );
     }
 
     #[tokio::test]
@@ -304,8 +373,12 @@ mod tests {
                 let mut req_buf = vec![0u8; 2048];
                 let n = sock.read(&mut req_buf).await.unwrap_or(0);
                 let req_str = String::from_utf8_lossy(&req_buf[..n]);
-                assert!(req_str.to_ascii_lowercase().contains("referer: https://www.bilibili.com/"));
-                assert!(req_str.to_ascii_lowercase().contains("range: bytes=100-199"));
+                assert!(req_str
+                    .to_ascii_lowercase()
+                    .contains("referer: https://www.bilibili.com/"));
+                assert!(req_str
+                    .to_ascii_lowercase()
+                    .contains("range: bytes=100-199"));
                 let slice = &payload_clone[100..200];
                 let header = format!(
                     "HTTP/1.1 206 Partial Content\r\nContent-Type: audio/mp4\r\nContent-Length: {}\r\nContent-Range: bytes 100-199/{}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
@@ -348,7 +421,8 @@ mod tests {
         {
             let mut client_sock = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
             let target_url = format!("http://{upstream_addr}/audio.m4s");
-            let encoded: String = url::form_urlencoded::byte_serialize(target_url.as_bytes()).collect();
+            let encoded: String =
+                url::form_urlencoded::byte_serialize(target_url.as_bytes()).collect();
             let range_req = format!(
                 "GET /secret-token/remote?u={encoded} HTTP/1.1\r\nHost: {proxy_addr}\r\nOrigin: {}\r\nRange: bytes=100-199\r\n\r\n",
                 app_origin()
@@ -359,7 +433,9 @@ mod tests {
             let split = resp.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
             let head = String::from_utf8_lossy(&resp[..split]);
             assert!(head.starts_with("HTTP/1.1 206"));
-            assert!(head.to_ascii_lowercase().contains("content-range: bytes 100-199/4096"));
+            assert!(head
+                .to_ascii_lowercase()
+                .contains("content-range: bytes 100-199/4096"));
             assert_eq!(&resp[split + 4..], &payload[100..200]);
         }
 
@@ -376,9 +452,165 @@ mod tests {
                 params: None,
                 body: None,
                 headers: None,
+                timeout_ms: None,
             },
         )
         .await;
         assert!(err.is_err());
     }
+
+    #[test]
+    fn lyrics_allowlist_and_kuromoji_sha256_verification() {
+        use crate::lyrics::{
+            is_lyrics_url_allowed, is_valid_kuromoji_dict_filename, verify_dict_file,
+            KUROMOJI_DICT_FILES,
+        };
+
+        assert!(is_lyrics_url_allowed(
+            &Url::parse("https://interface.music.163.com/api/search/get").unwrap()
+        ));
+        assert!(is_lyrics_url_allowed(
+            &Url::parse("https://lrclib.net/api/search").unwrap()
+        ));
+        assert!(!is_lyrics_url_allowed(
+            &Url::parse("https://evil.music.163.com/api").unwrap()
+        ));
+        assert!(!is_lyrics_url_allowed(
+            &Url::parse("https://user:pass@lrclib.net/api/search").unwrap()
+        ));
+
+        assert!(is_valid_kuromoji_dict_filename("base.dat.gz"));
+        assert!(!is_valid_kuromoji_dict_filename("../base.dat.gz"));
+        assert!(!is_valid_kuromoji_dict_filename("unknown.dat.gz"));
+
+        let repo_dict_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../node_modules/kuromoji/dict");
+        if repo_dict_dir.exists() {
+            assert_eq!(KUROMOJI_DICT_FILES.len(), 12);
+            for (filename, expected_sha256) in KUROMOJI_DICT_FILES {
+                let p = repo_dict_dir.join(filename);
+                assert!(
+                    verify_dict_file(&p, expected_sha256),
+                    "sha256 mismatch for {filename}"
+                );
+                assert!(!verify_dict_file(
+                    &p,
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn kuromoji_dict_download_fallback_and_loopback_route() {
+        use crate::lyrics::{
+            ensure_kuromoji_dict_in_dir, verify_dict_file, KUROMOJI_DICT_FILES,
+        };
+
+        let repo_dict_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../node_modules/kuromoji/dict");
+        if !repo_dict_dir.exists() {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("biu-test-kuromoji-{}", uuid::Uuid::new_v4()));
+        let dict_dir = dir.join("kuromoji-dict");
+        std::fs::create_dir_all(&dict_dir).unwrap();
+
+        // Pre-copy 11 files so only the 12th file needs to be downloaded
+        for (filename, _) in &KUROMOJI_DICT_FILES[..11] {
+            std::fs::copy(repo_dict_dir.join(filename), dict_dir.join(filename)).unwrap();
+        }
+        let (target_file, target_expected_sha) = KUROMOJI_DICT_FILES[11];
+        let target_bytes = std::fs::read(repo_dict_dir.join(target_file)).unwrap();
+
+        // Primary mirror returns corrupted bytes (wrong sha256)
+        let bad_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bad_addr = bad_listener.local_addr().unwrap();
+        let bad_task = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = bad_listener.accept().await {
+                let mut buf = vec![0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let body = b"corrupted-gz-data";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        // Backup mirror returns valid target_file bytes
+        let good_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let good_addr = good_listener.local_addr().unwrap();
+        let target_bytes_clone = target_bytes.clone();
+        let good_task = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = good_listener.accept().await {
+                let mut buf = vec![0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    target_bytes_clone.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.write_all(&target_bytes_clone).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+
+        let bad_base = format!("http://{bad_addr}");
+        let good_base = format!("http://{good_addr}");
+        ensure_kuromoji_dict_in_dir(&dict_dir, &[bad_base.as_str(), good_base.as_str()])
+            .await
+            .unwrap();
+        assert!(verify_dict_file(
+            &dict_dir.join(target_file),
+            target_expected_sha
+        ));
+
+        // Verify loopback proxy serves /<token>/kuromoji?name=<target_file> and rejects traversal
+        let state = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        let proxy_server = tokio::spawn(serve_http(
+            proxy_listener,
+            "tok-kuro".into(),
+            state.clone(),
+        ));
+
+        {
+            let mut client_sock = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+            let req = format!(
+                "GET /tok-kuro/kuromoji?name={target_file} HTTP/1.1\r\nHost: {proxy_addr}\r\nOrigin: {}\r\n\r\n",
+                app_origin()
+            );
+            client_sock.write_all(req.as_bytes()).await.unwrap();
+            let mut resp = vec![];
+            client_sock.read_to_end(&mut resp).await.unwrap();
+            let split = resp.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+            let head = String::from_utf8_lossy(&resp[..split]);
+            assert!(head.starts_with("HTTP/1.1 200"));
+            assert_eq!(&resp[split + 4..], &target_bytes[..]);
+        }
+
+        {
+            let mut client_sock = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+            let req = format!(
+                "GET /tok-kuro/kuromoji?name=..%2Fcookies.json HTTP/1.1\r\nHost: {proxy_addr}\r\nOrigin: {}\r\n\r\n",
+                app_origin()
+            );
+            client_sock.write_all(req.as_bytes()).await.unwrap();
+            let mut resp = vec![];
+            client_sock.read_to_end(&mut resp).await.unwrap();
+            assert!(String::from_utf8_lossy(&resp).starts_with("HTTP/1.1 403"));
+        }
+
+        let _ = bad_task.await;
+        let _ = good_task.await;
+        proxy_server.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
+

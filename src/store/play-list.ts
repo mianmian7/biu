@@ -13,7 +13,7 @@ import { beginPlayReport, endPlayReport, reportHeartbeat } from "@/common/utils/
 import { markPlaybackAnchor, resetPlaybackAnchor, usePlaybackAnchor } from "@/common/utils/playback-anchor";
 import { stripHtml } from "@/common/utils/str";
 import { formatUrlProtocol } from "@/common/utils/url";
-import { toMediaUrl } from "@/platform";
+import { invokeTauri, toMediaUrl } from "@/platform";
 import { getAudioSongInfo } from "@/service/audio-song-info";
 import { getWebInterfaceView } from "@/service/web-interface-view";
 
@@ -182,8 +182,27 @@ const toastError = (title: string) => {
 
 const sanitizeTitle = (title: string) => stripHtml(title);
 
+let forceSilentMode = false;
+
+const syncSilentMode = () => {
+  void invokeTauri<boolean>("is_silent_mode")
+    .then(silent => {
+      if (silent) {
+        forceSilentMode = true;
+        if (audio) {
+          audio.muted = true;
+        }
+      }
+    })
+    .catch(() => {});
+};
+
 const handlePlayError = (error: any) => {
-  const errorMsg = error?.message || error?.name || "";
+  const errorMsg = error?.message || error?.name || String(error || "");
+  void invokeTauri("frontend_log", {
+    level: "warn",
+    message: `[handlePlayError] ${errorMsg}`,
+  }).catch(() => {});
   if (!errorMsg.includes("interrupted") && !errorMsg.includes("NotAllowed")) {
     toastError(error instanceof Error ? error.message : "获取播放链接失败");
   }
@@ -204,10 +223,16 @@ const createAudio = (): HTMLAudioElement => {
   audio.preload = "metadata";
   audio.controls = false;
   audio.crossOrigin = "anonymous";
+  audio.onvolumechange = () => {
+    if (forceSilentMode && !audio.muted) {
+      audio.muted = true;
+    }
+  };
   return audio;
 };
 
 export const audio = createAudio();
+syncSilentMode();
 
 const updatePlaybackState = () => {
   if ("mediaSession" in navigator) {
@@ -220,6 +245,9 @@ const updatePlaybackState = () => {
 };
 
 const playAudioSafely = async () => {
+  if (forceSilentMode) {
+    audio.muted = true;
+  }
   try {
     await audio.play();
   } catch (error) {
@@ -376,9 +404,10 @@ export const usePlayList = create<State & Action>()(
         shouldKeepPagesOrderInRandomPlayMode: true,
         list: [],
         init: async () => {
+          syncSilentMode();
           if (audio) {
             audio.volume = get().volume;
-            audio.muted = get().isMuted;
+            audio.muted = forceSilentMode ? true : get().isMuted;
             audio.playbackRate = get().rate;
             audio.loop = get().playMode === PlayMode.Single;
 
@@ -500,7 +529,7 @@ export const usePlayList = create<State & Action>()(
         },
         toggleMute: () => {
           if (audio) {
-            audio.muted = !audio.muted;
+            audio.muted = forceSilentMode ? true : !audio.muted;
           }
           set(s => ({ isMuted: !s.isMuted }));
         },

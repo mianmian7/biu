@@ -33,6 +33,8 @@ pub struct BiliRequestInput {
     pub params: Option<Value>,
     pub body: Option<String>,
     pub headers: Option<HashMap<String, String>>,
+    #[serde(default, alias = "timeoutMs")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -303,6 +305,7 @@ pub fn build_reqwest_client(
     let mut builder = reqwest::Client::builder()
         .cookie_provider(cookies)
         .user_agent(USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(10))
         .default_headers(default_headers);
 
     if let Some(p) = proxy {
@@ -437,6 +440,25 @@ pub fn append_query_params(url: &mut Url, params: &Value) {
     }
 }
 
+pub fn sanitize_reqwest_error(e: &reqwest::Error) -> String {
+    let mut flags = Vec::new();
+    if e.is_timeout() {
+        flags.push("timeout");
+    }
+    if e.is_connect() {
+        flags.push("connect");
+    }
+    let mut clean = e.to_string();
+    if let Some(idx) = clean.find(" for url (") {
+        clean.truncate(idx);
+    }
+    if flags.is_empty() {
+        clean
+    } else {
+        format!("{} ({})", clean, flags.join(","))
+    }
+}
+
 pub async fn execute_bili_request(
     state: &BiliState,
     input: BiliRequestInput,
@@ -459,32 +481,76 @@ pub async fn execute_bili_request(
         .unwrap_or("GET")
         .trim()
         .to_ascii_uppercase();
-    let method =
-        reqwest::Method::from_bytes(method_str.as_bytes()).map_err(|e| e.to_string())?;
+    let method = reqwest::Method::from_bytes(method_str.as_bytes()).map_err(|e| e.to_string())?;
+    let timeout_ms = input.timeout_ms.unwrap_or(15_000).max(1);
+    let req_timeout = std::time::Duration::from_millis(timeout_ms);
 
-    let mut req = state.client().request(method, url.clone());
+    let build_request = || {
+        let mut req = state
+            .client()
+            .request(method.clone(), url.clone())
+            .timeout(req_timeout);
 
-    if let Some(headers) = input.headers {
-        for (k, v) in headers {
-            let lower = k.to_ascii_lowercase();
-            // Prevent overriding security-critical headers unless safe
-            if matches!(lower.as_str(), "host" | "cookie" | "content-length") {
-                continue;
-            }
-            if let (Ok(name), Ok(val)) = (
-                HeaderName::from_bytes(k.as_bytes()),
-                HeaderValue::from_str(&v),
-            ) {
-                req = req.header(name, val);
+        if let Some(headers) = &input.headers {
+            for (k, v) in headers {
+                let lower = k.to_ascii_lowercase();
+                // Prevent overriding security-critical headers unless safe
+                if matches!(lower.as_str(), "host" | "cookie" | "content-length") {
+                    continue;
+                }
+                if let (Ok(name), Ok(val)) = (
+                    HeaderName::from_bytes(k.as_bytes()),
+                    HeaderValue::from_str(v),
+                ) {
+                    req = req.header(name, val);
+                }
             }
         }
-    }
 
-    if let Some(body) = input.body {
-        req = req.body(body);
-    }
+        if let Some(body) = &input.body {
+            req = req.body(body.clone());
+        }
+        req
+    };
 
-    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let first_attempt = build_request().send().await;
+    let resp = match first_attempt {
+        Ok(r) => r,
+        Err(e) if method == reqwest::Method::GET && (e.is_connect() || e.is_timeout()) => {
+            log::warn!(
+                "[bili_request] {} {}{} retrying once after error: {}",
+                method_str,
+                url.host_str().unwrap_or(""),
+                url.path(),
+                sanitize_reqwest_error(&e)
+            );
+            match build_request().send().await {
+                Ok(r) => r,
+                Err(e2) => {
+                    let msg = sanitize_reqwest_error(&e2);
+                    log::warn!(
+                        "[bili_request] {} {}{} failed: {}",
+                        method_str,
+                        url.host_str().unwrap_or(""),
+                        url.path(),
+                        msg
+                    );
+                    return Err(msg);
+                }
+            }
+        }
+        Err(e) => {
+            let msg = sanitize_reqwest_error(&e);
+            log::warn!(
+                "[bili_request] {} {}{} failed: {}",
+                method_str,
+                url.host_str().unwrap_or(""),
+                url.path(),
+                msg
+            );
+            return Err(msg);
+        }
+    };
     let status = resp.status().as_u16();
     let mut out_headers = HashMap::new();
     let has_set_cookie = resp.headers().contains_key(reqwest::header::SET_COOKIE);
@@ -499,7 +565,20 @@ pub async fn execute_bili_request(
         }
     }
 
-    let body = resp.text().await.map_err(|e| e.to_string())?;
+    let body = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => {
+            let msg = sanitize_reqwest_error(&e);
+            log::warn!(
+                "[bili_request] {} {}{} read body failed: {}",
+                method_str,
+                url.host_str().unwrap_or(""),
+                url.path(),
+                msg
+            );
+            return Err(msg);
+        }
+    };
 
     // Persist cookies whenever Set-Cookie was received or on login/refresh endpoints
     if has_set_cookie || url.path().contains("login") || url.path().contains("cookie") {
