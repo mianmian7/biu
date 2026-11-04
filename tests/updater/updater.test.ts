@@ -1,8 +1,21 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ mode: "auto", warn: vi.fn(), updater: undefined as unknown }));
-vi.mock("electron", () => ({ app: { runningUnderARM64Translation: false } }));
+const mocks = vi.hoisted(() => ({
+  mode: "auto",
+  warn: vi.fn(),
+  updater: undefined as unknown,
+  exportResult: "/tmp/tauri-migration.json" as string | null,
+  app: { runningUnderARM64Translation: false } as { runningUnderARM64Translation: boolean; quitting?: boolean },
+}));
+vi.mock("electron", async () => {
+  const { EventEmitter } = await import("node:events");
+  return { app: mocks.app, autoUpdater: new EventEmitter() };
+});
+vi.mock("../../electron/migration", () => ({
+  exportTauriMigration: async () => mocks.exportResult,
+  exportTauriMigrationWithin: async () => mocks.exportResult,
+}));
 vi.mock("electron-is-dev", () => ({ default: false }));
 vi.mock("electron-log", () => ({ default: { warn: mocks.warn, transports: { file: {} } } }));
 vi.mock("electron-updater", () => ({
@@ -38,10 +51,34 @@ beforeEach(() => {
   updater = makeUpdater();
   mocks.updater = updater;
   mocks.mode = "auto";
+  mocks.exportResult = "/tmp/tauri-migration.json";
+  delete mocks.app.quitting;
 });
 afterEach(() => vi.useRealTimers());
 
 describe("updater lifecycle", () => {
+  it("installs only after a successful export", async () => {
+    const { setupAutoUpdater, quitAndInstall, installOnQuit, isInstallingUpdate, stopCheckForUpdates } =
+      await import("../../electron/updater");
+    await setupAutoUpdater({ getMainWindow: () => null });
+
+    expect(await installOnQuit()).toBe(false); // nothing downloaded yet
+    updater.emit("update-downloaded", { downloadedFile: "/tmp/Biu.zip" });
+
+    mocks.exportResult = null;
+    expect(await quitAndInstall()).toBe(false);
+    expect(await installOnQuit()).toBe(false);
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(isInstallingUpdate()).toBe(false);
+    expect(mocks.app.quitting).toBeUndefined();
+
+    mocks.exportResult = "/tmp/tauri-migration.json";
+    expect(await installOnQuit()).toBe(true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, false);
+    expect(mocks.app.quitting).toBe(true);
+    stopCheckForUpdates();
+  });
+
   it("reads the Tauri feed (tauri*.yml) without allowing downgrade or prereleases", async () => {
     const { setupAutoUpdater, stopCheckForUpdates, tauriUpdateChannel } = await import("../../electron/updater");
     await setupAutoUpdater({ getMainWindow: () => null });
@@ -92,12 +129,16 @@ describe("updater lifecycle", () => {
     const { setupAutoUpdater, quitAndInstall, stopCheckForUpdates } = await import("../../electron/updater");
     await setupAutoUpdater({ getMainWindow: () => null });
     expect(updater.autoDownload).toBe(mode === "auto");
-    expect(updater.autoInstallOnAppQuit).toBe(mode === "auto");
+    // main.ts installs on quit via installOnQuit(), after the migration export.
+    expect(updater.autoInstallOnAppQuit).toBe(false);
     expect(updater.autoRunAppAfterInstall).toBe(true);
     expect(updater.allowPrerelease).toBe(false);
     expect(await quitAndInstall()).toBe(mode === "auto");
-    if (mode === "auto") expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
-    else expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    if (mode === "auto") {
+      expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+      // Set before installing, so a hide-on-close window does not block Squirrel.Mac.
+      expect(mocks.app.quitting).toBe(true);
+    } else expect(updater.quitAndInstall).not.toHaveBeenCalled();
     stopCheckForUpdates();
   });
 

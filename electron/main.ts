@@ -10,13 +10,13 @@ import { applyProxySettings } from "./ipc/app";
 import { channel } from "./ipc/channel";
 import { quitAndSaveTasks } from "./ipc/download";
 import { registerIpcHandlers } from "./ipc/index";
-import { exportTauriMigration, setMigrationWindowGetter } from "./migration";
+import { exportTauriMigration, exportTauriMigrationWithin, setMigrationWindowGetter } from "./migration";
 import { destroyMiniPlayer } from "./mini-player";
 import { injectAuthCookie } from "./network/cookie";
 import { installWebRequestInterceptors } from "./network/interceptor";
 import { registerAllShortcuts, unregisterAllShortcuts } from "./shortcut";
 import { appSettingsStore } from "./store";
-import { autoUpdater, isInstallingUpdate, setupAutoUpdater, stopCheckForUpdates } from "./updater";
+import { autoUpdater, installOnQuit, isInstallingUpdate, setupAutoUpdater, stopCheckForUpdates } from "./updater";
 import { getWindowIcon } from "./utils";
 import { setupWindowsThumbar } from "./windows/thumbar";
 import { createTray, destroyTray } from "./windows/tray"; // 托盘功能
@@ -206,19 +206,23 @@ if (!gotTheLock) {
 
   app.on("activate", () => mainWindow?.show());
 
-  // Electron does not wait for async before-quit work, so hold the first quit until the
-  // migration export is written (at most 5 s), then quit again. autoInstallOnAppQuit
-  // installs on the following "quit" event, so it sees the fresh export.
-  let quitExportDone = false;
+  // Electron does not wait for async before-quit work, so hold the first quit: install a
+  // downloaded update after a fresh migration export, or else export (at most 5 s) and quit.
+  let quitHandled = false;
   app.on("before-quit", event => {
     (app as any).quitting = true;
-    if (quitExportDone || isInstallingUpdate()) return;
+    if (quitHandled || isInstallingUpdate()) return;
+    quitHandled = true;
     event.preventDefault();
-    const timeout = new Promise(resolve => setTimeout(resolve, 5000));
-    void Promise.race([exportTauriMigration(), timeout]).finally(() => {
-      quitExportDone = true;
+    void (async () => {
+      try {
+        if (await installOnQuit()) return;
+        await exportTauriMigrationWithin(5000);
+      } catch (error) {
+        log.warn("[main] quit export failed:", error);
+      }
       app.quit();
-    });
+    })();
   });
 
   app.on("will-quit", () => {

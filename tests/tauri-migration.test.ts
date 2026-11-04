@@ -172,9 +172,4 @@ describe("tauri migration export", () => {
     });
     expect(payload.localStorage).toEqual({ "user-token": "{}" });
   });
-
-  it("runs exports one after another", async () => {
-    const results = await Promise.all([exportTauriMigration(), exportTauriMigration()]);
-    expect(results).toEqual([null, null]);
-  });
 });

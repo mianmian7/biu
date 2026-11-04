@@ -1,17 +1,18 @@
-import { app, BrowserWindow } from "electron";
+import { app, autoUpdater as nativeAutoUpdater, BrowserWindow } from "electron";
 import isDev from "electron-is-dev";
 import log from "electron-log";
 import electronUpdater, { type UpdateDownloadedEvent } from "electron-updater";
 import path from "node:path";
 
 import { channel } from "../ipc/channel";
-import { exportTauriMigration } from "../migration";
+import { exportTauriMigration, exportTauriMigrationWithin } from "../migration";
 import { classifyUpdateError } from "./classify-error";
 import { detectUpdateMode, disableAutoUpdate } from "./update-mode";
 
 const { autoUpdater } = electronUpdater;
 let phase: "checking" | "downloading" | "downloaded" | "installing" = "checking";
 let checkForUpdatesInterval: NodeJS.Timeout | null = null;
+let updateMode = "manual";
 
 /** True once an update install has started; the quit path must not delay it. */
 export function isInstallingUpdate() {
@@ -37,20 +38,45 @@ export async function downloadUpdate() {
   return autoUpdater.downloadUpdate();
 }
 
+/**
+ * Installs the update only after a migration export has just succeeded, so the Tauri app
+ * always finds the current login and settings. On failure the update stays downloaded.
+ */
+async function installAfterExport(relaunch: boolean): Promise<boolean> {
+  const previousPhase = phase;
+  phase = "installing";
+  const exported = await exportTauriMigrationWithin(10_000);
+  if (!exported) {
+    phase = previousPhase;
+    log.warn("[updater] migration export failed, update not installed this time");
+    return false;
+  }
+  // Mac closes every window before installing; a hide-on-close window would block it.
+  (app as unknown as { quitting?: boolean }).quitting = true;
+  autoUpdater.quitAndInstall(true, relaunch);
+  return true;
+}
+
 export async function quitAndInstall() {
   if ((await detectUpdateMode()) !== "auto") return false;
-  phase = "installing";
-  await exportTauriMigration();
-  autoUpdater.quitAndInstall(true, true);
-  return true;
+  return installAfterExport(true);
+}
+
+/** Called on a normal quit: installs a downloaded update after a fresh export. */
+export async function installOnQuit() {
+  if (updateMode !== "auto" || phase !== "downloaded") return false;
+  return installAfterExport(false);
 }
 
 async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => BrowserWindow | null }) {
   autoUpdater.logger = log;
   log.transports.file.level = "info";
   let mode = await detectUpdateMode();
+  updateMode = mode;
   autoUpdater.autoDownload = mode === "auto";
-  autoUpdater.autoInstallOnAppQuit = mode === "auto";
+  // electron-updater's own install-on-quit would not wait for the migration export;
+  // main.ts calls installOnQuit() instead.
+  autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.autoRunAppAfterInstall = true;
   autoUpdater.channel = tauriUpdateChannel();
   // The channel setter turns allowDowngrade on; reset both after it.
@@ -87,6 +113,7 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
     );
     if (phase === "downloaded" && signatureFailure) {
       mode = "manual";
+      updateMode = mode;
       disableAutoUpdate();
       autoUpdater.autoDownload = false;
       autoUpdater.autoInstallOnAppQuit = false;
@@ -112,9 +139,13 @@ async function setupAutoUpdater({ getMainWindow }: { getMainWindow: () => Browse
     });
   });
 
-  (autoUpdater as unknown as NodeJS.EventEmitter).on("before-quit-for-update", () => {
-    phase = "installing";
-  });
+  // Squirrel.Mac emits this on Electron's native autoUpdater, not on electron-updater's wrapper.
+  for (const emitter of [autoUpdater as unknown as NodeJS.EventEmitter, nativeAutoUpdater]) {
+    emitter?.on?.("before-quit-for-update", () => {
+      phase = "installing";
+      (app as unknown as { quitting?: boolean }).quitting = true;
+    });
+  }
 
   const check = () => {
     if (phase === "downloaded") return;

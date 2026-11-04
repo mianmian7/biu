@@ -110,7 +110,8 @@ export function writeTauriMigrationFileAtomic(userDataDir: string, payload: Taur
   }
 }
 
-function readAllStoresSafe(storesModule: typeof import("./store")): Record<string, unknown> {
+/** Reads every store. Throws when one cannot be read, so a broken store is never exported as `{}`. */
+function readAllStores(storesModule: typeof import("./store")): Record<string, unknown> {
   const mapping: Record<StoreNameMap, { store: unknown }> = {
     [StoreNameMap.AppSettings]: storesModule.appSettingsStore,
     [StoreNameMap.UserLoginInfo]: storesModule.userStore,
@@ -120,11 +121,7 @@ function readAllStoresSafe(storesModule: typeof import("./store")): Record<strin
   };
   const result: Record<string, unknown> = {};
   for (const storeName of Object.values(StoreNameMap)) {
-    try {
-      result[storeName] = mapping[storeName]?.store ?? {};
-    } catch {
-      result[storeName] = {};
-    }
+    result[storeName] = mapping[storeName]?.store ?? {};
   }
   return result;
 }
@@ -182,12 +179,9 @@ async function exportOnce(): Promise<string | null> {
       import("electron-log"),
       import("./store"),
     ]);
-    try {
-      const rawCookies = await session.defaultSession.cookies.get({});
-      cachedCookies = filterAndFormatBilibiliCookies(rawCookies);
-    } catch (cookieErr) {
-      log.warn("[migration] Failed to read session cookies, using last cached cookies:", cookieErr);
-    }
+    // The login lives in the cookies, so an export without a fresh cookie read counts as failed.
+    const rawCookies = await withTimeout(session.defaultSession.cookies.get({}), 3000);
+    cachedCookies = filterAndFormatBilibiliCookies(rawCookies);
     try {
       const entries = await readLocalStorage();
       if (entries) cachedLocalStorage = entries;
@@ -196,7 +190,7 @@ async function exportOnce(): Promise<string | null> {
     }
     const payload = buildTauriMigrationPayload({
       appVersion: app.getVersion(),
-      stores: readAllStoresSafe(storesModule),
+      stores: readAllStores(storesModule),
       cookies: cachedCookies,
       localStorage: cachedLocalStorage,
     });
@@ -221,4 +215,9 @@ export function exportTauriMigration(): Promise<string | null> {
   const run = exportChain.then(exportOnce, exportOnce);
   exportChain = run;
   return run;
+}
+
+/** Like `exportTauriMigration`, but resolves `null` if no export finished within `ms`. */
+export function exportTauriMigrationWithin(ms: number): Promise<string | null> {
+  return withTimeout(exportTauriMigration(), ms).catch(() => null);
 }
