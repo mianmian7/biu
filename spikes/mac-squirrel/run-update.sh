@@ -25,7 +25,7 @@ codesign -d -r- /Applications/Biu.app >> "$EV/A-codesign.txt" 2>&1
 
 (cd "$B" && python3 -m http.server 8765 --bind 127.0.0.1 > "$EV/feed.log" 2>&1) &
 sleep 2
-curl -sf http://127.0.0.1:8765/latest-mac.yml > "$EV/latest-mac.yml" || fail "feed not serving latest-mac.yml"
+feed=$(cd "$B" && ls *-mac.yml | head -1); curl -sf "http://127.0.0.1:8765/$feed" > "$EV/$feed" || fail "feed not serving $feed"  # generic provider 下预发布版本的 channel 文件是 autolyrics-mac.yml
 
 rm -f "$LOG"
 open /Applications/Biu.app
