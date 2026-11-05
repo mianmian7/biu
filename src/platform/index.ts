@@ -1,5 +1,5 @@
-import { romanizeLyricLines } from "./romaji";
 import { createTauriAutoLyricsController } from "./auto-lyrics-worker";
+import { romanizeLyricLines } from "./romaji";
 
 export const NOT_IMPLEMENTED_MESSAGE = "未实现";
 
@@ -128,13 +128,15 @@ function fileUrlToLocalPath(rawUrl: string): string {
   return withoutScheme;
 }
 
-export function toMediaUrlSync(rawUrl: string): string {
-  if (!rawUrl || !cachedMediaBase) {
-    return rawUrl;
+export function toMediaUrlSync(wrappedOrRawUrl: string): string {
+  if (!wrappedOrRawUrl || !cachedMediaBase) {
+    return wrappedOrRawUrl;
   }
-  if (rawUrl.startsWith(cachedMediaBase)) {
-    return rawUrl;
+  if (wrappedOrRawUrl.startsWith(cachedMediaBase)) {
+    return wrappedOrRawUrl;
   }
+  // 播放列表里保存的可能是上次启动时的代理地址（端口和令牌已失效），先还原成原始地址
+  const rawUrl = unwrapMediaUrl(wrappedOrRawUrl) ?? wrappedOrRawUrl;
   if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
     return `${cachedMediaBase}remote?u=${encodeURIComponent(rawUrl)}`;
   }
@@ -144,15 +146,17 @@ export function toMediaUrlSync(rawUrl: string): string {
   return rawUrl;
 }
 
-export async function toMediaUrl(rawUrl?: string): Promise<string> {
-  if (!rawUrl) {
+export async function toMediaUrl(wrappedOrRawUrl?: string): Promise<string> {
+  if (!wrappedOrRawUrl) {
     return "";
   }
   try {
     const base = await ensureMediaBase();
-    if (rawUrl.startsWith(base)) {
-      return rawUrl;
+    if (wrappedOrRawUrl.startsWith(base)) {
+      return wrappedOrRawUrl;
     }
+    // 播放列表里保存的可能是上次启动时的代理地址（端口和令牌已失效），先还原成原始地址
+    const rawUrl = unwrapMediaUrl(wrappedOrRawUrl) ?? wrappedOrRawUrl;
     if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
       return `${base}remote?u=${encodeURIComponent(rawUrl)}`;
     }
@@ -161,7 +165,7 @@ export async function toMediaUrl(rawUrl?: string): Promise<string> {
     }
     return rawUrl;
   } catch {
-    return rawUrl;
+    return wrappedOrRawUrl;
   }
 }
 

@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
   applyMigratedLocalStorage,
   createTauriElectronAPI,
-  NOT_IMPLEMENTED_MESSAGE,
   toMediaUrl,
+  toMediaUrlSync,
   UNIMPLEMENTED_ELECTRON_METHODS,
   unwrapMediaUrl,
 } from "@/platform";
@@ -107,6 +107,11 @@ describe("platform ElectronAPI compatibility and media URL wrapping", () => {
     expect(unwrapMediaUrl(wrapped)).toBe(
       "https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/01/02/123.m4s?deadline=1999999999&upsig=abc",
     );
+
+    // A playlist saved by an earlier launch holds a proxy URL with that launch's port and token
+    const fromEarlierLaunch = wrapped.replace("43210/secret-token", "51234/old-token");
+    expect(await toMediaUrl(fromEarlierLaunch)).toBe(wrapped);
+    expect(toMediaUrlSync(fromEarlierLaunch)).toBe(wrapped);
   });
 
   test("biliAdapter forwards axios request config to bili_request command", async () => {
