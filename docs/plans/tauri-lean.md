@@ -138,6 +138,12 @@ Sol 审查 `8eaf2533` 和桥接版 `1a835bb6`，结论“暂不建议发布”�
   2026-11-05 核对：用户 Mac 的 `/Applications/Biu.app` 已是第 1 步的 Tauri 测试包（7.9 MB、ad-hoc、版本号 `.6`、无 updater），Electron `.6` 不在了，这台 Mac 上测不了 `.6 → .7` 一跳。用户需手动装 `2.0.0` dmg；Tauri 数据目录 `com.biu.wood3n` 里的扫码登录保留，Electron 目录 `Biu` 的 store 按原样合并。
   2026-11-05 完成：`v2.0.0` 正式 release（run 41923225326，第 1 次 macos-arm64 打 dmg 遇 hdiutil `Resource busy`，重跑通过）。Mac 上备份第 1 步测试包和数据到 `~/biu-smoke-backup-20261105`，装 `Biu-2.0.0-mac-arm64.dmg`（13 MB，DR 同 `.6`），`open --env BIU_SILENT=1` 启动。迁移 `complete=true`、`pending=[]`，从 Electron 目录导入 `app-settings`（27 项）和 `shortcut-settings`（3 项），与原值逐项一致；cookie 含 `SESSDATA`、`bili_jct`、`DedeUserID`；启动 1 s 后 renderer 重写 `user-login-info.json`，`isLogin=true`；日志无 error/warn。sshd 无屏幕录制权限，没有截图。线上 `latest*.yml` 带 `tag: v1.16.1-autolyrics.7`，`tauri*.yml` 和 `latest.json` 为 `2.0.0`。
 
+## 2.0.1 修复（owner 2026-11-05 补充，用户授权直接修复并发布）
+
+- 问题：`2.0.0` 的 Mac 图标是 M0 留下的纯青色占位图（`src-tauri/icons/icon.icns`，12.6 KB），dmg 卷图标也是这张。Linux 的 `icon.png` 和 Windows 的 `icon.ico` 都是正确的 logo。
+- 修复：用 Electron 版的 `electron/icons/logo.png` 做 1024 px 的 macOS 风格图标（白色圆角底板，Apple 网格 824 px，logo 居中），`tauri icon` 生成 `icon.icns`（161 KB），只替换这一个文件。README 下载链接从上游 `wood3n/biu` 改为 `mianmian7/biu`。版本 `2.0.1`。
+- 用户反馈「下载 arm64 dmg 后文件名变成 x64、提示是 Intel 版」：GitHub 两个 dmg 的下载重定向文件名正确，release 的 arm64 dmg 里 `biu`、`ffmpeg` 都是 arm64，用户 Mac 上已装的 2.0.0 也是 arm64。来源待用户补充信息后再查。
+
 ## 分工
 
 | 步骤 | 执行 | 审查 |

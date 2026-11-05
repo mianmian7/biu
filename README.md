@@ -55,7 +55,7 @@
 - ♻️ 安装包支持自动检测更新，始终保持最新体验
 
 ## 下载和使用
-- 下载页面：[GitHub Releases](https://github.com/wood3n/biu/releases/latest)
+- 下载页面：[GitHub Releases](https://github.com/mianmian7/biu/releases/latest)
 - 快速选择：
   - <img alt="Windows" src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white" /> 优先选安装包 `win-setup`；需要免安装/无管理员权限选 `win-portable`
   - <img alt="macOS" src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" /> 优先选 `dmg`；需要脚本/自动化分发可选 `zip`
