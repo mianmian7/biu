@@ -203,7 +203,9 @@ const handlePlayError = (error: any) => {
     level: "warn",
     message: `[handlePlayError] ${errorMsg}`,
   }).catch(() => {});
-  if (!errorMsg.includes("interrupted") && !errorMsg.includes("NotAllowed")) {
+  // A newer load cancelled this play(): Chromium says "interrupted", WebKit throws AbortError.
+  const superseded = error?.name === "AbortError" || errorMsg.includes("interrupted");
+  if (!superseded && !errorMsg.includes("NotAllowed")) {
     toastError(error instanceof Error ? error.message : "获取播放链接失败");
   }
 };
@@ -213,7 +215,7 @@ const updateMediaSession = ({ title, artist, cover }: { title: string; artist?: 
     navigator.mediaSession.metadata = new MediaMetadata({
       title,
       artist,
-      artwork: cover ? [{ src: cover }] : [],
+      artwork: cover ? [{ src: formatUrlProtocol(cover)! }] : [],
     });
   }
 };
@@ -612,13 +614,9 @@ export const usePlayList = create<State & Action>()(
           // 列表已存在
           const existItem = list?.find(item => isSame(item, candidate));
           if (existItem) {
+            // The playId subscription loads and plays the item. Loading it here too raced that
+            // subscription for the same audio element and aborted one of the play() calls.
             set({ playId: existItem.id });
-            try {
-              await ensureAudioSrcValid();
-              await playAudioSafely();
-            } catch (error) {
-              handlePlayError(error);
-            }
             return;
           }
 
@@ -1080,9 +1078,15 @@ function resetAudioAndPlay(url: string) {
   void playAudioSafely();
 }
 
+let playSwitchId = 0;
+
 // 切换歌曲时，更新当前播放的歌曲信息
 usePlayList.subscribe(async (state, prevState) => {
   if (state.playId !== prevState.playId) {
+    // Each switch owns the audio element until a newer switch starts. After every await,
+    // a stale switch must stop, or it would load the old track and write its URL into the new item.
+    const switchId = ++playSwitchId;
+    const isStale = () => switchId !== playSwitchId;
     if (!state.playId) {
       const prevPlayItem = prevState.list.find(item => item.id === prevState.playId);
       if (shouldReportPlayRecord(prevPlayItem)) {
@@ -1103,17 +1107,20 @@ usePlayList.subscribe(async (state, prevState) => {
         }
       }
       if (playItem?.source === "local" && playItem?.audioUrl && audio.paused) {
-        resetAudioAndPlay(await toMediaUrl(playItem.audioUrl));
+        const mediaUrl = await toMediaUrl(playItem.audioUrl);
+        if (!isStale()) resetAudioAndPlay(mediaUrl);
         return;
       }
       if (isUrlValid(playItem?.audioUrl) && audio.paused) {
-        resetAudioAndPlay(await toMediaUrl(playItem.audioUrl));
+        const mediaUrl = await toMediaUrl(playItem.audioUrl);
+        if (!isStale()) resetAudioAndPlay(mediaUrl);
         return;
       }
 
       if (playItem?.type === "mv") {
         if (playItem?.bvid && playItem?.cid) {
           const mvPlayData = await getDashUrl(playItem.bvid, playItem.cid);
+          if (isStale()) return;
           if (mvPlayData?.audioUrl) {
             resetAudioAndPlay(mvPlayData?.audioUrl);
 
@@ -1144,12 +1151,14 @@ usePlayList.subscribe(async (state, prevState) => {
           }
         } else if (playItem?.bvid) {
           const mvData = await getMVData(playItem.bvid);
+          if (isStale()) return;
           const [firstMV, ...restMV] = mvData;
           if (firstMV?.cid) {
             const mvPlayData = await getDashUrl(playItem.bvid, firstMV.cid);
+            if (isStale()) return;
             if (mvPlayData?.audioUrl) {
-              resetAudioAndPlay(mvPlayData?.audioUrl);
-
+              // Replacing playId below starts another switch, which plays the resolved audioUrl.
+              // Playing here as well made that switch pause() a pending play() and raise AbortError.
               updateMediaSession({
                 title: firstMV.pageTitle || firstMV.title,
                 artist: firstMV.ownerName,
@@ -1198,6 +1207,7 @@ usePlayList.subscribe(async (state, prevState) => {
 
       if (playItem?.type === "audio" && playItem?.sid) {
         const musicPlayData = await getAudioUrl(playItem.sid);
+        if (isStale()) return;
         if (musicPlayData?.audioUrl) {
           resetAudioAndPlay(musicPlayData?.audioUrl);
 
