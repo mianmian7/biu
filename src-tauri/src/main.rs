@@ -57,6 +57,7 @@ use updater::{check_app_update, download_app_update, get_update_mode, quit_and_i
 #[tauri::command]
 async fn ensure_main_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("main") {
+        log::info!("[window] main shown by ensure_main_window");
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
@@ -121,6 +122,7 @@ fn devtools_toggle<R: Runtime>(app: AppHandle<R>) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            log::info!("[window] main shown by single-instance relaunch");
             desktop_lyrics::destroy_mini_player(app);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.unminimize();
@@ -137,7 +139,16 @@ fn main() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Decorations come from the window config (native traffic lights on macOS). Restoring the
+        // saved flag would bring back `decorated: false` from builds that had no title bar.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::DECORATIONS,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -296,6 +307,7 @@ fn main() {
             // macOS: clicking the Dock icon after the main window was hidden to the tray.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
+                log::info!("[window] main shown by RunEvent::Reopen");
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.unminimize();
                     let _ = w.show();

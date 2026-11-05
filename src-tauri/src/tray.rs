@@ -173,6 +173,7 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                     if w.is_visible().unwrap_or(false) {
                         let _ = w.hide();
                     } else {
+                        log::info!("[window] main shown by tray toggle_window");
                         let _ = w.unminimize();
                         let _ = w.show();
                         let _ = w.set_focus();
@@ -201,6 +202,7 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                 }
             }
             "settings" => {
+                log::info!("[window] main shown by tray settings");
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.unminimize();
                     let _ = w.show();
@@ -221,6 +223,7 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             } = event
             {
                 let app = tray.app_handle();
+                log::info!("[window] main shown by tray icon click");
                 destroy_mini_player(app);
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.unminimize();

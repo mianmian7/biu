@@ -403,6 +403,7 @@ pub async fn desktop_lyrics_sync<R: Runtime>(
             }
         }
         if !win.is_visible().unwrap_or(false) {
+            log::info!("[window] desktop-lyrics shown by content push");
             let _ = win.show();
         }
     } else if win.is_visible().unwrap_or(false) {
@@ -424,6 +425,7 @@ pub fn desktop_lyrics_get_content<R: Runtime>(
         apply_locked_state(&win, &state, locked);
         apply_content_height(&app, &win, &state);
         if (active || !locked) && !win.is_visible().unwrap_or(false) {
+            log::info!("[window] desktop-lyrics shown by get_content");
             let _ = win.show();
         }
     }
@@ -442,6 +444,7 @@ pub fn desktop_lyrics_command<R: Runtime>(
         return Ok(());
     };
     if command == "openSettings" {
+        log::info!("[window] main shown by desktop-lyrics openSettings");
         let _ = main_win.unminimize();
         let _ = main_win.show();
         let _ = main_win.set_focus();
@@ -557,6 +560,7 @@ pub fn destroy_mini_player<R: Runtime>(app: &AppHandle<R>) -> bool {
 #[tauri::command]
 pub async fn toggle_mini_player<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     if destroy_mini_player(&app) {
+        log::info!("[window] main shown by toggle_mini_player");
         if let Some(main) = app.get_webview_window("main") {
             let _ = main.unminimize();
             let _ = main.show();
