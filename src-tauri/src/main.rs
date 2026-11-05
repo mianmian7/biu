@@ -68,8 +68,16 @@ async fn ensure_main_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
             .inner_size(1200.0, 800.0)
             .min_inner_size(1200.0, 800.0)
             .resizable(true)
-            .center()
-            .decorations(false);
+            .center();
+    // Same as tauri.macos.conf.json: native traffic lights over a hidden title bar.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(8.0, 8.0));
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(false);
     builder.build().map_err(|e| e.to_string())?;
     Ok(())
 }
