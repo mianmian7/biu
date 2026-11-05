@@ -624,6 +624,62 @@ mod tests {
         assert!(err.is_err());
     }
 
+    /// 播放器按播放速度慢慢读取音频，一个上游请求可能持续好几分钟，代理不能在固定时长后截断它
+    #[tokio::test]
+    async fn loopback_proxy_keeps_streaming_a_slow_body_past_the_response_timeout() {
+        const CHUNKS: usize = 17;
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream_listener.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (mut sock, _) = upstream_listener.accept().await.unwrap();
+            let mut req_buf = vec![0u8; 2048];
+            let _ = sock.read(&mut req_buf).await;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/mp4\r\nContent-Length: {CHUNKS}\r\nConnection: close\r\n\r\n"
+            );
+            sock.write_all(header.as_bytes()).await.unwrap();
+            for i in 0..CHUNKS {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if sock.write_all(&[i as u8]).await.is_err() {
+                    return;
+                }
+            }
+            let _ = sock.shutdown().await;
+        });
+
+        let dir = std::env::temp_dir().join(format!("biu-test-slow-{}", uuid::Uuid::new_v4()));
+        let state = Arc::new(BiliState::new(dir.join("cookies.json"), None).unwrap());
+        state.register_media_host("127.0.0.1");
+        let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        let proxy_server =
+            tokio::spawn(serve_http(proxy_listener, "tok-slow".into(), state.clone()));
+
+        let mut client_sock = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+        let target_url = format!("http://{upstream_addr}/audio.m4s");
+        let encoded: String = url::form_urlencoded::byte_serialize(target_url.as_bytes()).collect();
+        let req = format!(
+            "GET /tok-slow/remote?u={encoded} HTTP/1.1\r\nHost: {proxy_addr}\r\nOrigin: {}\r\n\r\n",
+            app_origin()
+        );
+        client_sock.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = vec![];
+        client_sock.read_to_end(&mut resp).await.unwrap();
+        let split = resp.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        assert!(String::from_utf8_lossy(&resp[..split]).starts_with("HTTP/1.1 200"));
+        let body = &resp[split + 4..];
+        assert_eq!(
+            body.len(),
+            CHUNKS,
+            "body was cut after {} of {CHUNKS} bytes",
+            body.len()
+        );
+
+        upstream_task.await.unwrap();
+        proxy_server.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn lyrics_allowlist_and_kuromoji_sha256_verification() {
         use crate::lyrics::{

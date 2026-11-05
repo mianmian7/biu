@@ -5,6 +5,12 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use url::Url;
 
+/// 上游返回响应头的最长等待时间
+const MEDIA_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// 上游连续多久没有新数据才放弃。播放器按播放速度读取，一个请求可能持续几分钟，
+/// 所以只限制空闲时间，不限制整个响应的时长。
+const MEDIA_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub struct MediaBase(pub String);
 
 #[tauri::command]
@@ -431,7 +437,6 @@ pub async fn http_media(
         } else {
             state.client().get(parsed.clone())
         }
-        .timeout(std::time::Duration::from_secs(15))
         .header("Referer", BILI_REFERER)
         .header("Origin", BILI_ORIGIN);
 
@@ -441,20 +446,31 @@ pub async fn http_media(
         request
     };
 
-    let response = match build_upstream_req().send().await {
+    // 只给“等响应头”计时；响应体的读取在下面按空闲时间计时
+    let send_upstream = || async {
+        match tokio::time::timeout(MEDIA_RESPONSE_TIMEOUT, build_upstream_req().send()).await {
+            Ok(Ok(r)) => Ok(r),
+            Ok(Err(e)) => Err((
+                e.is_connect() || e.is_timeout(),
+                crate::bili::sanitize_reqwest_error(&e),
+            )),
+            Err(_) => Err((true, "timed out waiting for the response".to_string())),
+        }
+    };
+
+    let response = match send_upstream().await {
         Ok(r) => r,
-        Err(e) if e.is_connect() || e.is_timeout() => {
+        Err((true, first_error)) => {
             log::warn!(
                 "[media_proxy] {} {}{} retrying once after error: {}",
                 method_str,
                 parsed.host_str().unwrap_or(""),
                 parsed.path(),
-                crate::bili::sanitize_reqwest_error(&e)
+                first_error
             );
-            match build_upstream_req().send().await {
+            match send_upstream().await {
                 Ok(r) => r,
-                Err(e2) => {
-                    let msg = crate::bili::sanitize_reqwest_error(&e2);
+                Err((_, msg)) => {
                     log::warn!(
                         "[media_proxy] {} {}{} failed: {}",
                         method_str,
@@ -474,8 +490,7 @@ pub async fn http_media(
                 }
             }
         }
-        Err(e) => {
-            let msg = crate::bili::sanitize_reqwest_error(&e);
+        Err((false, msg)) => {
             log::warn!(
                 "[media_proxy] {} {}{} failed: {}",
                 method_str,
@@ -529,14 +544,35 @@ pub async fn http_media(
 
     if !is_head {
         let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(bytes) => {
+        let mut sent: u64 = 0;
+        loop {
+            match tokio::time::timeout(MEDIA_IDLE_TIMEOUT, stream.next()).await {
+                Ok(Some(Ok(bytes))) => {
+                    // 播放器关闭连接（切歌、跳转）是正常结束
                     if socket.write_all(&bytes).await.is_err() {
                         break;
                     }
+                    sent += bytes.len() as u64;
                 }
-                Err(_) => break,
+                Ok(None) => break,
+                Ok(Some(Err(e))) => {
+                    log::warn!(
+                        "[media_proxy] {}{} body interrupted after {sent} bytes: {}",
+                        parsed.host_str().unwrap_or(""),
+                        parsed.path(),
+                        crate::bili::sanitize_reqwest_error(&e)
+                    );
+                    break;
+                }
+                Err(_) => {
+                    log::warn!(
+                        "[media_proxy] {}{} body idle for {}s after {sent} bytes",
+                        parsed.host_str().unwrap_or(""),
+                        parsed.path(),
+                        MEDIA_IDLE_TIMEOUT.as_secs()
+                    );
+                    break;
+                }
             }
         }
     }
