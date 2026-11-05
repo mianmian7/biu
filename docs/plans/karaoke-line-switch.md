@@ -45,8 +45,9 @@ owner = Claude（osa-a1）
   - 结果：新增 5 个 `resolveDisplayedLine` 用例、1 个 `upcoming` 用例、4 个漂移阈值用例。
 - [x] T5 验收：`npx vitest run` 全部通过；`npx tsc --noEmit -p .` 的错误数不比改动前多（改动前为 118）；`cd src-tauri && cargo test` 通过。
   - 结果：vitest 20 文件 226 用例通过；tsc 错误 118（与改动前相同）；cargo test 30 通过。Linux 录屏（Xvfb，2.5s 一句的测试歌词，15 句）：每句走满所需时间修复前 0.67s，修复后 2.40–2.43s。
-- [ ] 代码逻辑审查（GPT-6.1-Sol）
+- [x] 代码逻辑审查（GPT-6.1-Sol）
   - 第 1 轮（2cb0f82c）：2 项 P2（向后 seek 闪错行；一次同步间隔内跨多句）。已按修订 1 修复。
   - 第 2 轮（2ec8cbb4）：seek 问题关闭；固定 8 句窗口仍会截断同时间戳组和密集短句（P2）。已按修订 2 修复，待第 3 轮复审。
+  - 第 3 轮（f66e5327）：第 2 轮 P2 关闭，无阻断问题；vitest 20 文件 231 用例通过，tsc 118 个错误（与基线一致）；同句去重、offset、长间奏与缓存耗尽恢复补测通过。极端密集歌词无 payload 体积硬上限为 P3 非阻断风险；后台 timeupdate 按 WebKit 源码推断可继续，目标 Mac 实测留待视觉/动态验收。
 - [ ] 视觉/动态审查（Gemini 4 Argon）：在 Mac 上录一首有逐行歌词的歌，至少 1 分钟，用连续帧检查每次换句时高亮是否从行首开始。
 - [ ] 最终验收（Opus）
