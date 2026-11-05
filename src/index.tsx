@@ -11,6 +11,16 @@ if (window.location.hash.includes("desktop-lyrics")) {
   }
 }
 
+// WebViews show a native Back/Reload menu on right click. Electron had none, so suppress it
+// everywhere except editable fields; in-app menus call preventDefault themselves and still open.
+document.addEventListener("contextmenu", event => {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("input, textarea, [contenteditable=''], [contenteditable='true']")) {
+    return;
+  }
+  event.preventDefault();
+});
+
 async function boot() {
   // Stores hydrate from localStorage when ./app is imported, so migrated entries go first.
   await applyMigratedLocalStorage();
