@@ -5,6 +5,8 @@ import { Avatar, Button, Link as HeroLink, Tooltip } from "@heroui/react";
 import clx from "classnames";
 import { twMerge } from "tailwind-merge";
 
+import { formatUrlProtocol } from "@/common/utils/url";
+
 export interface MenuItemProps {
   /** 菜单项标签 */
   title: string;
@@ -59,7 +61,7 @@ const MenuItem: React.FC<MenuItemProps> = ({
     return (
       <Avatar
         name={title}
-        src={cover ? `${cover}@672w_378h_1c.avif` : undefined}
+        src={cover ? `${formatUrlProtocol(cover)}@672w_378h_1c.avif` : undefined}
         showFallback
         radius="md"
         fallback={icon}

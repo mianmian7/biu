@@ -3,9 +3,15 @@ export const getUrlParams = (url: string) => {
   return Object.fromEntries(urlParams.entries());
 };
 
+// Bilibili returns covers as "//host/..." or "http://host/...". WKWebView blocks
+// http subresources on the tauri:// origin, so both forms are upgraded to https.
 export const formatUrlProtocol = (url?: string) => {
-  if (url && !url.startsWith("http")) {
+  if (url?.startsWith("//")) {
     return `https:${url}`;
+  }
+
+  if (url?.startsWith("http://")) {
+    return `https://${url.slice("http://".length)}`;
   }
 
   return url;

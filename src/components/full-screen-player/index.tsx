@@ -9,6 +9,7 @@ import { useShallow } from "zustand/shallow";
 
 import { Themes } from "@/common/constants/theme";
 import { hexToHsl, resolveTheme, isHex } from "@/common/utils/color";
+import { formatUrlProtocol } from "@/common/utils/url";
 import AudioWaveform from "@/components/audio-waveform";
 import Lyrics from "@/components/lyrics";
 import { useFullScreenPlayerSettings } from "@/store/full-screen-player-settings";
@@ -132,7 +133,7 @@ const FullScreenPlayer = () => {
     scheduleHideUi(3000);
   };
 
-  const coverSrc = playItem?.pageCover || playItem?.cover;
+  const coverSrc = formatUrlProtocol(playItem?.pageCover || playItem?.cover);
   const { effectsProfile, bgLayerA, bgLayerB, activeBgLayer, cssVars } = useGlassmorphism(
     coverSrc,
     primaryColor,
