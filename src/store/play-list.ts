@@ -13,6 +13,7 @@ import { beginPlayReport, endPlayReport, reportHeartbeat } from "@/common/utils/
 import { markPlaybackAnchor, resetPlaybackAnchor, usePlaybackAnchor } from "@/common/utils/playback-anchor";
 import { stripHtml } from "@/common/utils/str";
 import { formatUrlProtocol } from "@/common/utils/url";
+import { isSubWindow } from "@/common/utils/window-role";
 import { invokeTauri, toMediaUrl } from "@/platform";
 import { getAudioSongInfo } from "@/service/audio-song-info";
 import { getWebInterfaceView } from "@/service/web-interface-view";
@@ -247,6 +248,10 @@ const updatePlaybackState = () => {
 };
 
 const playAudioSafely = async () => {
+  // Only the main window plays; sub windows load the same store but must stay silent.
+  if (isSubWindow()) {
+    return;
+  }
   if (forceSilentMode) {
     audio.muted = true;
   }

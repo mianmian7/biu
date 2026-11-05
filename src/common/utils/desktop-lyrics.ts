@@ -13,12 +13,7 @@ import {
 } from "@shared/settings/desktop-lyrics";
 
 import { usePlaybackAnchor } from "./playback-anchor";
-
-/** 判断当前渲染进程是否是子窗口（迷你播放器/桌面歌词） */
-function isSubWindow() {
-  const hash = window.location.hash;
-  return hash.includes("mini-player") || hash.includes("desktop-lyrics");
-}
+import { isSubWindow } from "./window-role";
 
 /** 按歌词时间查找翻译或罗马音文本 */
 const getCompanionByTime = (companions: LyricLine[], time?: number) => {

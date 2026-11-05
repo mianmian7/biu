@@ -92,6 +92,30 @@ describe("play-list store", () => {
     expect(usePlaybackAnchor.getState()).toMatchObject({ seq: seq + 1, running: false });
   });
 
+  test("sub windows never start playback", async () => {
+    const s = usePlayList.getState();
+    await s.init();
+    const audio = s.getAudio();
+    const play = vi.spyOn(audio, "play").mockResolvedValue(undefined);
+    usePlayList.setState({
+      list: [{ id: "a", type: "audio", sid: 1, title: "t", audioUrl: "https://audio.test/a.mp3" }],
+      playId: "a",
+    } as any);
+    const originalHash = window.location.hash;
+    try {
+      window.location.hash = "#/desktop-lyrics";
+      await usePlayList.getState().togglePlay();
+      expect(play).not.toHaveBeenCalled();
+
+      window.location.hash = "";
+      await usePlayList.getState().togglePlay();
+      expect(play).toHaveBeenCalledTimes(1);
+    } finally {
+      window.location.hash = originalHash;
+      play.mockRestore();
+    }
+  });
+
   test("anchors media events but leaves timeupdate and onplay unanchored", async () => {
     const s = usePlayList.getState();
     await s.init();

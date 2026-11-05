@@ -8,6 +8,7 @@ import { getCookitFromBSite } from "./common/utils/cookie";
 import { startDesktopLyricsSync } from "./common/utils/desktop-lyrics";
 import { toggleMiniMode } from "./common/utils/mini-player";
 import { mapKeyToElectronAccelerator } from "./common/utils/shortcut";
+import { isSubWindow } from "./common/utils/window-role";
 import Theme from "./components/theme";
 import routes from "./routes";
 import { useAppUpdateStore } from "./store/app-update";
@@ -35,6 +36,7 @@ export function App() {
   useEffect(() => startDesktopLyricsSync(), []);
 
   useEffect(() => {
+    if (isSubWindow()) return;
     if (window.electron && window.electron.navigate) {
       const removeListener = window.electron.navigate(path => navigate(path));
       return removeListener;
@@ -43,6 +45,9 @@ export function App() {
 
   // 订阅来自主进程的任务栏缩略按钮命令
   useEffect(() => {
+    // Tauri events reach every window. Only the main window may act on player commands,
+    // or a sub window starts its own copy of the track (two "biu" streams in Now Playing).
+    if (isSubWindow()) return;
     if (window.electron && window.electron.onPlayerCommand) {
       const removeListener = window.electron.onPlayerCommand(cmd => {
         const { prev, next, togglePlay } = usePlayList.getState();
@@ -60,6 +65,7 @@ export function App() {
 
   // 订阅来自主进程的全局快捷键命令
   useEffect(() => {
+    if (isSubWindow()) return;
     if (window.electron && window.electron.onShortcutCommand) {
       return window.electron.onShortcutCommand(cmd => {
         const { prev, next, togglePlay, setVolume, volume } = usePlayList.getState();
@@ -92,6 +98,7 @@ export function App() {
 
   // 监听应用内快捷键
   useEffect(() => {
+    if (isSubWindow()) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       // 忽略在输入框中的按键
       const target = e.target as HTMLElement;
