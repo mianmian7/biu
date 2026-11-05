@@ -2,7 +2,23 @@ name: Tauri Build
 
 on:
   push:
-    branches: [feat/tauri]
+    branches: [feat/tauri, master]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "screenshots/**"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/eslint-review.yml"
+      - ".github/workflows/knip-report.yml"
+  pull_request:
+    branches: [master]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "screenshots/**"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/eslint-review.yml"
+      - ".github/workflows/knip-report.yml"
   workflow_dispatch:
 
 permissions:
@@ -21,9 +37,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS arm64 hosted runners keep timing out in the queue; cross-compile both arches on Intel.
+          # Native Apple Silicon runner. If it keeps sitting in the queue, switch back to macos-15-intel (cross-compile).
           - name: macos-arm64
-            os: macos-15-intel
+            os: macos-15
             target: aarch64-apple-darwin
             bundles: dmg
             artifact_name: biu-macos-arm64-dmg
@@ -65,6 +81,11 @@ jobs:
     env:
       CI: "true"
       HUSKY: "0"
+      CARGO_INCREMENTAL: "0"
+      # Branch and PR builds skip LTO for speed. Pushes to master keep the release profile from Cargo.toml,
+      # so the cache they save matches release.yml (tag runs can only restore caches from the default branch).
+      CARGO_PROFILE_RELEASE_LTO: ${{ github.ref == 'refs/heads/master' && 'true' || 'false' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.ref == 'refs/heads/master' && '1' || '16' }}
     defaults:
       run:
         shell: bash
@@ -113,6 +134,13 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+          shared-key: tauri-${{ matrix.target }}
+          save-if: ${{ github.event_name == 'push' }}
+
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
@@ -124,7 +152,8 @@ jobs:
           pnpm exec tauri build --ci \
             --bundles "${{ matrix.bundles }}" \
             --target "${{ matrix.target }}" \
-            --config '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}'
+            --config '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-"}}}' \
+            -- --locked
 
       - name: Print bundle byte sizes
         run: |

@@ -153,3 +153,15 @@ Sol 审查 `8eaf2533` 和桥接版 `1a835bb6`，结论“暂不建议发布”�
 | 第 4 步 | Gemini 4 Argon | Opus |
 
 GPT-6.1-Sol 这周 7d 余量只有 7% 和 36%，暂不用。
+
+## CI 提速（owner 2026-11-05 补充，用户授权直接处理）
+
+- 基线：`v2.0.1` release run 41957539647 共 19 分钟。macos-arm64 在 Intel runner 上交叉编译，编译这一步 16 分 13 秒；其他平台约 9–10 分钟。每次从头编 615 个 crate。
+- 改动：
+  - `tauri-build.yml` 和 `release.yml` 都加 `Swatinem/rust-cache@v2`，`shared-key: tauri-<target>`。
+  - 分支和 PR 构建关 LTO（`CARGO_PROFILE_RELEASE_LTO=false`，`CODEGEN_UNITS=16`），master 和 release 保持 LTO。
+  - macos-arm64 改用原生 `macos-15` runner。
+  - `tauri-build.yml` 加 `paths-ignore`（文档等），向 master 的 PR 也会触发。
+  - 删掉只构建前端、不打包的 `pr-test-build.yml`。
+  - 构建加 `--locked`。
+- 限制：tag 触发的 release 只能读到默认分支 master 的缓存。`feat/tauri` 合进 master 之前，release 仍是冷编译。
