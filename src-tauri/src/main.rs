@@ -70,13 +70,16 @@ async fn ensure_main_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
             .min_inner_size(1200.0, 800.0)
             .resizable(true)
             .center();
-    // Same as tauri.macos.conf.json: native traffic lights over a hidden title bar.
+    // Same as tauri.macos.conf.json: native traffic lights over a hidden title bar, and no
+    // suspension while hidden. Closing the window only hides it and playback continues; the
+    // default policy suspends a hidden page, which stalls loading the next track.
     #[cfg(target_os = "macos")]
     let builder = builder
         .decorations(true)
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
-        .traffic_light_position(tauri::LogicalPosition::new(8.0, 8.0));
+        .traffic_light_position(tauri::LogicalPosition::new(8.0, 8.0))
+        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(false);
     builder.build().map_err(|e| e.to_string())?;
