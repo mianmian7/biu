@@ -14,7 +14,7 @@ import {
 } from "@remixicon/react";
 import clsx from "classnames";
 
-import { anchorNow, getDesktopLyricsLineProgress } from "@/common/utils/playback-anchor";
+import { anchorNow, getDesktopLyricsLineProgress, resolveDisplayedLine } from "@/common/utils/playback-anchor";
 import DesktopLyricsView from "@/components/desktop-lyrics-view";
 
 /** 顶部工具栏行高：始终预留，悬停显示工具栏时窗口高度不变 */
@@ -87,6 +87,9 @@ const DesktopLyrics = () => {
 
   const [payload, setPayload] = useState<DesktopLyricsPayload | null>(null);
   const payloadRef = useRef<DesktopLyricsPayload | null>(null);
+  /** 实际显示的行：到了下一句的开始时间就在本窗口内换句 */
+  const [displayed, setDisplayed] = useState<DesktopLyricsPayload | null>(null);
+  const displayedRef = useRef<DesktopLyricsPayload | null>(null);
   const [hovered, setHovered] = useState(false);
   const [dragging, setDragging] = useState(false);
   const hideTimerRef = useRef<number | null>(null);
@@ -111,9 +114,43 @@ const DesktopLyrics = () => {
     };
   }, []);
 
-  /** 按最近一次同步的位置与时间戳插值出当前行进度 */
+  // 新内容到达时立即按当前时钟解析；播放中每帧检查是否到了下一句的开始时间
+  useEffect(() => {
+    if (!payload) return;
+    const show = (line: DesktopLyricsPayload) => {
+      if (displayedRef.current === line) return;
+      displayedRef.current = line;
+      setDisplayed(line);
+    };
+
+    const first = resolveDisplayedLine(payload, anchorNow());
+    show(first);
+    // 已经换到下一句，或者没有下一句、没在播放：等主窗口发来新内容
+    if (first !== payload || !payload.upcoming || !payload.anchor.running) return;
+
+    let rafId = 0;
+    const tick = () => {
+      const line = resolveDisplayedLine(payload, anchorNow());
+      if (line !== payload) {
+        show(line);
+        return;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [payload]);
+
+  // 进度跟着已渲染到 DOM 的那一行走，换句瞬间旧行不会被按新行的进度重画
+  const renderedLineRef = useRef<DesktopLyricsPayload | null>(null);
+  const line = displayed ?? payload;
+  useLayoutEffect(() => {
+    renderedLineRef.current = line;
+  }, [line]);
+
+  /** 用锚点时钟算出显示行的进度 */
   const getProgress = useCallback(() => {
-    const current = payloadRef.current;
+    const current = renderedLineRef.current;
     return current ? getDesktopLyricsLineProgress(current, anchorNow()) : 0;
   }, []);
 
@@ -282,14 +319,14 @@ const DesktopLyrics = () => {
               fontSize={payload.fontSize}
               style={style}
               colors={payload.colors}
-              text={payload.text}
-              romaji={payload.romaji}
-              translation={payload.translation}
-              nextText={payload.nextText}
-              status={payload.status}
+              text={line?.text}
+              romaji={line?.romaji}
+              translation={line?.translation}
+              nextText={line?.nextText}
+              status={line?.status}
               hasTranslation={payload.hasTranslation}
               hasRomaji={payload.hasRomaji}
-              index={payload.index}
+              index={line?.index ?? payload.index}
               playId={payload.playId}
               getProgress={getProgress}
             />

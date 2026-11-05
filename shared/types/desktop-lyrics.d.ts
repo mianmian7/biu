@@ -57,6 +57,17 @@ declare global {
     seq: number;
   }
 
+  /** 下一句歌词：桌面歌词窗口按自己的时钟在它开始时换句，不等主窗口的 timeupdate */
+  interface DesktopLyricsUpcomingLine {
+    index: number;
+    text: string;
+    romaji?: string;
+    translation?: string;
+    nextText?: string;
+    lineStartMs: number;
+    lineEndMs: number;
+  }
+
   /** 桌面悬浮歌词窗口的展示内容 */
   interface DesktopLyricsPayload {
     /** 设置里是否开启桌面歌词 */
@@ -83,6 +94,8 @@ declare global {
     lineStartMs?: number;
     /** 当前行进度高亮结束时间（毫秒） */
     lineEndMs?: number;
+    /** 下一句（前奏状态时为第一句），没有下一句时为空 */
+    upcoming?: DesktopLyricsUpcomingLine;
     /** 最近一次媒体事件的播放锚点 */
     anchor: DesktopLyricsAnchor;
     /** 歌词偏移（毫秒） */

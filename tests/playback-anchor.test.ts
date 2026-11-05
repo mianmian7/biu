@@ -6,6 +6,7 @@ import {
   getDesktopLyricsLineProgress,
   markPlaybackAnchor,
   resetPlaybackAnchor,
+  resolveDisplayedLine,
   usePlaybackAnchor,
 } from "@/common/utils/playback-anchor";
 import { defaultDesktopLyricsStyle, resolveDesktopLyricsColors } from "@shared/settings/desktop-lyrics";
@@ -88,5 +89,55 @@ describe("playback anchor store", () => {
   test("preserves fractional milliseconds and defaults a missing rate to one", () => {
     markPlaybackAnchor({ currentTime: 1.2345, playbackRate: 0 }, false, 1000);
     expect(usePlaybackAnchor.getState()).toMatchObject({ mediaMs: 1234.5, rate: 1, running: false });
+  });
+});
+
+describe("resolveDisplayedLine", () => {
+  // anchor: 255770ms at t=10000; the current line runs 255770-260250, the next starts at 258000
+  const upcoming: DesktopLyricsUpcomingLine = {
+    index: 1,
+    text: "next",
+    translation: "下一句",
+    nextText: "after",
+    lineStartMs: 258000,
+    lineEndMs: 261000,
+  };
+  const withUpcoming: DesktopLyricsPayload = { ...payload, text: "current", upcoming };
+
+  test("keeps the current line until the next line starts", () => {
+    expect(resolveDisplayedLine(withUpcoming, 10000 + 2229)).toBe(withUpcoming);
+  });
+
+  test("switches to the next line at its start time, so its progress starts at zero", () => {
+    const line = resolveDisplayedLine(withUpcoming, 10000 + 2230);
+    expect(line).toMatchObject({
+      index: 1,
+      text: "next",
+      translation: "下一句",
+      nextText: "after",
+      lineStartMs: 258000,
+      lineEndMs: 261000,
+      upcoming: undefined,
+      status: undefined,
+    });
+    expect(getDesktopLyricsLineProgress(line, 10000 + 2230)).toBe(0);
+  });
+
+  test("leaves the prelude title when the first line has not started", () => {
+    const prelude = { ...withUpcoming, index: -1, status: "前奏", lineStartMs: undefined, lineEndMs: undefined };
+    expect(resolveDisplayedLine(prelude, 10000)).toBe(prelude);
+    expect(resolveDisplayedLine(prelude, 10000 + 2230)).toMatchObject({ index: 1, status: undefined });
+  });
+
+  test("does not advance while the anchor is paused or without an upcoming line", () => {
+    const paused = { ...withUpcoming, anchor: { ...anchor, running: false } };
+    expect(resolveDisplayedLine(paused, 10000 + 60000)).toBe(paused);
+    expect(resolveDisplayedLine(payload, 10000 + 60000)).toBe(payload);
+  });
+
+  test("applies the lyric offset to the switch time", () => {
+    const shifted = { ...withUpcoming, offsetMs: 500 };
+    expect(resolveDisplayedLine(shifted, 10000 + 1729)).toBe(shifted);
+    expect(resolveDisplayedLine(shifted, 10000 + 1730).index).toBe(1);
   });
 });

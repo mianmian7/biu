@@ -50,6 +50,27 @@ export function getLineHighlightEnd(text: string, startMs: number, nextStartMs?:
   return Math.min(nextStartMs, startMs + estimated);
 }
 
+/** 生成第 index 句的展示内容，供桌面歌词窗口准时换句 */
+function buildUpcomingLine(
+  lyrics: LyricLine[],
+  index: number,
+  romajiLyrics: LyricLine[],
+  translatedLyrics: LyricLine[],
+): DesktopLyricsUpcomingLine | undefined {
+  const line = lyrics[index];
+  if (!line) return undefined;
+  const after = lyrics[index + 1];
+  return {
+    index,
+    text: line.text,
+    romaji: getCompanionByTime(romajiLyrics, line.time),
+    translation: getCompanionByTime(translatedLyrics, line.time),
+    nextText: after?.text,
+    lineStartMs: line.time,
+    lineEndMs: getLineHighlightEnd(line.text, line.time, after?.time),
+  };
+}
+
 /** 没有歌词行时的提示文字 */
 function getStatusText() {
   const { isLoading, isLoaded, autoStatus } = useLyricsStore.getState();
@@ -100,6 +121,7 @@ export function computeDesktopLyricsPayload(): DesktopLyricsPayload {
       ...base,
       text: title || undefined,
       status: playItem ? (lyrics.length > 0 ? "前奏" : getStatusText()) : undefined,
+      upcoming: playItem ? buildUpcomingLine(lyrics, 0, romajiLyrics, translatedLyrics) : undefined,
     };
   }
 
@@ -111,6 +133,7 @@ export function computeDesktopLyricsPayload(): DesktopLyricsPayload {
     nextText: nextLine?.text,
     lineStartMs: line.time,
     lineEndMs: getLineHighlightEnd(line.text, line.time, nextLine?.time),
+    upcoming: buildUpcomingLine(lyrics, index + 1, romajiLyrics, translatedLyrics),
   };
 }
 

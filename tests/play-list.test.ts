@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
 
 import { PlayMode } from "@/common/constants/audio";
-import { resetPlaybackAnchor, usePlaybackAnchor } from "@/common/utils/playback-anchor";
+import { anchorNow, markPlaybackAnchor, resetPlaybackAnchor, usePlaybackAnchor } from "@/common/utils/playback-anchor";
 import { usePlayList } from "@/store/play-list";
 
 vi.mock("@/common/utils/audio", () => ({
@@ -143,6 +143,33 @@ describe("play-list store", () => {
     audio.onloadstart!.call(audio, new Event("loadstart"));
     expect(usePlaybackAnchor.getState()).toMatchObject({ mediaMs: 0, running: false, seq: seq + 6 });
     audio.playbackRate = 1;
+  });
+
+  test.each([
+    { driftMs: 100, reanchored: false },
+    { driftMs: -100, reanchored: false },
+    { driftMs: 300, reanchored: true },
+    { driftMs: -300, reanchored: true },
+  ])("timeupdate re-anchors only when drift exceeds the limit ($driftMs ms)", async ({ driftMs, reanchored }) => {
+    const s = usePlayList.getState();
+    await s.init();
+    const audio = s.getAudio();
+    const paused = Object.getOwnPropertyDescriptor(audio, "paused");
+    try {
+      Object.defineProperty(audio, "paused", { configurable: true, value: false });
+      audio.currentTime = 10;
+      markPlaybackAnchor(audio, true, anchorNow() - 5000);
+      // the extrapolated position is about 15000ms; the media clock reports 15000 - drift
+      audio.currentTime = (15000 - driftMs) / 1000;
+      const seq = usePlaybackAnchor.getState().seq;
+      audio.ontimeupdate!.call(audio, new Event("timeupdate"));
+      const anchor = usePlaybackAnchor.getState();
+      expect(anchor.seq).toBe(reanchored ? seq + 1 : seq);
+      if (reanchored) expect(anchor).toMatchObject({ mediaMs: 15000 - driftMs, running: true });
+    } finally {
+      if (paused) Object.defineProperty(audio, "paused", paused);
+      else Reflect.deleteProperty(audio, "paused");
+    }
   });
 
   test.each([

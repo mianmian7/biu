@@ -39,3 +39,26 @@ export function getDesktopLyricsLineProgress(payload: DesktopLyricsPayload, now:
   const position = getAnchorPositionMs(payload.anchor, payload.offsetMs, now);
   return (position - payload.lineStartMs) / Math.max(1, payload.lineEndMs - payload.lineStartMs);
 }
+
+/**
+ * 按桌面歌词窗口自己的时钟决定显示哪一句：到了下一句的开始时间就换句，
+ * 进度与换句用同一个锚点时钟，新的一句从行首开始。主窗口随后发来的内容与之一致。
+ */
+export function resolveDisplayedLine(payload: DesktopLyricsPayload, now: number): DesktopLyricsPayload {
+  const { upcoming } = payload;
+  if (!upcoming) return payload;
+  const position = getAnchorPositionMs(payload.anchor, payload.offsetMs, now);
+  if (position < upcoming.lineStartMs) return payload;
+  return {
+    ...payload,
+    index: upcoming.index,
+    text: upcoming.text,
+    romaji: upcoming.romaji,
+    translation: upcoming.translation,
+    nextText: upcoming.nextText,
+    status: undefined,
+    lineStartMs: upcoming.lineStartMs,
+    lineEndMs: upcoming.lineEndMs,
+    upcoming: undefined,
+  };
+}

@@ -1,5 +1,4 @@
 import { addToast } from "@heroui/react";
-import log from "@/common/utils/logger";
 import { shuffle } from "es-toolkit/array";
 import { remove } from "es-toolkit/array";
 import { uniqueId } from "es-toolkit/compat";
@@ -9,8 +8,15 @@ import { immer } from "zustand/middleware/immer";
 
 import { getPlayModeList, PlayMode } from "@/common/constants/audio";
 import { getAudioUrl, getDashUrl, isUrlValid } from "@/common/utils/audio";
+import log from "@/common/utils/logger";
 import { beginPlayReport, endPlayReport, reportHeartbeat } from "@/common/utils/play-report";
-import { markPlaybackAnchor, resetPlaybackAnchor, usePlaybackAnchor } from "@/common/utils/playback-anchor";
+import {
+  anchorNow,
+  getAnchorPositionMs,
+  markPlaybackAnchor,
+  resetPlaybackAnchor,
+  usePlaybackAnchor,
+} from "@/common/utils/playback-anchor";
 import { stripHtml } from "@/common/utils/str";
 import { formatUrlProtocol } from "@/common/utils/url";
 import { isSubWindow } from "@/common/utils/window-role";
@@ -275,6 +281,30 @@ const playAudioSafely = async () => {
   }
 };
 
+/** 外推位置与真实播放位置相差超过该值时重新记录锚点 */
+export const ANCHOR_DRIFT_LIMIT_MS = 120;
+const MAX_DRIFT_LOGS_PER_TRACK = 20;
+let driftLogCount = 0;
+
+/**
+ * 锚点只在媒体事件时记录，外推时钟会和音频时钟慢慢分开。
+ * timeupdate 时对比两者，超过阈值就重新记录，桌面歌词的进度和换句才能对齐真实播放位置。
+ */
+const correctAnchorDrift = (media: HTMLMediaElement) => {
+  const anchor = usePlaybackAnchor.getState();
+  if (!anchor.running || media.paused) return;
+  const drift = getAnchorPositionMs(anchor, 0, anchorNow()) - media.currentTime * 1000;
+  if (Math.abs(drift) <= ANCHOR_DRIFT_LIMIT_MS) return;
+  markPlaybackAnchor(media, true);
+  if (driftLogCount < MAX_DRIFT_LOGS_PER_TRACK) {
+    driftLogCount += 1;
+    void invokeTauri("frontend_log", {
+      level: "info",
+      message: `[anchor] re-anchored after ${Math.round(drift)}ms drift at ${Math.round(media.currentTime * 1000)}ms`,
+    }).catch(() => {});
+  }
+};
+
 const updatePositionState = () => {
   if ("mediaSession" in navigator) {
     const dur = audio.duration;
@@ -428,6 +458,7 @@ export const usePlayList = create<State & Action>()(
             };
 
             audio.ontimeupdate = () => {
+              correctAnchorDrift(audio);
               const currentTime = Math.round(audio.currentTime * 100) / 100;
               usePlayProgress.getState().setCurrentTime(currentTime);
               const playItem = get().getPlayItem?.();
@@ -439,7 +470,10 @@ export const usePlayList = create<State & Action>()(
             audio.onplaying = () => markPlaybackAnchor(audio, true);
             audio.onwaiting = () => markPlaybackAnchor(audio, false);
             audio.onseeking = () => markPlaybackAnchor(audio, false);
-            audio.onloadstart = () => resetPlaybackAnchor();
+            audio.onloadstart = () => {
+              driftLogCount = 0;
+              resetPlaybackAnchor();
+            };
 
             audio.onseeked = () => {
               updatePositionState();

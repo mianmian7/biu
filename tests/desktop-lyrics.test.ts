@@ -161,6 +161,26 @@ describe("computeDesktopLyricsPayload", () => {
     expect(computeDesktopLyricsPayload()).toMatchObject({ index: 0, text: "まだ" });
   });
 
+  test("sends the next line so the lyrics window can switch on its own clock", () => {
+    useLyricsStore.getState().applyLyrics("[00:01.00]一行目\n[00:04.00]二行目\n[00:09.00]三行目", "[00:04.00]第二行");
+    usePlayProgress.setState({ currentTime: 0.5 });
+    expect(computeDesktopLyricsPayload().upcoming).toMatchObject({ index: 0, text: "一行目", lineStartMs: 1000 });
+
+    usePlayProgress.setState({ currentTime: 2 });
+    expect(computeDesktopLyricsPayload().upcoming).toEqual({
+      index: 1,
+      text: "二行目",
+      romaji: undefined,
+      translation: "第二行",
+      nextText: "三行目",
+      lineStartMs: 4000,
+      lineEndMs: getLineHighlightEnd("二行目", 4000, 9000),
+    });
+
+    usePlayProgress.setState({ currentTime: 10 });
+    expect(computeDesktopLyricsPayload().upcoming).toBeUndefined();
+  });
+
   test("shows the song title and status when there are no lyrics", () => {
     useLyricsStore.setState({ lyrics: [], isLoaded: true, isLoading: false });
 
