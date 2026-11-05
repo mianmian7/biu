@@ -116,6 +116,26 @@ describe("play-list store", () => {
     }
   });
 
+  test("switching tracks clears the previous track's duration until the new one loads", async () => {
+    const s = usePlayList.getState();
+    await s.init();
+    const play = vi.spyOn(s.getAudio(), "play").mockResolvedValue(undefined);
+    usePlayList.setState({
+      list: [
+        { id: "a", type: "audio", sid: 1, title: "a", audioUrl: "https://audio.test/a.mp3" },
+        { id: "b", type: "audio", sid: 2, title: "b", audioUrl: "https://audio.test/b.mp3" },
+      ],
+      playId: "a",
+      duration: 220,
+    } as any);
+    try {
+      usePlayList.setState({ playId: "b" });
+      expect(usePlayList.getState().duration).toBeUndefined();
+    } finally {
+      play.mockRestore();
+    }
+  });
+
   test("anchors media events but leaves timeupdate and onplay unanchored", async () => {
     const s = usePlayList.getState();
     await s.init();

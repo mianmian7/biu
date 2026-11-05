@@ -467,7 +467,10 @@ export const usePlayList = create<State & Action>()(
               }
             };
 
-            audio.onplaying = () => markPlaybackAnchor(audio, true);
+            audio.onplaying = () => {
+              markPlaybackAnchor(audio, true);
+              markSwitchPlaying();
+            };
             audio.onwaiting = () => markPlaybackAnchor(audio, false);
             audio.onseeking = () => markPlaybackAnchor(audio, false);
             audio.onloadstart = () => {
@@ -1112,7 +1115,26 @@ async function refreshCurrentAudioSource(): Promise<boolean> {
   return false;
 }
 
+/** 切歌计时：从切歌开始到拿到播放链接、到开始出声各用了多久，写入日志便于排查切歌慢 */
+let switchTiming: { startedAt: number; urlAt?: number } | undefined;
+
+const logSwitchTiming = (message: string) =>
+  void invokeTauri("frontend_log", { level: "info", message: `[switch] ${message}` }).catch(() => {});
+
+function markSwitchPlaying() {
+  if (!switchTiming) return;
+  const { startedAt, urlAt } = switchTiming;
+  switchTiming = undefined;
+  const now = performance.now();
+  const urlMs = urlAt === undefined ? "?" : Math.round(urlAt - startedAt);
+  const loadMs = urlAt === undefined ? "?" : Math.round(now - urlAt);
+  const item = usePlayList.getState().getPlayItem?.();
+  const quality = item?.isLossless ? "lossless" : item?.isDolby ? "dolby" : "standard";
+  logSwitchTiming(`playing after ${Math.round(now - startedAt)}ms (url ${urlMs}ms, load ${loadMs}ms, ${quality})`);
+}
+
 function resetAudioAndPlay(url: string) {
+  if (switchTiming) switchTiming.urlAt = performance.now();
   audio.src = url;
   audio.currentTime = 0;
   audio.load();
@@ -1128,6 +1150,9 @@ usePlayList.subscribe(async (state, prevState) => {
     // a stale switch must stop, or it would load the old track and write its URL into the new item.
     const switchId = ++playSwitchId;
     const isStale = () => switchId !== playSwitchId;
+    switchTiming = state.playId ? { startedAt: performance.now() } : undefined;
+    // 新歌的时长加载出来之前不显示上一首的时长
+    if (state.duration !== undefined) usePlayList.setState({ duration: undefined });
     if (!state.playId) {
       const prevPlayItem = prevState.list.find(item => item.id === prevState.playId);
       if (shouldReportPlayRecord(prevPlayItem)) {
