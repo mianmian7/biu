@@ -28,6 +28,9 @@ owner = Claude（osa-a1）
 - `upcoming` 改为数组，带当前句之后最多 8 句（`DESKTOP_LYRICS_UPCOMING_LINES`）。`resolveDisplayedLine` 取其中最后一个已开始的句子（同一时间的多句取最后一句，与 `getActiveLyricIndex` 一致），并把其后的句子留在返回值里，rAF 继续换句，直到没有后续句。
 - `seek()` 先设置 `audio.currentTime` 并记录暂停锚点，再更新 `usePlayProgress`，桌面歌词不会收到“新行号 + 旧锚点”的内容。
 
+### 修订 2（2026-11-05，回应 Sol 第 2 轮审查）
+- `upcoming` 不再按句数截取，改为从下一句开始时间起 10 秒内开始的所有句子（`DESKTOP_LYRICS_UPCOMING_MS`）。同一时间的多句整组发送；范围只取决于当前句，同一句内的进度更新不会改变 payload。
+
 ### 3. 不改的部分
 `getLineHighlightEnd` 的行时长估算、双行交替布局（index 奇偶）、前奏显示、翻译和罗马音的取法都不变。主进程（Rust）只透传 payload，不需要改。
 
@@ -43,6 +46,7 @@ owner = Claude（osa-a1）
 - [x] T5 验收：`npx vitest run` 全部通过；`npx tsc --noEmit -p .` 的错误数不比改动前多（改动前为 118）；`cd src-tauri && cargo test` 通过。
   - 结果：vitest 20 文件 226 用例通过；tsc 错误 118（与改动前相同）；cargo test 30 通过。Linux 录屏（Xvfb，2.5s 一句的测试歌词，15 句）：每句走满所需时间修复前 0.67s，修复后 2.40–2.43s。
 - [ ] 代码逻辑审查（GPT-6.1-Sol）
-  - 第 1 轮（2cb0f82c）：2 项 P2（向后 seek 闪错行；一次同步间隔内跨多句）。已按修订 1 修复，待第 2 轮复审。
+  - 第 1 轮（2cb0f82c）：2 项 P2（向后 seek 闪错行；一次同步间隔内跨多句）。已按修订 1 修复。
+  - 第 2 轮（2ec8cbb4）：seek 问题关闭；固定 8 句窗口仍会截断同时间戳组和密集短句（P2）。已按修订 2 修复，待第 3 轮复审。
 - [ ] 视觉/动态审查（Gemini 4 Argon）：在 Mac 上录一首有逐行歌词的歌，至少 1 分钟，用连续帧检查每次换句时高亮是否从行首开始。
 - [ ] 最终验收（Opus）

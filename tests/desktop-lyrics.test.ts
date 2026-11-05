@@ -16,7 +16,7 @@ import {
   resolveDisplayedLine,
   usePlaybackAnchor,
 } from "@/common/utils/playback-anchor";
-import { useLyricsStore } from "@/store/lyrics";
+import { getActiveLyricIndex, useLyricsStore } from "@/store/lyrics";
 import { usePlayList } from "@/store/play-list";
 import { usePlayProgress } from "@/store/play-progress";
 import { useSettings } from "@/store/settings";
@@ -193,6 +193,27 @@ describe("computeDesktopLyricsPayload", () => {
 
     usePlayProgress.setState({ currentTime: 10 });
     expect(computeDesktopLyricsPayload().upcoming).toBeUndefined();
+  });
+
+  test("sends every upcoming line that starts within the time range, keeping same-time groups whole", () => {
+    const same = Array.from({ length: 9 }, (_, i) => `[00:01.00]same-${i}`);
+    const dense = Array.from({ length: 12 }, (_, i) => `[00:02.${String(i * 20).padStart(3, "0")}]dense-${i}`);
+    useLyricsStore
+      .getState()
+      .applyLyrics([...same, ...dense, "[00:11.00]in-range", "[00:11.01]out-of-range"].join("\n"));
+    usePlayProgress.setState({ currentTime: 0.5 });
+    const upcoming = computeDesktopLyricsPayload().upcoming!;
+    expect(upcoming.map(line => line.text)).toEqual([
+      ...same.map((_, i) => `same-${i}`),
+      ...dense.map((_, i) => `dense-${i}`),
+      "in-range",
+    ]);
+    markPlaybackAnchor({ currentTime: 0.5, playbackRate: 1 }, true, 10000);
+    const payload = computeDesktopLyricsPayload();
+    const lyrics = useLyricsStore.getState().lyrics;
+    for (const ms of [1000, 2000, 2200]) {
+      expect(resolveDisplayedLine(payload, 10000 + ms - 500).index).toBe(getActiveLyricIndex(lyrics, ms));
+    }
   });
 
   test("shows the song title and status when there are no lyrics", () => {

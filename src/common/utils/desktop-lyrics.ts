@@ -50,28 +50,37 @@ export function getLineHighlightEnd(text: string, startMs: number, nextStartMs?:
   return Math.min(nextStartMs, startMs + estimated);
 }
 
-/** 一次发给桌面歌词窗口的后续句数，覆盖两次同步之间跨过多句的情况（短句、倍速） */
-export const DESKTOP_LYRICS_UPCOMING_LINES = 8;
+/**
+ * 发给桌面歌词窗口的后续句覆盖的时间范围（毫秒），从下一句的开始时间算起。
+ * 按时间而不按句数截取：同一时间的多句总是整组发送，两次同步之间跨过多少句都能接上。
+ * 范围只取决于当前句，同一句内的进度更新不会改变内容，不会多发。
+ */
+export const DESKTOP_LYRICS_UPCOMING_MS = 10_000;
 
-/** 生成从第 from 句开始的后续几句，供桌面歌词窗口按自己的时钟准时换句 */
+/** 生成从第 from 句开始、在范围内开始的后续句，供桌面歌词窗口按自己的时钟准时换句 */
 function buildUpcomingLines(
   lyrics: LyricLine[],
   from: number,
   romajiLyrics: LyricLine[],
   translatedLyrics: LyricLine[],
 ): DesktopLyricsUpcomingLine[] | undefined {
-  const lines = lyrics.slice(from, from + DESKTOP_LYRICS_UPCOMING_LINES).map((line, offset) => {
-    const after = lyrics[from + offset + 1];
-    return {
-      index: from + offset,
+  const first = lyrics[from];
+  if (!first) return undefined;
+  const lastStartMs = first.time + DESKTOP_LYRICS_UPCOMING_MS;
+  const lines: DesktopLyricsUpcomingLine[] = [];
+  for (let index = from; index < lyrics.length && lyrics[index].time <= lastStartMs; index += 1) {
+    const line = lyrics[index];
+    const after = lyrics[index + 1];
+    lines.push({
+      index,
       text: line.text,
       romaji: getCompanionByTime(romajiLyrics, line.time),
       translation: getCompanionByTime(translatedLyrics, line.time),
       nextText: after?.text,
       lineStartMs: line.time,
       lineEndMs: getLineHighlightEnd(line.text, line.time, after?.time),
-    };
-  });
+    });
+  }
   return lines.length ? lines : undefined;
 }
 
