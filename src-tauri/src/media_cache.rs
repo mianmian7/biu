@@ -51,6 +51,13 @@ impl MediaCache {
 
     fn with_limit(directory: PathBuf, max_bytes: u64) -> std::io::Result<Self> {
         std::fs::create_dir_all(&directory)?;
+        // A crash or kill during a fill leaves `.part` files behind; nothing is filling yet.
+        for entry in std::fs::read_dir(&directory)?.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("part") {
+                let _ = std::fs::remove_file(path);
+            }
+        }
         Ok(Self {
             directory,
             max_bytes,
@@ -240,7 +247,13 @@ impl MediaCache {
             if total <= self.max_bytes {
                 break;
             }
-            tokio::fs::remove_file(self.path(&key, "bin")).await?;
+            // A file that cannot be removed (locked on Windows) must not stop the rest.
+            if tokio::fs::remove_file(self.path(&key, "bin"))
+                .await
+                .is_err()
+            {
+                continue;
+            }
             let _ = tokio::fs::remove_file(self.path(&key, "json")).await;
             total = total.saturating_sub(size);
             log::info!("[media_cache] evicted {} {}", &key[..8], size);
@@ -378,6 +391,48 @@ mod tests {
         let encoded: String =
             url::form_urlencoded::byte_serialize(remote.as_str().as_bytes()).collect();
         format!("http://{address}/cache-test/remote?u={encoded}")
+    }
+
+    #[test]
+    fn startup_removes_partial_files_left_by_a_crash() {
+        let directory = TestDirectory::new();
+        std::fs::create_dir_all(&directory.0).unwrap();
+        let key = "a".repeat(64);
+        for name in [format!("{key}.part"), format!("{key}.json.part")] {
+            std::fs::write(directory.0.join(name), b"partial").unwrap();
+        }
+        std::fs::write(directory.0.join(format!("{key}.bin")), PAYLOAD).unwrap();
+        MediaCache::new(directory.0.clone()).unwrap();
+        assert!(!directory.0.join(format!("{key}.part")).exists());
+        assert!(!directory.0.join(format!("{key}.json.part")).exists());
+        assert!(directory.0.join(format!("{key}.bin")).exists());
+    }
+
+    #[tokio::test]
+    async fn eviction_skips_a_file_it_cannot_remove() {
+        let directory = TestDirectory::new();
+        let cache = MediaCache::with_limit(directory.0.clone(), 30).unwrap();
+        // The oldest entry cannot be removed: its `.bin` is a directory.
+        let stuck = "a".repeat(64);
+        std::fs::create_dir(directory.0.join(format!("{stuck}.bin"))).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let older = "b".repeat(64);
+        std::fs::write(directory.0.join(format!("{older}.bin")), [0u8; 20]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let newer = "c".repeat(64);
+        std::fs::write(directory.0.join(format!("{newer}.bin")), [0u8; 20]).unwrap();
+        let stuck_size = std::fs::metadata(directory.0.join(format!("{stuck}.bin")))
+            .unwrap()
+            .len();
+        // Removing `older` brings the total within the limit only if the stuck entry is skipped.
+        let cache = MediaCache {
+            max_bytes: stuck_size + 20,
+            ..cache
+        };
+        cache.evict().await.unwrap();
+        assert!(directory.0.join(format!("{stuck}.bin")).exists());
+        assert!(!directory.0.join(format!("{older}.bin")).exists());
+        assert!(directory.0.join(format!("{newer}.bin")).exists());
     }
 
     #[test]
