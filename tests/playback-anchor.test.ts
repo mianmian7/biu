@@ -102,7 +102,7 @@ describe("resolveDisplayedLine", () => {
     lineStartMs: 258000,
     lineEndMs: 261000,
   };
-  const withUpcoming: DesktopLyricsPayload = { ...payload, text: "current", upcoming };
+  const withUpcoming: DesktopLyricsPayload = { ...payload, text: "current", upcoming: [upcoming] };
 
   test("keeps the current line until the next line starts", () => {
     expect(resolveDisplayedLine(withUpcoming, 10000 + 2229)).toBe(withUpcoming);
@@ -133,6 +133,31 @@ describe("resolveDisplayedLine", () => {
     const paused = { ...withUpcoming, anchor: { ...anchor, running: false } };
     expect(resolveDisplayedLine(paused, 10000 + 60000)).toBe(paused);
     expect(resolveDisplayedLine(payload, 10000 + 60000)).toBe(payload);
+  });
+
+  test("skips every line that started since the last update, keeping the rest for later", () => {
+    const short = (index: number, lineStartMs: number) => ({
+      index,
+      text: `l${index}`,
+      lineStartMs,
+      lineEndMs: lineStartMs + 100,
+    });
+    const quick = { ...withUpcoming, upcoming: [short(1, 258000), short(2, 258100), short(3, 258200)] };
+    const line = resolveDisplayedLine(quick, 10000 + 2230 + 120);
+    expect(line).toMatchObject({ index: 2, lineStartMs: 258100 });
+    expect(line.upcoming).toEqual([short(3, 258200)]);
+    expect(resolveDisplayedLine(line, 10000 + 2230 + 120)).toBe(line);
+  });
+
+  test("picks the last of several lines that share a start time, like getActiveLyricIndex", () => {
+    const same = {
+      ...withUpcoming,
+      upcoming: [
+        { index: 1, text: "a", lineStartMs: 258000, lineEndMs: 258000 },
+        { index: 2, text: "b", lineStartMs: 258000, lineEndMs: 261000 },
+      ],
+    };
+    expect(resolveDisplayedLine(same, 10000 + 2230)).toMatchObject({ index: 2, text: "b", upcoming: undefined });
   });
 
   test("applies the lyric offset to the switch time", () => {

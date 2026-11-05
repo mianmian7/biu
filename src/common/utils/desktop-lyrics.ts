@@ -50,25 +50,29 @@ export function getLineHighlightEnd(text: string, startMs: number, nextStartMs?:
   return Math.min(nextStartMs, startMs + estimated);
 }
 
-/** 生成第 index 句的展示内容，供桌面歌词窗口准时换句 */
-function buildUpcomingLine(
+/** 一次发给桌面歌词窗口的后续句数，覆盖两次同步之间跨过多句的情况（短句、倍速） */
+export const DESKTOP_LYRICS_UPCOMING_LINES = 8;
+
+/** 生成从第 from 句开始的后续几句，供桌面歌词窗口按自己的时钟准时换句 */
+function buildUpcomingLines(
   lyrics: LyricLine[],
-  index: number,
+  from: number,
   romajiLyrics: LyricLine[],
   translatedLyrics: LyricLine[],
-): DesktopLyricsUpcomingLine | undefined {
-  const line = lyrics[index];
-  if (!line) return undefined;
-  const after = lyrics[index + 1];
-  return {
-    index,
-    text: line.text,
-    romaji: getCompanionByTime(romajiLyrics, line.time),
-    translation: getCompanionByTime(translatedLyrics, line.time),
-    nextText: after?.text,
-    lineStartMs: line.time,
-    lineEndMs: getLineHighlightEnd(line.text, line.time, after?.time),
-  };
+): DesktopLyricsUpcomingLine[] | undefined {
+  const lines = lyrics.slice(from, from + DESKTOP_LYRICS_UPCOMING_LINES).map((line, offset) => {
+    const after = lyrics[from + offset + 1];
+    return {
+      index: from + offset,
+      text: line.text,
+      romaji: getCompanionByTime(romajiLyrics, line.time),
+      translation: getCompanionByTime(translatedLyrics, line.time),
+      nextText: after?.text,
+      lineStartMs: line.time,
+      lineEndMs: getLineHighlightEnd(line.text, line.time, after?.time),
+    };
+  });
+  return lines.length ? lines : undefined;
 }
 
 /** 没有歌词行时的提示文字 */
@@ -121,7 +125,7 @@ export function computeDesktopLyricsPayload(): DesktopLyricsPayload {
       ...base,
       text: title || undefined,
       status: playItem ? (lyrics.length > 0 ? "前奏" : getStatusText()) : undefined,
-      upcoming: playItem ? buildUpcomingLine(lyrics, 0, romajiLyrics, translatedLyrics) : undefined,
+      upcoming: playItem ? buildUpcomingLines(lyrics, 0, romajiLyrics, translatedLyrics) : undefined,
     };
   }
 
@@ -133,7 +137,7 @@ export function computeDesktopLyricsPayload(): DesktopLyricsPayload {
     nextText: nextLine?.text,
     lineStartMs: line.time,
     lineEndMs: getLineHighlightEnd(line.text, line.time, nextLine?.time),
-    upcoming: buildUpcomingLine(lyrics, index + 1, romajiLyrics, translatedLyrics),
+    upcoming: buildUpcomingLines(lyrics, index + 1, romajiLyrics, translatedLyrics),
   };
 }
 

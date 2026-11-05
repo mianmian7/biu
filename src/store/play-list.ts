@@ -605,10 +605,12 @@ export const usePlayList = create<State & Action>()(
           });
         },
         seek: s => {
-          usePlayProgress.getState().setCurrentTime(s);
+          // 先移动音频和锚点再更新进度，桌面歌词不会收到“新行号 + 旧锚点”的内容
           if (audio) {
             audio.currentTime = s;
+            markPlaybackAnchor(audio, false);
           }
+          usePlayProgress.getState().setCurrentTime(s);
         },
         togglePlay: async () => {
           if (!get().list?.length) {

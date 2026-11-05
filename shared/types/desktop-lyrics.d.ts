@@ -94,8 +94,8 @@ declare global {
     lineStartMs?: number;
     /** 当前行进度高亮结束时间（毫秒） */
     lineEndMs?: number;
-    /** 下一句（前奏状态时为第一句），没有下一句时为空 */
-    upcoming?: DesktopLyricsUpcomingLine;
+    /** 之后的几句（前奏状态时从第一句开始），按时间顺序；没有后续句时为空 */
+    upcoming?: DesktopLyricsUpcomingLine[];
     /** 最近一次媒体事件的播放锚点 */
     anchor: DesktopLyricsAnchor;
     /** 歌词偏移（毫秒） */

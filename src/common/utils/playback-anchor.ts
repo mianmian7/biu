@@ -41,24 +41,29 @@ export function getDesktopLyricsLineProgress(payload: DesktopLyricsPayload, now:
 }
 
 /**
- * 按桌面歌词窗口自己的时钟决定显示哪一句：到了下一句的开始时间就换句，
- * 进度与换句用同一个锚点时钟，新的一句从行首开始。主窗口随后发来的内容与之一致。
+ * 按桌面歌词窗口自己的时钟决定显示哪一句：取后续句中最后一个已经开始的句子
+ * （与 getActiveLyricIndex 一致，同一时间的多句取最后一句），进度与换句用同一个锚点时钟，
+ * 新的一句从行首开始。返回值保留其后的句子，窗口可以继续换句；没有句子开始时原样返回。
  */
 export function resolveDisplayedLine(payload: DesktopLyricsPayload, now: number): DesktopLyricsPayload {
   const { upcoming } = payload;
-  if (!upcoming) return payload;
+  if (!upcoming?.length) return payload;
   const position = getAnchorPositionMs(payload.anchor, payload.offsetMs, now);
-  if (position < upcoming.lineStartMs) return payload;
+  let started = -1;
+  while (started + 1 < upcoming.length && upcoming[started + 1].lineStartMs <= position) started += 1;
+  if (started < 0) return payload;
+  const line = upcoming[started];
+  const rest = upcoming.slice(started + 1);
   return {
     ...payload,
-    index: upcoming.index,
-    text: upcoming.text,
-    romaji: upcoming.romaji,
-    translation: upcoming.translation,
-    nextText: upcoming.nextText,
+    index: line.index,
+    text: line.text,
+    romaji: line.romaji,
+    translation: line.translation,
+    nextText: line.nextText,
     status: undefined,
-    lineStartMs: upcoming.lineStartMs,
-    lineEndMs: upcoming.lineEndMs,
-    upcoming: undefined,
+    lineStartMs: line.lineStartMs,
+    lineEndMs: line.lineEndMs,
+    upcoming: rest.length ? rest : undefined,
   };
 }

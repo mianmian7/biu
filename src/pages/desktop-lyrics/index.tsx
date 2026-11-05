@@ -123,19 +123,19 @@ const DesktopLyrics = () => {
       setDisplayed(line);
     };
 
-    const first = resolveDisplayedLine(payload, anchorNow());
-    show(first);
-    // 已经换到下一句，或者没有下一句、没在播放：等主窗口发来新内容
-    if (first !== payload || !payload.upcoming || !payload.anchor.running) return;
+    let current = resolveDisplayedLine(payload, anchorNow());
+    show(current);
+    // 没有后续句或没在播放：等主窗口发来新内容
+    if (!current.upcoming || !payload.anchor.running) return;
 
     let rafId = 0;
     const tick = () => {
-      const line = resolveDisplayedLine(payload, anchorNow());
-      if (line !== payload) {
+      const line = resolveDisplayedLine(current, anchorNow());
+      if (line !== current) {
+        current = line;
         show(line);
-        return;
       }
-      rafId = requestAnimationFrame(tick);
+      if (current.upcoming) rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);

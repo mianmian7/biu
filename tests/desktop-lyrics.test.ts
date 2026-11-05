@@ -9,9 +9,11 @@ import {
   startDesktopLyricsSync,
 } from "@/common/utils/desktop-lyrics";
 import {
+  anchorNow,
   getDesktopLyricsLineProgress,
   markPlaybackAnchor,
   resetPlaybackAnchor,
+  resolveDisplayedLine,
   usePlaybackAnchor,
 } from "@/common/utils/playback-anchor";
 import { useLyricsStore } from "@/store/lyrics";
@@ -164,18 +166,30 @@ describe("computeDesktopLyricsPayload", () => {
   test("sends the next line so the lyrics window can switch on its own clock", () => {
     useLyricsStore.getState().applyLyrics("[00:01.00]一行目\n[00:04.00]二行目\n[00:09.00]三行目", "[00:04.00]第二行");
     usePlayProgress.setState({ currentTime: 0.5 });
-    expect(computeDesktopLyricsPayload().upcoming).toMatchObject({ index: 0, text: "一行目", lineStartMs: 1000 });
+    expect(computeDesktopLyricsPayload().upcoming?.map(line => line.index)).toEqual([0, 1, 2]);
+    expect(computeDesktopLyricsPayload().upcoming?.[0]).toMatchObject({ text: "一行目", lineStartMs: 1000 });
 
     usePlayProgress.setState({ currentTime: 2 });
-    expect(computeDesktopLyricsPayload().upcoming).toEqual({
-      index: 1,
-      text: "二行目",
-      romaji: undefined,
-      translation: "第二行",
-      nextText: "三行目",
-      lineStartMs: 4000,
-      lineEndMs: getLineHighlightEnd("二行目", 4000, 9000),
-    });
+    expect(computeDesktopLyricsPayload().upcoming).toEqual([
+      {
+        index: 1,
+        text: "二行目",
+        romaji: undefined,
+        translation: "第二行",
+        nextText: "三行目",
+        lineStartMs: 4000,
+        lineEndMs: getLineHighlightEnd("二行目", 4000, 9000),
+      },
+      {
+        index: 2,
+        text: "三行目",
+        romaji: undefined,
+        translation: undefined,
+        nextText: undefined,
+        lineStartMs: 9000,
+        lineEndMs: getLineHighlightEnd("三行目", 9000, undefined),
+      },
+    ]);
 
     usePlayProgress.setState({ currentTime: 10 });
     expect(computeDesktopLyricsPayload().upcoming).toBeUndefined();
@@ -222,6 +236,27 @@ describe("desktop lyrics sync", () => {
       markPlaybackAnchor({ currentTime: 100, playbackRate: 1 }, true);
       expect(syncMock().mock.calls.length).toBe(sent + 2);
       expect(syncMock().mock.lastCall?.[0].anchor).toMatchObject({ mediaMs: 100000, running: true });
+    } finally {
+      stop();
+    }
+  });
+
+  test.each([true, false])("a backward seek never sends the target line with the old anchor (playing=%s)", running => {
+    useLyricsStore.getState().applyLyrics("[00:00.00]zero\n[00:04.00]four\n[00:08.00]eight\n[00:12.00]twelve");
+    usePlayProgress.setState({ currentTime: 12 });
+    markPlaybackAnchor({ currentTime: 12, playbackRate: 1 }, running);
+    const stop = startDesktopLyricsSync();
+    try {
+      const sent = syncMock().mock.calls.length;
+      usePlayList.getState().seek(0);
+      const payloads = syncMock()
+        .mock.calls.slice(sent)
+        .map(call => call[0] as DesktopLyricsPayload);
+      expect(payloads.at(-1)).toMatchObject({ index: 0, anchor: { mediaMs: 0 } });
+      for (const sentPayload of payloads) {
+        const shown = resolveDisplayedLine(sentPayload, anchorNow() + 50);
+        expect(shown.index).toBe(sentPayload.index);
+      }
     } finally {
       stop();
     }
