@@ -144,7 +144,9 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // 更新事件会广播到所有窗口；只在主窗口提示，桌面歌词和迷你播放器窗口不弹
   useEffect(() => {
+    if (isSubWindow()) return;
     const removeListener = window.electron.onUpdateAvailable(updateInfo => {
       setUpdate({
         isUpdateAvailable: true,
@@ -159,6 +161,7 @@ export function App() {
   }, [setUpdate]);
 
   useEffect(() => {
+    if (isSubWindow()) return;
     let active = true;
     window.electron
       .getUpdateMode()
