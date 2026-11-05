@@ -41,18 +41,22 @@ owner = Claude（osa-a1）
 设置页里的缓存上限和「清除音频缓存」按钮。
 
 ## 清单
-- [ ] T1 缓存模块（键、存储、`.part` 原子提交、LRU 淘汰、进行中去重），新建 `src-tauri/src/media_cache.rs`。
-- [ ] T2 `http_media` 接入：命中走缓存文件响应（支持 Range 和 HEAD）；未命中照常转发，并在后台填充缓存。
-- [ ] T3 Rust 测试，用模拟上游：
+- [x] T1 缓存模块（键、存储、`.part` 原子提交、LRU 淘汰、进行中去重），新建 `src-tauri/src/media_cache.rs`。
+  - 结果：复用 sha2，实现路径键、完整长度校验、原子提交、默认 1 GB LRU 与后台下载去重；失败清理临时文件。
+- [x] T2 `http_media` 接入：命中走缓存文件响应（支持 Range 和 HEAD）；未命中照常转发，并在后台填充缓存。
+  - 结果：BiliState 持有 app_cache_dir()/audio-cache 实例；仅已登记主机及指定扩展名使用缓存，复用本地文件的 Range/HEAD 响应逻辑，保留本地白名单。
+- [x] T3 Rust 测试，用模拟上游：
   - 第一次请求转发，并在后台写入缓存；
   - 第二次请求（不同主机、不同查询参数、同一路径）不访问上游，内容一致；
   - 命中缓存时 Range 和 HEAD 正确；
   - 上游中途断开时不提交缓存；
   - 超过上限时淘汰最旧的。
-- [ ] T4 验收：
+  - 结果：新增 6 个测试覆盖上述流程，并验证去重、空闲超时、重试、元数据损坏、已打开读者与缓存主机边界；Rust 共 37 项通过。
+- [x] T4 验收：
   - `cd src-tauri && cargo test`、`cargo clippy --all-targets` 通过；
   - `npx vitest run` 通过；
   - Linux 实机（Xvfb）：播放一首歌，切走再切回。第二次的 `[switch] ... load` 明显缩短，日志出现 `[media_cache] hit`。
+  - 结果：cargo fmt/clippy/test、Vitest 233 项及 rsbuild/Tauri debug 构建通过；Xvfb + PulseAudio null sink + D-Bus 实播最终代码，同一键 7d87c34f 首次 load 222ms、切回 147ms，出现 hit；日志保存在 /tmp/biu-audio-cache-final/。
 - [ ] 代码逻辑审查（执行者为 GPT-6.1-Sol，审查改派 Opus 或 Gemini 4 Argon）
 - [ ] 视觉/动态审查：不适用（无 UI 改动）
 - [ ] 最终验收（Opus）

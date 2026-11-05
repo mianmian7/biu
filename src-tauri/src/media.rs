@@ -216,8 +216,6 @@ pub async fn serve_local_file(
     state: &BiliState,
     raw_path: &str,
 ) -> Result<(), String> {
-    use tokio::io::AsyncSeekExt;
-
     let path = std::path::PathBuf::from(raw_path);
     if !state.is_local_file_allowed(&path) {
         let _ = socket
@@ -231,7 +229,7 @@ pub async fn serve_local_file(
         return Err(format!("local file path not allowlisted: {raw_path}"));
     }
 
-    let mut file = match tokio::fs::File::open(&path).await {
+    let file = match tokio::fs::File::open(&path).await {
         Ok(f) => f,
         Err(e) => {
             let _ = socket
@@ -245,6 +243,29 @@ pub async fn serve_local_file(
             return Err(e.to_string());
         }
     };
+
+    serve_file(
+        socket,
+        is_head,
+        range,
+        allow_origin,
+        file,
+        local_audio_mime(&path),
+    )
+    .await
+}
+
+// Local allowlisting stays in serve_local_file. Cache readers supply an already
+// opened file so LRU eviction cannot remove a hit between lookup and playback.
+async fn serve_file(
+    socket: &mut tokio::net::TcpStream,
+    is_head: bool,
+    range: Option<&str>,
+    allow_origin: &str,
+    mut file: tokio::fs::File,
+    content_type: &str,
+) -> Result<(), String> {
+    use tokio::io::AsyncSeekExt;
 
     let total_len = file.metadata().await.map_err(|e| e.to_string())?.len();
     let Some((start, end, status)) = parse_byte_range(range, total_len) else {
@@ -260,7 +281,6 @@ pub async fn serve_local_file(
     };
 
     let count = if total_len == 0 { 0 } else { end - start + 1 };
-    let content_type = local_audio_mime(&path);
     let reason = if status == 206 {
         "Partial Content"
     } else {
@@ -429,6 +449,36 @@ pub async fn http_media(
     }
 
     let is_head = req.method() == "HEAD";
+    if let Some((cache, key)) = state
+        .media_cache
+        .as_ref()
+        .filter(|_| {
+            parsed.host_str().is_some_and(|host| {
+                state
+                    .allowed_media_hosts
+                    .read()
+                    .unwrap()
+                    .contains(&host.to_ascii_lowercase())
+            })
+        })
+        .and_then(|cache| crate::media_cache::MediaCache::key(&parsed).map(|key| (cache, key)))
+    {
+        if let Some(entry) = cache.lookup(&key).await {
+            return serve_file(
+                socket,
+                is_head,
+                range.as_deref(),
+                allow_origin,
+                entry.file,
+                &entry.content_type,
+            )
+            .await;
+        }
+        if req.method() == "GET" {
+            log::info!("[media_cache] miss {} 0", &key[..8]);
+            cache.fill(key, parsed.clone(), state.client(), MEDIA_IDLE_TIMEOUT);
+        }
+    }
     let method_str = req.method().as_str().to_string();
     let range_owned = range.map(|r| r.to_string());
     let build_upstream_req = || {

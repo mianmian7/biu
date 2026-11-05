@@ -58,6 +58,7 @@ pub struct BiliState {
     pub client: RwLock<reqwest::Client>,
     pub allowed_media_hosts: RwLock<HashSet<String>>,
     pub allowed_local_dirs: RwLock<HashSet<PathBuf>>,
+    pub media_cache: Option<Arc<crate::media_cache::MediaCache>>,
 }
 
 impl BiliState {
@@ -71,6 +72,7 @@ impl BiliState {
             client: RwLock::new(client),
             allowed_media_hosts: RwLock::new(HashSet::new()),
             allowed_local_dirs: RwLock::new(HashSet::new()),
+            media_cache: None,
         })
     }
 

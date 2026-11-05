@@ -9,6 +9,7 @@ mod fonts;
 mod local_music;
 mod lyrics;
 mod media;
+mod media_cache;
 mod media_keys;
 mod migration;
 mod shortcut;
@@ -251,9 +252,18 @@ fn main() {
             let _ = std::fs::create_dir_all(&app_data_dir);
             let cookie_path = app_data_dir.join("cookies.json");
             let saved_proxy = parse_proxy_settings_value(get_saved_proxy_settings(app.handle()));
-            let bili_state = Arc::new(
-                BiliState::new(cookie_path, saved_proxy).expect("failed to initialize BiliState"),
-            );
+            let mut bili_state =
+                BiliState::new(cookie_path, saved_proxy).expect("failed to initialize BiliState");
+            match app
+                .path()
+                .app_cache_dir()
+                .ok()
+                .and_then(|dir| media_cache::MediaCache::new(dir.join("audio-cache")).ok())
+            {
+                Some(cache) => bili_state.media_cache = Some(Arc::new(cache)),
+                None => log::warn!("audio cache unavailable; continuing without disk caching"),
+            }
+            let bili_state = Arc::new(bili_state);
             migration::run_startup_migration(app.handle(), &app_data_dir, &bili_state);
             sync_allowed_local_dirs_from_store(app.handle(), &bili_state);
             app.manage(bili_state.clone());
