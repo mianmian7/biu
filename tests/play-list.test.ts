@@ -136,6 +136,37 @@ describe("play-list store", () => {
     }
   });
 
+  test("switch timing covers resolving an mv's pages before its item is replaced", async () => {
+    const s = usePlayList.getState();
+    await s.init();
+    const audio = s.getAudio();
+    const play = vi.spyOn(audio, "play").mockResolvedValue(undefined);
+    const invoke = vi.fn(async (cmd: string) => (cmd === "media_base" ? "http://127.0.0.1:1/t/" : undefined));
+    (window as any).__TAURI__ = { core: { invoke } };
+    let now = 1000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const { getDashUrl } = await import("@/common/utils/audio");
+    vi.mocked(getDashUrl).mockImplementationOnce(async () => {
+      now += 2000;
+      return { audioUrl: "https://video.test/a.mp3", isLossless: false } as Awaited<ReturnType<typeof getDashUrl>>;
+    });
+    try {
+      usePlayList.setState({ list: [{ id: "bv", type: "mv", bvid: "BVx", title: "m" }], playId: "bv" } as any);
+      await vi.waitFor(() => expect(usePlayList.getState().playId).not.toBe("bv"));
+      await vi.waitFor(() => expect(audio.src).toContain("video.test"));
+      now += 300;
+      audio.onplaying!.call(audio, new Event("playing"));
+      const messages = invoke.mock.calls.filter(([cmd]) => cmd === "frontend_log").map(([, args]: any) => args.message);
+      expect(messages).toContainEqual(
+        expect.stringMatching(/^\[switch\] playing after 2300ms \(url 2000ms, load 300ms/),
+      );
+    } finally {
+      clock.mockRestore();
+      play.mockRestore();
+      delete (window as any).__TAURI__;
+    }
+  });
+
   test("anchors media events but leaves timeupdate and onplay unanchored", async () => {
     const s = usePlayList.getState();
     await s.init();

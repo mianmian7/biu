@@ -1117,6 +1117,8 @@ async function refreshCurrentAudioSource(): Promise<boolean> {
 
 /** 切歌计时：从切歌开始到拿到播放链接、到开始出声各用了多久，写入日志便于排查切歌慢 */
 let switchTiming: { startedAt: number; urlAt?: number } | undefined;
+/** 补全信息后替换当前条目会再触发一次切歌，这次切歌沿用原来的计时 */
+let continuingSwitch = false;
 
 const logSwitchTiming = (message: string) =>
   void invokeTauri("frontend_log", { level: "info", message: `[switch] ${message}` }).catch(() => {});
@@ -1150,7 +1152,9 @@ usePlayList.subscribe(async (state, prevState) => {
     // a stale switch must stop, or it would load the old track and write its URL into the new item.
     const switchId = ++playSwitchId;
     const isStale = () => switchId !== playSwitchId;
-    switchTiming = state.playId ? { startedAt: performance.now() } : undefined;
+    if (!continuingSwitch || !switchTiming) {
+      switchTiming = state.playId ? { startedAt: performance.now() } : undefined;
+    }
     // 新歌的时长加载出来之前不显示上一首的时长
     if (state.duration !== undefined) usePlayList.setState({ duration: undefined });
     if (!state.playId) {
@@ -1231,24 +1235,29 @@ usePlayList.subscribe(async (state, prevState) => {
                 cover: firstMV.pageCover,
               });
 
-              usePlayList.setState(state => {
-                const listItemIndex = state.list.findIndex(item => item.id === state.playId);
-                state.list.splice(
-                  listItemIndex,
-                  1,
-                  {
-                    ...firstMV,
-                    ...{
-                      audioUrl: mvPlayData?.audioUrl,
-                      videoUrl: mvPlayData?.videoUrl,
-                      isLossless: mvPlayData?.isLossless,
-                      isDolby: mvPlayData?.isDolby,
+              continuingSwitch = true;
+              try {
+                usePlayList.setState(state => {
+                  const listItemIndex = state.list.findIndex(item => item.id === state.playId);
+                  state.list.splice(
+                    listItemIndex,
+                    1,
+                    {
+                      ...firstMV,
+                      ...{
+                        audioUrl: mvPlayData?.audioUrl,
+                        videoUrl: mvPlayData?.videoUrl,
+                        isLossless: mvPlayData?.isLossless,
+                        isDolby: mvPlayData?.isDolby,
+                      },
                     },
-                  },
-                  ...restMV,
-                );
-                state.playId = firstMV.id;
-              });
+                    ...restMV,
+                  );
+                  state.playId = firstMV.id;
+                });
+              } finally {
+                continuingSwitch = false;
+              }
             } else {
               log.error("无法获取音频播放链接", {
                 type: "mv",
