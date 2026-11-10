@@ -67,6 +67,7 @@ owner = Claude（osa-a1）
 - [x] 6. 验收：`npx vitest run`、`cargo test`、`cargo clippy --all-targets -- -D warnings` 全部通过。
   2026-11-10：vitest 277/277（原 233）；cargo test 62/62（原 40）；clippy 0 警告；fmt 无差异；改动文件 ESLint 仅有 HEAD 既有的 `tests/platform.test.ts:202`；knip 退出 0、条目与基线相同。
 - [ ] 7. 合入 `feat/tauri`、发版、mac 安装：用户授权范围内执行，结果记录在本文件。
+  2026-11-10：6 个提交已推送 `origin/audit/quality-2026-11-10`，`origin/feat/tauri` 快进到 `e6817d7e`；Tauri Build run `42798967070` 六个平台全部成功。mac 冒烟（CI arm64 包从临时目录启动，未替换 /Applications）：启动无 panic，恢复当前曲目时经代理 5 次缓存命中，`autoStart=false` 未生成 LaunchAgent，系统 quit 事件正常退出。未完成：界面内播放、拖动、切歌、缓存未命中首播（mac 锁屏，MediaRemote 命令不能送达）。`v2.0.9` 发版等这项实测后执行。
 
 ## 不做
 - 不改 UI 外观，不加新功能，不做大重构。
