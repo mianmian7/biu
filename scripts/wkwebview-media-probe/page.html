@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><body><script>
+window.hasReal = new URLSearchParams(location.search).has("real");
+window.cases = ["c1_mp4_len","c2_octet","c3_chunked_ok","c4_chunked_trunc","c5_close_trunc","c6_adts_aac","c7_adts_as_mp4","c8_403_html","c9_200_html","c10_gzip","c11_502_empty","c12_close_ok","c13_no_range_200","c14_octet_no_range","c15_octet_m4s_ext.m4s", "r1_real_octet", "r2_real_mp4", "r3_real_octet_norange"].filter(c => !/^r\d_/.test(c) || window.hasReal);
+window.state = {};
+window.start = name => {
+  const a = new Audio(); a.muted = true; a.preload = "auto"; a.crossOrigin = "anonymous";
+  const st = { name, ev: [], playResult: "pending", t0: performance.now() }; window.state[name] = st; st.a = a;
+  const stamp = n => st.ev.push(`${n}@${Math.round(performance.now()-st.t0)}`);
+  ["loadedmetadata","canplay","playing","waiting","stalled","ended","error","abort"].forEach(n => a.addEventListener(n, () => stamp(n === "error" ? `error(code=${a.error && a.error.code})` : n)));
+  a.src = (location.hostname === "localhost" ? "http://127.0.0.1:" + location.port : "") + "/" + name;
+  a.play().then(() => { st.playResult = "resolved"; }, e => { st.playResult = `rejected:${e.name}`; });
+  return "started";
+};
+window.report = name => {
+  const st = window.state[name], a = st.a;
+  return JSON.stringify({ name, playResult: st.playResult, duration: a.duration, currentTime: Math.round(a.currentTime*100)/100, ended: a.ended, paused: a.paused, errorCode: a.error ? a.error.code : null, readyState: a.readyState, events: st.ev, hidden: document.visibilityState });
+};
+</script>
