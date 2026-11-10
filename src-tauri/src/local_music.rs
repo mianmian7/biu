@@ -180,7 +180,19 @@ pub async fn delete_local_music_file<R: Runtime>(
         return Ok(false);
     }
     sync_allowed_local_dirs_from_store(&app, &state);
-    let p = PathBuf::from(&file_path);
+    delete_local_music_path(&state, &file_path).await
+}
+
+async fn delete_local_music_path(state: &BiliState, file_path: &str) -> Result<bool, String> {
+    let p = PathBuf::from(file_path);
+    if !p
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(is_supported_audio_ext)
+    {
+        log::warn!("[local-music] denied deleting unsupported audio extension: {file_path}");
+        return Ok(false);
+    }
     if !state.is_local_file_allowed(&p) {
         log::warn!("[local-music] denied deleting non-allowlisted path: {file_path}");
         return Ok(false);
@@ -194,5 +206,53 @@ pub async fn delete_local_music_file<R: Runtime>(
             }
         },
         _ => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn c13_deletion_rejects_non_audio_files_in_scanned_directory() {
+        let dir = std::env::temp_dir().join(format!("biu-delete-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let state = BiliState::new(dir.join("cookies.json"), None).unwrap();
+        for name in ["settings.json", "track.mp3.json", "README", "audio.mp4"] {
+            let path = dir.join(name);
+            fs::write(&path, b"keep me").unwrap();
+            assert!(
+                scan_local_music_dirs(&[dir.to_string_lossy().into_owned()], &state).is_empty()
+            );
+            assert!(
+                !delete_local_music_path(&state, path.to_str().unwrap())
+                    .await
+                    .unwrap(),
+                "deleted {name}"
+            );
+            assert!(path.exists());
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn c13_deletion_accepts_scanner_audio_extensions_but_requires_allowlist() {
+        let dir = std::env::temp_dir().join(format!("biu-delete-audio-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let state = BiliState::new(dir.join("cookies.json"), None).unwrap();
+        for ext in AUDIO_EXTS {
+            let path = dir.join(format!("track.{}", ext.to_ascii_uppercase()));
+            fs::write(&path, b"audio fixture").unwrap();
+            assert!(!delete_local_music_path(&state, path.to_str().unwrap())
+                .await
+                .unwrap());
+        }
+        let scanned = scan_local_music_dirs(&[dir.to_string_lossy().into_owned()], &state);
+        assert_eq!(scanned.len(), AUDIO_EXTS.len());
+        for item in scanned {
+            assert!(delete_local_music_path(&state, &item.path).await.unwrap());
+            assert!(!Path::new(&item.path).exists());
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 }

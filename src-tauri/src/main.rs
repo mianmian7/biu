@@ -123,6 +123,16 @@ fn devtools_toggle<R: Runtime>(app: AppHandle<R>) {
     let _ = app;
 }
 
+fn bili_state_for_startup(
+    cookie_path: std::path::PathBuf,
+    saved_proxy: Option<bili::ProxySettings>,
+) -> Result<BiliState, String> {
+    BiliState::new(cookie_path.clone(), saved_proxy).or_else(|err| {
+        log::warn!("[proxy] failed to initialize saved proxy; retrying without proxy: {err}");
+        BiliState::new(cookie_path, None)
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -135,6 +145,10 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -147,6 +161,8 @@ fn main() {
         // saved flag would bring back `decorated: false` from builds that had no title bar.
         .plugin(
             tauri_plugin_window_state::Builder::default()
+                // These windows manage their own bounds and visibility.
+                .with_denylist(&["desktop-lyrics", "mini-player"])
                 .with_state_flags(
                     tauri_plugin_window_state::StateFlags::all()
                         - tauri_plugin_window_state::StateFlags::DECORATIONS,
@@ -252,8 +268,8 @@ fn main() {
             let _ = std::fs::create_dir_all(&app_data_dir);
             let cookie_path = app_data_dir.join("cookies.json");
             let saved_proxy = parse_proxy_settings_value(get_saved_proxy_settings(app.handle()));
-            let mut bili_state =
-                BiliState::new(cookie_path, saved_proxy).expect("failed to initialize BiliState");
+            let mut bili_state = bili_state_for_startup(cookie_path, saved_proxy)
+                .expect("failed to initialize BiliState");
             match app
                 .path()
                 .app_cache_dir()
@@ -266,6 +282,7 @@ fn main() {
             let bili_state = Arc::new(bili_state);
             migration::run_startup_migration(app.handle(), &app_data_dir, &bili_state);
             sync_allowed_local_dirs_from_store(app.handle(), &bili_state);
+            store::sync_autostart_from_store(app.handle());
             app.manage(bili_state.clone());
             app.manage(Arc::new(DesktopLyricsState::default()));
 
@@ -316,6 +333,7 @@ fn main() {
                 if let Some(dl_mgr) = app.try_state::<Arc<DownloadManager>>() {
                     dl_mgr.shutdown(std::time::Duration::from_secs(5));
                 }
+                crate::updater::install_downloaded_update_on_exit(app);
             }
             // macOS: clicking the Dock icon after the main window was hidden to the tray.
             #[cfg(target_os = "macos")]
@@ -342,6 +360,53 @@ mod tests {
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use url::Url;
+
+    #[test]
+    fn c1_invalid_saved_proxy_falls_back_but_live_proxy_update_returns_error() {
+        for host in [
+            "bad host",
+            "[invalid",
+            "127.0.0.1:invalid",
+            "http://127.0.0.1",
+            "127.0.0.1/path",
+            "user@127.0.0.1",
+        ] {
+            let path = std::env::temp_dir()
+                .join(format!("biu-proxy-{}", uuid::Uuid::new_v4()))
+                .join("cookies.json");
+            let proxy = bili::ProxySettings {
+                proxy_type: "http".into(),
+                host: Some(host.into()),
+                port: Some(7890),
+                ..Default::default()
+            };
+            assert!(BiliState::new(path.clone(), Some(proxy.clone())).is_err());
+            let state = bili_state_for_startup(path, Some(proxy.clone()))
+                .unwrap_or_else(|err| panic!("startup failed for invalid proxy {host}: {err}"));
+            assert!(state.update_proxy(Some(proxy)).is_err());
+            assert!(state.update_proxy(None).is_ok());
+        }
+    }
+
+    #[test]
+    fn c1_valid_proxy_hosts_remain_accepted() {
+        for scheme in ["http", "socks4", "socks5"] {
+            for host in ["127.0.0.1", "localhost", "proxy.example", "[::1]"] {
+                let path =
+                    std::env::temp_dir().join(format!("biu-valid-proxy-{}", uuid::Uuid::new_v4()));
+                let proxy = bili::ProxySettings {
+                    proxy_type: scheme.into(),
+                    host: Some(host.into()),
+                    port: Some(7890),
+                    ..Default::default()
+                };
+                assert!(
+                    BiliState::new(path, Some(proxy)).is_ok(),
+                    "rejected {scheme} host {host}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn store_read_write_clear_and_unknown_name() {

@@ -283,6 +283,36 @@ impl UpdaterState {
             .as_ref()
             .map(|(update, _)| (update.version.clone(), update.body.clone()))
     }
+
+    fn downloaded_message(&self) -> Option<UpdateMessagePayload> {
+        if *self.phase.lock().unwrap() != UpdaterPhase::Downloaded {
+            return None;
+        }
+        Some(UpdateMessagePayload {
+            status: "downloaded".into(),
+            mode: Some(self.mode.lock().unwrap().clone()),
+            process_info: None,
+            download_info: self.downloaded_file.lock().unwrap().as_ref().map(|path| {
+                DownloadInfoPayload {
+                    file_path: path.to_string_lossy().to_string(),
+                }
+            }),
+            error: None,
+        })
+    }
+
+    fn take_downloaded_update_for_exit(&self) -> Option<(Update, Vec<u8>)> {
+        if *self.mode.lock().unwrap() != "auto" {
+            return None;
+        }
+        let mut phase = self.phase.lock().unwrap();
+        if *phase != UpdaterPhase::Downloaded {
+            return None;
+        }
+        let downloaded = self.downloaded.lock().unwrap().take()?;
+        *phase = UpdaterPhase::Installing;
+        Some(downloaded)
+    }
 }
 
 impl Default for UpdaterState {
@@ -397,6 +427,15 @@ pub async fn perform_check<R: Runtime>(
     };
 
     if let Some((version, notes)) = state.downloaded_summary() {
+        emit_to_main(
+            app,
+            "app:update-available",
+            UpdateAvailablePayload {
+                latest_version: version.clone(),
+                release_notes: notes.clone(),
+            },
+        );
+        emit_downloaded_state(app, &state);
         return CheckAppUpdateResult {
             is_update_available: true,
             latest_version: Some(version),
@@ -571,6 +610,12 @@ async fn download_manual_installer_to_disk<R: Runtime>(
     Ok(dest_path)
 }
 
+fn emit_downloaded_state<R: Runtime>(app: &AppHandle<R>, state: &UpdaterState) {
+    if let Some(message) = state.downloaded_message() {
+        emit_to_main(app, "app:update-message", message);
+    }
+}
+
 pub async fn download_update_internal<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let Some(state) = app.try_state::<Arc<UpdaterState>>() else {
         return Err("Updater state not initialized".into());
@@ -578,6 +623,7 @@ pub async fn download_update_internal<R: Runtime>(app: &AppHandle<R>) -> Result<
 
     if !state.try_begin_download() {
         log::info!("[updater] download_app_update: already downloading or downloaded");
+        emit_downloaded_state(app, &state);
         return Ok(());
     }
 
@@ -611,25 +657,13 @@ pub async fn download_update_internal<R: Runtime>(app: &AppHandle<R>) -> Result<
     if mode == "manual" {
         match download_manual_installer_to_disk(app, &update, &mode).await {
             Ok(path) => {
-                *state.phase.lock().unwrap() = UpdaterPhase::Downloaded;
                 *state.downloaded_file.lock().unwrap() = Some(path.clone());
+                *state.phase.lock().unwrap() = UpdaterPhase::Downloaded;
                 log::info!(
                     "[updater] onDownloadAppProgress: status=downloaded mode=manual file={}",
                     path.display()
                 );
-                emit_to_main(
-                    app,
-                    "app:update-message",
-                    UpdateMessagePayload {
-                        status: "downloaded".into(),
-                        mode: Some(mode),
-                        process_info: None,
-                        download_info: Some(DownloadInfoPayload {
-                            file_path: path.to_string_lossy().to_string(),
-                        }),
-                        error: None,
-                    },
-                );
+                emit_downloaded_state(app, &state);
                 return Ok(());
             }
             Err(err) => {
@@ -717,19 +751,7 @@ pub async fn download_update_internal<R: Runtime>(app: &AppHandle<R>) -> Result<
             *state.downloaded_file.lock().unwrap() = Some(cached_path.clone());
             *state.phase.lock().unwrap() = UpdaterPhase::Downloaded;
 
-            emit_to_main(
-                app,
-                "app:update-message",
-                UpdateMessagePayload {
-                    status: "downloaded".into(),
-                    mode: Some(mode),
-                    process_info: None,
-                    download_info: Some(DownloadInfoPayload {
-                        file_path: cached_path.to_string_lossy().to_string(),
-                    }),
-                    error: None,
-                },
-            );
+            emit_downloaded_state(app, &state);
             Ok(())
         }
         Err(err) => {
@@ -760,16 +782,7 @@ pub fn install_downloaded_update_on_exit<R: Runtime>(app: &AppHandle<R>) {
     let Some(state) = app.try_state::<Arc<UpdaterState>>() else {
         return;
     };
-    if *state.mode.lock().unwrap() != "auto" {
-        return;
-    }
-    let phase = *state.phase.lock().unwrap();
-    if phase != UpdaterPhase::Downloaded {
-        return;
-    }
-    let downloaded = state.downloaded.lock().unwrap().take();
-    if let Some((update, bytes)) = downloaded {
-        *state.phase.lock().unwrap() = UpdaterPhase::Installing;
+    if let Some((update, bytes)) = state.take_downloaded_update_for_exit() {
         let update = update.restart_after_install(false);
         if let Err(err) = update.install(bytes) {
             log::warn!("[updater] failed to install update on exit: {err}");
@@ -878,6 +891,167 @@ pub async fn quit_and_install<R: Runtime>(app: AppHandle<R>) -> Result<bool, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
+    use tauri::test::{mock_app, mock_builder, mock_context, noop_assets, MockRuntime};
+    use tauri::Listener;
+    use tokio::io::AsyncReadExt;
+
+    fn capture_events(app: &AppHandle<MockRuntime>, event: &str) -> Arc<Mutex<Vec<Value>>> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        app.listen(event, move |event| {
+            captured
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+        events
+    }
+
+    async fn update_fixture(app: &AppHandle<MockRuntime>) -> Update {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let mut buf = [0u8; 1024];
+                let n = socket.read(&mut buf).await.unwrap();
+                assert!(n > 0, "fixture request ended before HTTP headers");
+                request.extend_from_slice(&buf[..n]);
+            }
+            let body = json!({
+                "version": "99.0.0", "notes": "Fixture release notes",
+                "url": "https://example.invalid/update.bin", "signature": "fixture"
+            })
+            .to_string();
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let update = app
+            .updater_builder()
+            .endpoints(vec![format!("http://{addr}/latest.json").parse().unwrap()])
+            .unwrap()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .check()
+            .await
+            .unwrap()
+            .unwrap();
+        server.await.unwrap();
+        update
+    }
+
+    #[tokio::test]
+    async fn c8_repeated_download_replays_completed_manual_and_auto_messages() {
+        for mode in ["manual", "auto"] {
+            let app = mock_app();
+            let state = Arc::new(UpdaterState::default());
+            *state.mode.lock().unwrap() = mode.into();
+            *state.downloaded_file.lock().unwrap() = Some(PathBuf::from("fixture-installer.bin"));
+            *state.phase.lock().unwrap() = UpdaterPhase::Downloaded;
+            app.manage(state.clone());
+            let messages = capture_events(app.handle(), "app:update-message");
+            for _ in 0..2 {
+                download_app_update(app.handle().clone()).await.unwrap();
+            }
+            let messages = messages.lock().unwrap();
+            assert_eq!(
+                messages.len(),
+                2,
+                "completed {mode} download was not replayed"
+            );
+            for message in messages.iter() {
+                assert_eq!(
+                    message,
+                    &json!({
+                        "status": "downloaded", "mode": mode,
+                        "downloadInfo": { "filePath": "fixture-installer.bin" }
+                    })
+                );
+            }
+            assert_eq!(*state.phase.lock().unwrap(), UpdaterPhase::Downloaded);
+        }
+    }
+
+    fn mock_updater_app() -> tauri::App<MockRuntime> {
+        let mut context = mock_context(noop_assets());
+        context.config_mut().plugins.0.insert(
+            "updater".into(),
+            json!({
+                "pubkey": "fixture", "dangerousInsecureTransportProtocol": true
+            }),
+        );
+        mock_builder()
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .build(context)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn c8_downloaded_check_replays_version_notes_and_download_state() {
+        let app = mock_updater_app();
+        let update = update_fixture(app.handle()).await;
+        let state = Arc::new(UpdaterState::default());
+        *state.mode.lock().unwrap() = "auto".into();
+        *state.downloaded.lock().unwrap() = Some((update, vec![1, 2, 3]));
+        *state.downloaded_file.lock().unwrap() = Some(PathBuf::from("fixture-update.bin"));
+        *state.phase.lock().unwrap() = UpdaterPhase::Downloaded;
+        app.manage(state);
+        let available = capture_events(app.handle(), "app:update-available");
+        let messages = capture_events(app.handle(), "app:update-message");
+        let result = perform_check(app.handle(), false).await;
+        assert!(result.is_update_available);
+        assert_eq!(result.latest_version.as_deref(), Some("99.0.0"));
+        assert_eq!(
+            result.release_notes.as_deref(),
+            Some("Fixture release notes")
+        );
+        assert_eq!(
+            *available.lock().unwrap(),
+            vec![json!({
+                "latestVersion": "99.0.0", "releaseNotes": "Fixture release notes"
+            })]
+        );
+        assert_eq!(messages.lock().unwrap()[0]["status"], "downloaded");
+    }
+
+    #[tokio::test]
+    async fn c8_incomplete_download_does_not_emit_downloaded() {
+        for phase in [UpdaterPhase::Downloading, UpdaterPhase::Installing] {
+            let app = mock_app();
+            let state = Arc::new(UpdaterState::default());
+            *state.phase.lock().unwrap() = phase;
+            app.manage(state);
+            let messages = capture_events(app.handle(), "app:update-message");
+            download_app_update(app.handle().clone()).await.unwrap();
+            assert!(messages.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn c9_exit_consumes_auto_update_once_and_skips_manual() {
+        let app = mock_updater_app();
+        let update = update_fixture(app.handle()).await;
+        let state = UpdaterState::default();
+        *state.mode.lock().unwrap() = "manual".into();
+        *state.downloaded.lock().unwrap() = Some((update, vec![1, 2, 3]));
+        *state.phase.lock().unwrap() = UpdaterPhase::Downloaded;
+        assert!(state.take_downloaded_update_for_exit().is_none());
+        assert!(state.downloaded.lock().unwrap().is_some());
+        *state.mode.lock().unwrap() = "auto".into();
+        let (update, bytes) = state.take_downloaded_update_for_exit().unwrap();
+        assert_eq!(update.version, "99.0.0");
+        assert_eq!(bytes, vec![1, 2, 3]);
+        assert_eq!(*state.phase.lock().unwrap(), UpdaterPhase::Installing);
+        assert!(state.take_downloaded_update_for_exit().is_none());
+        assert!(state.downloaded.lock().unwrap().is_none());
+        app.manage(Arc::new(state));
+        // Both exit routes can call the public wrapper after the payload was consumed.
+        install_downloaded_update_on_exit(app.handle());
+        install_downloaded_update_on_exit(app.handle());
+    }
 
     #[test]
     fn resolve_update_mode_matches_platform_rules() {

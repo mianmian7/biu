@@ -188,17 +188,63 @@ pub fn write_store<R: Runtime>(
         return Err("store value must be a JSON object".into());
     };
     let store = app.store(&filename).map_err(|e| e.to_string())?;
+    let previous_auto_start = (name == "app-settings")
+        .then(|| auto_start_enabled(&store.get("appSettings").unwrap_or(Value::Null)));
     for (k, v) in obj {
         store.set(k.clone(), v.clone());
     }
     store.save().map_err(|e| e.to_string())?;
     if name == "app-settings" {
+        let settings = store.get("appSettings").unwrap_or(Value::Null);
+        sync_autostart_setting(previous_auto_start, &settings, |enabled| {
+            apply_autostart(&app, enabled)
+        });
         use tauri::Manager;
         if let Some(bili) = app.try_state::<std::sync::Arc<crate::bili::BiliState>>() {
             sync_allowed_local_dirs_from_value(&bili, &final_val);
         }
     }
     Ok(())
+}
+
+fn auto_start_enabled(value: &Value) -> bool {
+    value
+        .get("appSettings")
+        .unwrap_or(value)
+        .get("autoStart")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn sync_autostart_setting(
+    previous: Option<bool>,
+    value: &Value,
+    apply: impl FnOnce(bool) -> Result<(), String>,
+) {
+    let enabled = auto_start_enabled(value);
+    if previous != Some(enabled) {
+        if let Err(err) = apply(enabled) {
+            log::warn!("[autostart] failed to sync autoStart={enabled}: {err}");
+        }
+    }
+}
+
+fn apply_autostart<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    }
+    .map_err(|err| err.to_string())
+}
+
+pub fn sync_autostart_from_store<R: Runtime>(app: &AppHandle<R>) {
+    match read_store_object(app, "app-settings") {
+        Ok(value) => sync_autostart_setting(None, &value, |enabled| apply_autostart(app, enabled)),
+        Err(err) => log::warn!("[autostart] failed to read startup settings: {err}"),
+    }
 }
 
 pub fn sync_allowed_local_dirs_from_value(bili: &crate::bili::BiliState, val: &Value) {
@@ -312,4 +358,57 @@ pub fn file_store_clear(dir: &std::path::Path, name: &str) -> Result<bool, Strin
     let bytes = serde_json::to_vec_pretty(&defaults).map_err(|e| e.to_string())?;
     std::fs::write(dir.join(filename), bytes).map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn c4_autostart_syncs_both_values_on_startup() {
+        for enabled in [false, true] {
+            let mut calls = Vec::new();
+            sync_autostart_setting(
+                None,
+                &json!({"appSettings": {"autoStart": enabled}}),
+                |value| {
+                    calls.push(value);
+                    Ok(())
+                },
+            );
+            assert_eq!(calls, vec![enabled]);
+        }
+        assert!(!auto_start_enabled(&default_app_settings_json()));
+    }
+
+    #[test]
+    fn c4_autostart_syncs_only_when_setting_changes() {
+        for previous in [false, true] {
+            for enabled in [false, true] {
+                let mut calls = Vec::new();
+                sync_autostart_setting(Some(previous), &json!({"autoStart": enabled}), |value| {
+                    calls.push(value);
+                    Ok(())
+                });
+                assert_eq!(
+                    calls,
+                    if previous == enabled {
+                        vec![]
+                    } else {
+                        vec![enabled]
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn c4_autostart_failure_does_not_fail_settings_sync() {
+        let mut calls = Vec::new();
+        sync_autostart_setting(Some(false), &json!({"autoStart": true}), |value| {
+            calls.push(value);
+            Err("fixture: no permission to register login item".into())
+        });
+        assert_eq!(calls, vec![true]);
+    }
 }

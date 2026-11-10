@@ -35,9 +35,14 @@ pub const SYSTEM_FFMPEG_PATHS: &[&str] = &[
     "/snap/bin/ffmpeg",
 ];
 
-static RESOLVED_FFMPEG: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+struct ResolvedFfmpeg {
+    user_setting: Option<String>,
+    path: PathBuf,
+}
 
-fn resolved_ffmpeg_cache() -> &'static RwLock<Option<PathBuf>> {
+static RESOLVED_FFMPEG: OnceLock<RwLock<Option<ResolvedFfmpeg>>> = OnceLock::new();
+
+fn resolved_ffmpeg_cache() -> &'static RwLock<Option<ResolvedFfmpeg>> {
     RESOLVED_FFMPEG.get_or_init(|| RwLock::new(None))
 }
 
@@ -159,14 +164,15 @@ fn probe_ffmpeg(candidate: &Path) -> Result<(), String> {
 }
 
 pub fn resolve_ffmpeg_path(user_setting: Option<&str>) -> Result<PathBuf, String> {
-    if let Some(cached) = resolved_ffmpeg_cache().read().unwrap().clone() {
-        if cached.exists() {
-            return Ok(cached);
+    let user_setting = user_setting.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(cached) = resolved_ffmpeg_cache().read().unwrap().as_ref() {
+        if cached.user_setting.as_deref() == user_setting && cached.path.exists() {
+            return Ok(cached.path.clone());
         }
     }
 
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(s) = user_setting.map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(s) = user_setting {
         candidates.push(PathBuf::from(s));
     }
     if let Ok(env_path) = std::env::var("BIU_FFMPEG_PATH") {
@@ -244,7 +250,10 @@ pub fn resolve_ffmpeg_path(user_setting: Option<&str>) -> Result<PathBuf, String
         }
         match probe_ffmpeg(&candidate) {
             Ok(()) => {
-                *resolved_ffmpeg_cache().write().unwrap() = Some(candidate.clone());
+                *resolved_ffmpeg_cache().write().unwrap() = Some(ResolvedFfmpeg {
+                    user_setting: user_setting.map(str::to_owned),
+                    path: candidate.clone(),
+                });
                 return Ok(candidate);
             }
             Err(err) => {
@@ -3277,6 +3286,30 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[cfg(unix)]
+    #[test]
+    fn c5_ffmpeg_cache_tracks_changed_user_setting() {
+        let dir = std::env::temp_dir().join(format!("biu-ffmpeg-cache-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("ffmpeg-first");
+        let second = dir.join("ffmpeg-second");
+        for path in [&first, &second] {
+            fs::write(path, b"#!/bin/sh\nexit 0\n").unwrap();
+        }
+        assert_eq!(resolve_ffmpeg_path(first.to_str()).unwrap(), first);
+        assert_eq!(resolve_ffmpeg_path(second.to_str()).unwrap(), second);
+        assert_eq!(resolve_ffmpeg_path(first.to_str()).unwrap(), first);
+        // Whitespace is normalized, just like the actual candidate path.
+        let padded = format!("  {}  ", second.display());
+        assert_eq!(resolve_ffmpeg_path(Some(&padded)).unwrap(), second);
+        // Clearing the setting must not reuse either explicitly configured path.
+        if let Ok(default_path) = resolve_ffmpeg_path(None) {
+            assert_ne!(default_path, first);
+            assert_ne!(default_path, second);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     fn parse_range_header(req: &str) -> Option<(u64, u64)> {
         for line in req.lines() {
