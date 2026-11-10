@@ -200,9 +200,8 @@ export function App() {
 
   useEffect(() => {
     const handleBeforeUnload = () => {
-      if (usePlayProgress.getState().currentTime) {
-        usePlayProgress.getState().saveCurrentTime();
-      }
+      if (isSubWindow()) return;
+      usePlayProgress.getState().saveCurrentTime(usePlayList.getState().playId);
     };
 
     window.addEventListener("beforeunload", handleBeforeUnload);
