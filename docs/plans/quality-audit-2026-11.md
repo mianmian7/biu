@@ -68,6 +68,7 @@ owner = Claude（osa-a1）
   2026-11-10：vitest 277/277（原 233）；cargo test 62/62（原 40）；clippy 0 警告；fmt 无差异；改动文件 ESLint 仅有 HEAD 既有的 `tests/platform.test.ts:202`；knip 退出 0、条目与基线相同。
 - [ ] 7. 合入 `feat/tauri`、发版、mac 安装：用户授权范围内执行，结果记录在本文件。
   2026-11-10：6 个提交已推送 `origin/audit/quality-2026-11-10`，`origin/feat/tauri` 快进到 `e6817d7e`；Tauri Build run `42798967070` 六个平台全部成功。mac 冒烟（CI arm64 包从临时目录启动，未替换 /Applications）：启动无 panic，恢复当前曲目时经代理 5 次缓存命中，`autoStart=false` 未生成 LaunchAgent，系统 quit 事件正常退出。未完成：界面内播放、拖动、切歌、缓存未命中首播（mac 锁屏，MediaRemote 命令不能送达）。`v2.0.9` 发版等这项实测后执行。
+  - [ ] 7a. mac 界面实测（Gemini 4 Argon，mac 上 pi + lcu computer use；2026-11-10 用户提议）：用 CI 包 `e6817d7e`（`/tmp/biu-ci-e6817d7e.dmg`）从临时目录启动，系统静音；依次验证：续播当前曲目、进度前进、拖动进度、下一首/上一首、播放一首未缓存的歌、加载中点暂停、暂停后继续、Cmd+Q 退出。证据：每步截图路径与时间、`Biu.log` 新增行。结束后恢复静音前的音量状态、删除临时副本。视觉/行为证据由 Opus 核对后勾选。
 
 ## 不做
 - 不改 UI 外观，不加新功能，不做大重构。
