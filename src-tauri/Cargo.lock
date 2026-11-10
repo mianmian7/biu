@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "biu"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "cookie_store 0.21.1",
  "dirs",
