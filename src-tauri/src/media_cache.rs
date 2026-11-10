@@ -154,7 +154,7 @@ impl MediaCache {
         let response = tokio::time::timeout(
             idle_timeout,
             client
-                .get(url)
+                .get(url.clone())
                 .header("Referer", BILI_REFERER)
                 .header("Origin", BILI_ORIGIN)
                 .send(),
@@ -172,12 +172,13 @@ impl MediaCache {
         if expected_len > self.max_bytes {
             return Err(());
         }
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .to_string();
+        let content_type = crate::media::normalize_media_content_type(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            url.path(),
+        );
         let mut file = tokio::fs::File::create(self.path(key, "part"))
             .await
             .map_err(|_| ())?;
@@ -758,5 +759,37 @@ mod tests {
         .await
         .unwrap();
         assert!(cache.lookup(&key).await.is_none());
+    }
+
+    #[test]
+    fn normalizes_octet_stream_content_type_from_audio_path() {
+        use crate::media::normalize_media_content_type;
+
+        assert_eq!(
+            normalize_media_content_type(
+                Some("application/octet-stream"),
+                "/upgcxcode/00/56/1116735600/1116735600-1-30232.m4s"
+            ),
+            "audio/mp4"
+        );
+        assert_eq!(
+            normalize_media_content_type(
+                Some("binary/octet-stream"),
+                "/upgcxcode/15/53/30058545315/30058545315-1-30251.m4s"
+            ),
+            "audio/mp4"
+        );
+        assert_eq!(
+            normalize_media_content_type(None, "/audio/song.flac"),
+            "audio/flac"
+        );
+        assert_eq!(
+            normalize_media_content_type(Some("video/mp4"), "/upgcxcode/a.m4s"),
+            "video/mp4"
+        );
+        assert_eq!(
+            normalize_media_content_type(Some("application/octet-stream"), "/unknown/file.bin"),
+            "application/octet-stream"
+        );
     }
 }

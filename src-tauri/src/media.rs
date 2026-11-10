@@ -200,11 +200,38 @@ pub fn local_audio_mime(path: &std::path::Path) -> &'static str {
         "mp3" => "audio/mpeg",
         "flac" => "audio/flac",
         "wav" => "audio/wav",
-        "m4a" | "aac" => "audio/mp4",
+        "m4s" | "m4a" | "mp4" | "aac" => "audio/mp4",
         "ogg" => "audio/ogg",
         "wma" => "audio/x-ms-wma",
         "aiff" => "audio/aiff",
         _ => "application/octet-stream",
+    }
+}
+
+pub fn normalize_media_content_type(upstream_ct: Option<&str>, path: &str) -> String {
+    let raw = upstream_ct.unwrap_or("").trim();
+    let media_type = raw
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !raw.is_empty()
+        && !matches!(
+            media_type.as_str(),
+            "application/octet-stream" | "binary/octet-stream"
+        )
+    {
+        return raw.to_string();
+    }
+    let guessed = local_audio_mime(std::path::Path::new(path));
+    if guessed != "application/octet-stream" {
+        return guessed.to_string();
+    }
+    if raw.is_empty() {
+        "application/octet-stream".to_string()
+    } else {
+        raw.to_string()
     }
 }
 
@@ -464,13 +491,15 @@ pub async fn http_media(
         .and_then(|cache| crate::media_cache::MediaCache::key(&parsed).map(|key| (cache, key)))
     {
         if let Some(entry) = cache.lookup(&key).await {
+            let content_type =
+                normalize_media_content_type(Some(&entry.content_type), parsed.path());
             return serve_file(
                 socket,
                 is_head,
                 range.as_deref(),
                 allow_origin,
                 entry.file,
-                &entry.content_type,
+                &content_type,
             )
             .await;
         }
@@ -567,12 +596,7 @@ pub async fn http_media(
     );
 
     let mut has_accept_ranges = false;
-    for key in [
-        "content-length",
-        "content-range",
-        "content-type",
-        "accept-ranges",
-    ] {
+    for key in ["content-length", "content-range", "accept-ranges"] {
         if let Some(v) = response.headers().get(key) {
             if let Ok(val_str) = v.to_str() {
                 if key == "accept-ranges" {
@@ -582,6 +606,12 @@ pub async fn http_media(
             }
         }
     }
+    let upstream_ct = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    let content_type = normalize_media_content_type(upstream_ct, parsed.path());
+    header.push_str(&format!("content-type: {content_type}\r\n"));
     if !has_accept_ranges {
         header.push_str("accept-ranges: bytes\r\n");
     }
