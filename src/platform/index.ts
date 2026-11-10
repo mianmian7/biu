@@ -59,8 +59,16 @@ export async function applyMigratedLocalStorage(storage: Storage = window.localS
   for (const key of keys) {
     const value = entries[key];
     if (typeof value === "string" && storage.getItem(key) === null) {
-      storage.setItem(key, value);
-      written += 1;
+      // One entry that does not fit (quota) must not keep the app from booting on every launch.
+      try {
+        storage.setItem(key, value);
+        written += 1;
+      } catch (error) {
+        void invokeTauri("frontend_log", {
+          level: "warn",
+          message: `[migration] skipped localStorage entry ${key}: ${String(error)}`,
+        }).catch(() => {});
+      }
     }
   }
   await invokeTauri("migration_local_storage_done").catch(() => {});

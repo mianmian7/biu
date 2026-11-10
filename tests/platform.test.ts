@@ -324,4 +324,28 @@ describe("platform ElectronAPI compatibility and media URL wrapping", () => {
     expect(localStorage.getItem("bad")).toBeNull();
     expect(calls).toEqual(["migration_local_storage", "migration_local_storage_done"]);
   });
+
+  test("applyMigratedLocalStorage skips an entry that fails to write and still acks", async () => {
+    const calls: string[] = [];
+    (window as any).__TAURI__ = {
+      core: {
+        invoke: vi.fn(async (cmd: string) => {
+          calls.push(cmd);
+          if (cmd === "migration_local_storage") return { huge: "x", ok: "y" };
+          return null;
+        }),
+      },
+    };
+    const backing = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => backing.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (key === "huge") throw new DOMException("quota", "QuotaExceededError");
+        backing.set(key, value);
+      },
+    } as unknown as Storage;
+    await expect(applyMigratedLocalStorage(storage)).resolves.toBe(1);
+    expect(backing.get("ok")).toBe("y");
+    expect(calls).toContain("migration_local_storage_done");
+  });
 });
