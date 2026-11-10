@@ -56,7 +56,8 @@ pub struct BiliState {
     pub cookies: Arc<CookieStoreMutex>,
     pub cookie_path: PathBuf,
     pub client: RwLock<reqwest::Client>,
-    pub allowed_media_hosts: RwLock<HashSet<String>>,
+    pub media_client: RwLock<reqwest::Client>,
+    pub allowed_media_hosts: Arc<RwLock<HashSet<String>>>,
     pub allowed_local_dirs: RwLock<HashSet<PathBuf>>,
     pub media_cache: Option<Arc<crate::media_cache::MediaCache>>,
 }
@@ -66,11 +67,18 @@ impl BiliState {
         let store = load_cookie_store(&cookie_path);
         let cookies = Arc::new(CookieStoreMutex::new(store));
         let client = build_reqwest_client(cookies.clone(), initial_proxy.as_ref())?;
+        let allowed_media_hosts = Arc::new(RwLock::new(HashSet::new()));
+        let media_client = build_media_client(
+            cookies.clone(),
+            initial_proxy.as_ref(),
+            allowed_media_hosts.clone(),
+        )?;
         Ok(Self {
             cookies,
             cookie_path,
             client: RwLock::new(client),
-            allowed_media_hosts: RwLock::new(HashSet::new()),
+            media_client: RwLock::new(media_client),
+            allowed_media_hosts,
             allowed_local_dirs: RwLock::new(HashSet::new()),
             media_cache: None,
         })
@@ -108,9 +116,19 @@ impl BiliState {
         self.client.read().unwrap().clone()
     }
 
+    pub fn media_client(&self) -> reqwest::Client {
+        self.media_client.read().unwrap().clone()
+    }
+
     pub fn update_proxy(&self, proxy: Option<ProxySettings>) -> Result<(), String> {
         let new_client = build_reqwest_client(self.cookies.clone(), proxy.as_ref())?;
+        let new_media_client = build_media_client(
+            self.cookies.clone(),
+            proxy.as_ref(),
+            self.allowed_media_hosts.clone(),
+        )?;
         *self.client.write().unwrap() = new_client;
+        *self.media_client.write().unwrap() = new_media_client;
         Ok(())
     }
 
@@ -170,21 +188,20 @@ impl BiliState {
     }
 
     pub fn is_media_url_allowed(&self, u: &Url) -> bool {
-        if !matches!(u.scheme(), "http" | "https") {
-            return false;
-        }
-        if !u.username().is_empty() || u.password().is_some() {
-            return false;
-        }
-        let Some(host) = u.host_str() else {
-            return false;
-        };
-        let lower = host.to_ascii_lowercase();
-        if self.allowed_media_hosts.read().unwrap().contains(&lower) {
-            return true;
-        }
-        is_bili_audio_cdn_host(&lower)
+        is_media_url_allowed(u, &self.allowed_media_hosts.read().unwrap())
     }
+}
+
+fn is_media_url_allowed(u: &Url, allowed_hosts: &HashSet<String>) -> bool {
+    if !matches!(u.scheme(), "http" | "https") || !u.username().is_empty() || u.password().is_some()
+    {
+        return false;
+    }
+    let Some(host) = u.host_str() else {
+        return false;
+    };
+    let lower = host.to_ascii_lowercase();
+    allowed_hosts.contains(&lower) || is_bili_audio_cdn_host(&lower)
 }
 
 pub fn is_bili_api_url_allowed(u: &Url) -> bool {
@@ -321,7 +338,9 @@ fn save_cookie_store(cookies: &CookieStoreMutex, path: &Path) -> Result<(), Stri
 }
 
 /// Follows a redirect only when every hop stays on hosts that `allowed` accepts.
-pub fn allowlist_redirect_policy(allowed: fn(&Url) -> bool) -> reqwest::redirect::Policy {
+pub fn allowlist_redirect_policy(
+    allowed: impl Fn(&Url) -> bool + Send + Sync + 'static,
+) -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() >= 10 {
             attempt.error("too many redirects")
@@ -342,6 +361,28 @@ pub fn build_reqwest_client(
     cookies: Arc<CookieStoreMutex>,
     proxy: Option<&ProxySettings>,
 ) -> Result<reqwest::Client, String> {
+    build_client(
+        cookies,
+        proxy,
+        allowlist_redirect_policy(is_bili_redirect_allowed),
+    )
+}
+
+fn build_media_client(
+    cookies: Arc<CookieStoreMutex>,
+    proxy: Option<&ProxySettings>,
+    allowed_hosts: Arc<RwLock<HashSet<String>>>,
+) -> Result<reqwest::Client, String> {
+    let policy =
+        allowlist_redirect_policy(move |u| is_media_url_allowed(u, &allowed_hosts.read().unwrap()));
+    build_client(cookies, proxy, policy)
+}
+
+fn build_client(
+    cookies: Arc<CookieStoreMutex>,
+    proxy: Option<&ProxySettings>,
+    redirect: reqwest::redirect::Policy,
+) -> Result<reqwest::Client, String> {
     let mut default_headers = HeaderMap::new();
     default_headers.insert(
         reqwest::header::REFERER,
@@ -356,7 +397,7 @@ pub fn build_reqwest_client(
         .cookie_provider(cookies)
         .user_agent(USER_AGENT)
         .connect_timeout(std::time::Duration::from_secs(10))
-        .redirect(allowlist_redirect_policy(is_bili_redirect_allowed))
+        .redirect(redirect)
         .default_headers(default_headers);
 
     if let Some(p) = proxy {
@@ -365,6 +406,8 @@ pub fn build_reqwest_client(
             if let (Some(host), Some(port)) = (p.host.as_deref(), p.port) {
                 let host = host.trim();
                 if !host.is_empty() && port > 0 {
+                    // A host must not be interpreted as URL credentials, a scheme, or a path.
+                    url::Host::parse(host).map_err(|_| "invalid proxy host".to_string())?;
                     let scheme = match p_type.as_str() {
                         "http" => "http",
                         "socks4" => "socks4",

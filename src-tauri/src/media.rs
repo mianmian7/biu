@@ -11,6 +11,10 @@ const MEDIA_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// 所以只限制空闲时间，不限制整个响应的时长。
 const MEDIA_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+#[cfg(test)]
+#[path = "media_tests.rs"]
+mod tests;
+
 pub struct MediaBase(pub String);
 
 #[tauri::command]
@@ -200,7 +204,8 @@ pub fn local_audio_mime(path: &std::path::Path) -> &'static str {
         "mp3" => "audio/mpeg",
         "flac" => "audio/flac",
         "wav" => "audio/wav",
-        "m4s" | "m4a" | "mp4" | "aac" => "audio/mp4",
+        "m4s" | "m4a" | "mp4" => "audio/mp4",
+        "aac" => "audio/aac",
         "ogg" => "audio/ogg",
         "wma" => "audio/x-ms-wma",
         "aiff" => "audio/aiff",
@@ -505,19 +510,25 @@ pub async fn http_media(
         }
         if req.method() == "GET" {
             log::info!("[media_cache] miss {} 0", &key[..8]);
-            cache.fill(key, parsed.clone(), state.client(), MEDIA_IDLE_TIMEOUT);
+            cache.fill(
+                key,
+                parsed.clone(),
+                state.media_client(),
+                MEDIA_IDLE_TIMEOUT,
+            );
         }
     }
     let method_str = req.method().as_str().to_string();
     let range_owned = range.map(|r| r.to_string());
     let build_upstream_req = || {
         let mut request = if is_head {
-            state.client().head(parsed.clone())
+            state.media_client().head(parsed.clone())
         } else {
-            state.client().get(parsed.clone())
+            state.media_client().get(parsed.clone())
         }
         .header("Referer", BILI_REFERER)
-        .header("Origin", BILI_ORIGIN);
+        .header("Origin", BILI_ORIGIN)
+        .header("Accept-Encoding", "identity");
 
         if let Some(r) = &range_owned {
             request = request.header("Range", r);
@@ -595,9 +606,24 @@ pub async fn http_media(
         "HTTP/1.1 {status} {reason}\r\nConnection: close\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nAccess-Control-Expose-Headers: Content-Range, Accept-Ranges, Content-Length\r\nCache-Control: no-store\r\n"
     );
 
+    // A close-delimited body cannot distinguish a successful EOF from an upstream
+    // error. End our chunks only after the upstream stream finishes successfully.
+    let chunked = !is_head
+        && status != 204
+        && status != 304
+        && status >= 200
+        && !response.headers().contains_key("content-length");
+    if chunked {
+        header.push_str("transfer-encoding: chunked\r\n");
+    }
     let mut has_accept_ranges = false;
-    for key in ["content-length", "content-range", "accept-ranges"] {
-        if let Some(v) = response.headers().get(key) {
+    for key in [
+        "content-length",
+        "content-range",
+        "accept-ranges",
+        "content-encoding",
+    ] {
+        for v in response.headers().get_all(key) {
             if let Ok(val_str) = v.to_str() {
                 if key == "accept-ranges" {
                     has_accept_ranges = true;
@@ -628,13 +654,31 @@ pub async fn http_media(
         loop {
             match tokio::time::timeout(MEDIA_IDLE_TIMEOUT, stream.next()).await {
                 Ok(Some(Ok(bytes))) => {
+                    if bytes.is_empty() {
+                        continue;
+                    }
                     // 播放器关闭连接（切歌、跳转）是正常结束
-                    if socket.write_all(&bytes).await.is_err() {
+                    if chunked
+                        && socket
+                            .write_all(format!("{:x}\r\n", bytes.len()).as_bytes())
+                            .await
+                            .is_err()
+                    {
+                        break;
+                    }
+                    if socket.write_all(&bytes).await.is_err()
+                        || (chunked && socket.write_all(b"\r\n").await.is_err())
+                    {
                         break;
                     }
                     sent += bytes.len() as u64;
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    if chunked {
+                        let _ = socket.write_all(b"0\r\n\r\n").await;
+                    }
+                    break;
+                }
                 Ok(Some(Err(e))) => {
                     log::warn!(
                         "[media_proxy] {}{} body interrupted after {sent} bytes: {}",

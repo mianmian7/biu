@@ -10,6 +10,23 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 
 pub const AUDIO_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_CONCURRENT_FILLS: usize = 2;
+
+fn is_media_content_type(content_type: &str) -> bool {
+    if reqwest::header::HeaderValue::from_str(content_type).is_err() {
+        return false;
+    }
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    media_type == "video/mp4"
+        || media_type
+            .strip_prefix("audio/")
+            .is_some_and(|subtype| !subtype.is_empty())
+}
 
 #[derive(Deserialize, Serialize)]
 struct Metadata {
@@ -90,6 +107,13 @@ impl MediaCache {
     async fn open_entry(&self, key: &str) -> Option<CachedAudio> {
         let metadata: Metadata =
             serde_json::from_slice(&tokio::fs::read(self.path(key, "json")).await.ok()?).ok()?;
+        if !is_media_content_type(&metadata.content_type) {
+            // Old successful HTTP error pages must not remain persistent cache hits.
+            // Remove the commit marker first, before attempting to remove the data.
+            let _ = tokio::fs::remove_file(self.path(key, "json")).await;
+            let _ = tokio::fs::remove_file(self.path(key, "bin")).await;
+            return None;
+        }
         // Keep an open handle so an eviction cannot invalidate an active reader.
         let file = tokio::fs::OpenOptions::new()
             .read(true)
@@ -119,8 +143,13 @@ impl MediaCache {
         client: reqwest::Client,
         idle_timeout: Duration,
     ) {
-        if !self.in_progress.lock().unwrap().insert(key.clone()) {
-            return;
+        {
+            let mut in_progress = self.in_progress.lock().unwrap();
+            // Admission and same-key deduplication share one lock. Do not queue stale
+            // fills when playback moves on; a later miss can try again.
+            if in_progress.len() >= MAX_CONCURRENT_FILLS || !in_progress.insert(key.clone()) {
+                return;
+            }
         }
         let guard = DownloadGuard {
             cache: self.clone(),
@@ -157,6 +186,7 @@ impl MediaCache {
                 .get(url.clone())
                 .header("Referer", BILI_REFERER)
                 .header("Origin", BILI_ORIGIN)
+                .header("Accept-Encoding", "identity")
                 .send(),
         )
         .await
@@ -165,6 +195,17 @@ impl MediaCache {
         // Never commit a range, an error page, or a body with no verifiable length.
         if response.status() != reqwest::StatusCode::OK
             || response.headers().contains_key("content-range")
+            || response
+                .headers()
+                .get_all("content-encoding")
+                .iter()
+                .any(|value| {
+                    value.to_str().map_or(true, |encoding| {
+                        encoding
+                            .split(',')
+                            .any(|part| !part.trim().eq_ignore_ascii_case("identity"))
+                    })
+                })
         {
             return Err(());
         }
@@ -179,6 +220,9 @@ impl MediaCache {
                 .and_then(|v| v.to_str().ok()),
             url.path(),
         );
+        if !is_media_content_type(&content_type) {
+            return Err(());
+        }
         let mut file = tokio::fs::File::create(self.path(key, "part"))
             .await
             .map_err(|_| ())?;
@@ -292,6 +336,7 @@ mod tests {
         address: std::net::SocketAddr,
         requests: Arc<AtomicUsize>,
         full_requests: Arc<AtomicUsize>,
+        identity_requests: Arc<AtomicUsize>,
         task: tokio::task::JoinHandle<()>,
     }
 
@@ -303,10 +348,20 @@ mod tests {
 
     impl Upstream {
         async fn start(interrupt: bool, gate: Option<Arc<Semaphore>>) -> Self {
+            Self::with_headers(interrupt, gate, "Content-Type: audio/mp4\r\n").await
+        }
+
+        async fn with_headers(
+            interrupt: bool,
+            gate: Option<Arc<Semaphore>>,
+            headers: &'static str,
+        ) -> Self {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let requests = Arc::new(AtomicUsize::new(0));
             let full_requests = Arc::new(AtomicUsize::new(0));
+            let identity_requests = Arc::new(AtomicUsize::new(0));
+            let identity = identity_requests.clone();
             let count = requests.clone();
             let full = full_requests.clone();
             let task = tokio::spawn(async move {
@@ -317,6 +372,7 @@ mod tests {
                             let (mut socket, _) = accepted.unwrap();
                             let count = count.clone();
                             let full = full.clone();
+                            let identity = identity.clone();
                             let gate = gate.clone();
                             connections.spawn(async move {
                                 let mut request = Vec::new();
@@ -330,6 +386,9 @@ mod tests {
                                 assert!(request.contains("referer: https://www.bilibili.com/\r\n"));
                                 assert!(request.contains("origin: https://www.bilibili.com\r\n"));
                                 count.fetch_add(1, Ordering::SeqCst);
+                                if request.contains("accept-encoding: identity\r\n") {
+                                    identity.fetch_add(1, Ordering::SeqCst);
+                                }
                                 let ranged = request.contains("range: bytes=2-5\r\n");
                                 if !ranged {
                                     full.fetch_add(1, Ordering::SeqCst);
@@ -339,7 +398,7 @@ mod tests {
                                 } else {
                                     ("200 OK", PAYLOAD, String::new())
                                 };
-                                let header = format!("HTTP/1.1 {status}\r\nContent-Type: audio/mp4\r\nContent-Length: {}\r\n{content_range}Connection: close\r\n\r\n", body.len());
+                                let header = format!("HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\n{content_range}Connection: close\r\n\r\n", body.len());
                                 socket.write_all(header.as_bytes()).await.unwrap();
                                 if let Some(gate) = gate {
                                     let _permit = gate.acquire().await.unwrap();
@@ -359,6 +418,7 @@ mod tests {
                 address,
                 requests,
                 full_requests,
+                identity_requests,
                 task,
             }
         }
@@ -478,7 +538,7 @@ mod tests {
         state.register_media_host("localhost");
         // This CDN host is allowed by the proxy's built-in rules, but has not
         // been registered by playurl and therefore must not use the cache.
-        *state.client.write().unwrap() = reqwest::Client::builder()
+        *state.media_client.write().unwrap() = reqwest::Client::builder()
             .no_proxy()
             .resolve("cache-test.bilivideo.com", upstream.address)
             .build()
@@ -759,6 +819,119 @@ mod tests {
         .await
         .unwrap();
         assert!(cache.lookup(&key).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a01_fill_requests_identity_and_rejects_encoded_responses() {
+        let dir = TestDirectory::new();
+        let cache = Arc::new(MediaCache::new(dir.0.clone()).unwrap());
+        let encoded = Upstream::with_headers(
+            false,
+            None,
+            "Content-Type: audio/mp4\r\nContent-Encoding: gzip\r\n",
+        )
+        .await;
+        let url = encoded.url("/encoded.m4s");
+        let key = MediaCache::key(&url).unwrap();
+        fill_and_wait(&cache, url).await;
+        assert!(cache.lookup(&key).await.is_none());
+        assert_eq!(encoded.identity_requests.load(Ordering::SeqCst), 1);
+        for extension in ["bin", "json", "part", "json.part"] {
+            assert!(!cache.path(&key, extension).exists());
+        }
+        let healthy = Upstream::with_headers(
+            false,
+            None,
+            "Content-Type: audio/mp4\r\nContent-Encoding: identity\r\n",
+        )
+        .await;
+        fill_and_wait(&cache, healthy.url("/encoded.m4s")).await;
+        assert!(cache.lookup(&key).await.is_some());
+        assert_eq!(healthy.identity_requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a02_fill_rejects_non_media_and_recovers_with_normalized_audio() {
+        let dir = TestDirectory::new();
+        let cache = Arc::new(MediaCache::new(dir.0.clone()).unwrap());
+        for headers in [
+            "Content-Type: text/html\r\n",
+            "Content-Type: application/json\r\n",
+            "Content-Type: video/webm\r\n",
+        ] {
+            let upstream = Upstream::with_headers(false, None, headers).await;
+            let url = upstream.url("/challenge.m4s");
+            let key = MediaCache::key(&url).unwrap();
+            fill_and_wait(&cache, url).await;
+            assert!(cache.lookup(&key).await.is_none(), "{headers}");
+            assert!(!cache.path(&key, "json").exists());
+        }
+        for (index, headers, expected) in [
+            (0, "Content-Type: application/octet-stream\r\n", "audio/mp4"),
+            (1, "Content-Type: video/mp4\r\n", "video/mp4"),
+            (2, "Content-Type: audio/flac\r\n", "audio/flac"),
+        ] {
+            let upstream = Upstream::with_headers(false, None, headers).await;
+            let url = upstream.url(&format!("/valid-{index}.m4s"));
+            let key = MediaCache::key(&url).unwrap();
+            fill_and_wait(&cache, url).await;
+            assert_eq!(cache.lookup(&key).await.unwrap().content_type, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn a02_lookup_removes_legacy_non_media_entries() {
+        let dir = TestDirectory::new();
+        let cache = MediaCache::new(dir.0.clone()).unwrap();
+        let key = "a".repeat(64);
+        for content_type in ["text/html", "application/json", "application/octet-stream"] {
+            std::fs::write(cache.path(&key, "bin"), PAYLOAD).unwrap();
+            std::fs::write(
+                cache.path(&key, "json"),
+                serde_json::to_vec(&Metadata {
+                    content_type: content_type.into(),
+                    total_len: PAYLOAD.len() as u64,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(cache.lookup(&key).await.is_none(), "{content_type}");
+            assert!(!cache.path(&key, "bin").exists());
+            assert!(!cache.path(&key, "json").exists());
+        }
+        assert_eq!(
+            crate::media::normalize_media_content_type(Some("text/html"), "/audio.m4s"),
+            "text/html"
+        );
+    }
+
+    #[tokio::test]
+    async fn a06_fill_limit_skips_excess_keys_and_releases_slots() {
+        let dir = TestDirectory::new();
+        let cache = Arc::new(MediaCache::with_limit(dir.0.clone(), 64).unwrap());
+        let gate = Arc::new(Semaphore::new(0));
+        let upstream = Upstream::start(false, Some(gate.clone())).await;
+        for index in 0..3 {
+            let url = upstream.url(&format!("/bounded-{index}.m4s"));
+            cache.fill(
+                MediaCache::key(&url).unwrap(),
+                url,
+                test_client(),
+                Duration::from_secs(2),
+            );
+        }
+        // Inspect admission synchronously, before any spawned download can finish.
+        let admitted = cache.in_progress.lock().unwrap().len();
+        gate.add_permits(3);
+        wait_until(|| cache.in_progress.lock().unwrap().is_empty()).await;
+        assert_eq!(admitted, 2);
+        assert_eq!(upstream.requests.load(Ordering::SeqCst), 2);
+        let skipped = upstream.url("/bounded-2.m4s");
+        let key = MediaCache::key(&skipped).unwrap();
+        assert!(cache.lookup(&key).await.is_none());
+        fill_and_wait(&cache, skipped).await;
+        assert!(cache.lookup(&key).await.is_some());
+        assert_eq!(upstream.requests.load(Ordering::SeqCst), 3);
     }
 
     #[test]
