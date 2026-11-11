@@ -66,8 +66,9 @@ owner = Claude（osa-a1）
   Opus 审查 Sol 写的 3a、3b、3c：通过。Sol 审查 Opus 写的 C2 与探针：C2 无问题；探针 3 条（P2 用例未执行、P3 越界 Range 返回 206、P3 复用旧临时目录）已修复并在 mac 重跑 18 个用例。
 - [x] 6. 验收：`npx vitest run`、`cargo test`、`cargo clippy --all-targets -- -D warnings` 全部通过。
   2026-11-10：vitest 277/277（原 233）；cargo test 62/62（原 40）；clippy 0 警告；fmt 无差异；改动文件 ESLint 仅有 HEAD 既有的 `tests/platform.test.ts:202`；knip 退出 0、条目与基线相同。
-- [ ] 7. 合入 `feat/tauri`、发版、mac 安装：用户授权范围内执行，结果记录在本文件。
+- [x] 7. 合入 `feat/tauri`、发版、mac 安装：用户授权范围内执行，结果记录在本文件。
   2026-11-10：6 个提交已推送 `origin/audit/quality-2026-11-10`，`origin/feat/tauri` 快进到 `e6817d7e`；Tauri Build run `42798967070` 六个平台全部成功。mac 冒烟（CI arm64 包从临时目录启动，未替换 /Applications）：启动无 panic，恢复当前曲目时经代理 5 次缓存命中，`autoStart=false` 未生成 LaunchAgent，系统 quit 事件正常退出。未完成：界面内播放、拖动、切歌、缓存未命中首播（mac 锁屏，MediaRemote 命令不能送达）。`v2.0.9` 发版等这项实测后执行。
+  2026-11-11：`93f2b7b7 chore(release): 2.0.9` 推送 `feat/tauri`，tag `v2.0.9`；Release run `42953602250` 成功，`v2.0.9` 为 Latest，`latest.json` 版本 2.0.9、12 个平台键。mac：`/Applications/Biu.app` 换装 2.0.9（旧版备份 `~/biu-backup-2.0.8-202611111146`），`codesign --verify --deep --strict` 通过；启动后 `updater mode=auto`、缓存命中、日志 0 条 ERROR/panic，已退出。
   - [x] 7a. mac 界面实测（Gemini 4 Argon，mac 上 pi + lcu computer use；2026-11-10 用户提议）：用 CI 包 `e6817d7e`（`/tmp/biu-ci-e6817d7e.dmg`）从临时目录启动，系统静音；依次验证：续播当前曲目、进度前进、拖动进度、下一首/上一首、播放一首未缓存的歌、加载中点暂停、暂停后继续、Cmd+Q 退出。证据：每步截图路径与时间、`Biu.log` 新增行。结束后恢复静音前的音量状态、删除临时副本。视觉/行为证据由 Opus 核对后勾选。
     - 2026-11-10 第 1 次（Argon，mac）：20:00–20:29 CST 每分钟查一次，屏幕始终锁定，未执行；未改音量、未启动应用。dmg 保留在 mac 的 `/tmp/biu-ci-e6817d7e.dmg`。
     - 2026-11-11 第 2 次（Argon，mac，lcu 0.13.6 锁屏可用）：01:22–01:38 CST 执行 8 步，全程 `output volume:0, muted:true`，结束恢复 `volume:19, muted:false`，`/tmp/biu-ci-app` 已删。截图 `mac:/tmp/biu-7a-shots/{00-initial,2a-resume,2b-seek,2c-next,2d-prev,2e-uncached,2f-pause-during-load,2g-resume-after-pause}.png`。
