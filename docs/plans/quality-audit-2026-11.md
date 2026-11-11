@@ -27,7 +27,7 @@ owner = Claude（osa-a1）
 ## 后续步骤
 - [x] 1. A/B/C 三份审计报告交回。
   A 6 条、B 8 条、C 15 条，见 `docs/audits/2026-11-10/{A,B,C}.md`。
-- [ ] 2. Claude（osa-a1）逐条核对「指出问题」类条目，分为：确认（附复现或代码证据）/ 不成立 / 待实机验证。结果写入 `docs/audits/2026-11-10/triage.md`。
+- [x] 2. Claude（osa-a1）逐条核对「指出问题」类条目，分为：确认（附复现或代码证据）/ 不成立 / 待实机验证。结果写入 `docs/audits/2026-11-10/triage.md`。
   已完成：A/B 全部确认（A01、A03 下调为 P2）；C 确认 13 条、待核 2 条（C3、C8，3c 中核实为成立），8 条进入修复，7 条 P3 暂不修。
 - [x] 3. 确认的问题按严重度修复：每个修复带回归测试；Rust 侧与状态机修复由 Sol 实现，Opus 做代码逻辑审查；Opus 实现的小修复由 Sol 审查。
   - [x] 3a. 前端修复（GPT-6.1-Sol）：B01–B08，只改 `src/`、`tests/`。设计要点：
@@ -68,8 +68,10 @@ owner = Claude（osa-a1）
   2026-11-10：vitest 277/277（原 233）；cargo test 62/62（原 40）；clippy 0 警告；fmt 无差异；改动文件 ESLint 仅有 HEAD 既有的 `tests/platform.test.ts:202`；knip 退出 0、条目与基线相同。
 - [ ] 7. 合入 `feat/tauri`、发版、mac 安装：用户授权范围内执行，结果记录在本文件。
   2026-11-10：6 个提交已推送 `origin/audit/quality-2026-11-10`，`origin/feat/tauri` 快进到 `e6817d7e`；Tauri Build run `42798967070` 六个平台全部成功。mac 冒烟（CI arm64 包从临时目录启动，未替换 /Applications）：启动无 panic，恢复当前曲目时经代理 5 次缓存命中，`autoStart=false` 未生成 LaunchAgent，系统 quit 事件正常退出。未完成：界面内播放、拖动、切歌、缓存未命中首播（mac 锁屏，MediaRemote 命令不能送达）。`v2.0.9` 发版等这项实测后执行。
-  - [ ] 7a. mac 界面实测（Gemini 4 Argon，mac 上 pi + lcu computer use；2026-11-10 用户提议）：用 CI 包 `e6817d7e`（`/tmp/biu-ci-e6817d7e.dmg`）从临时目录启动，系统静音；依次验证：续播当前曲目、进度前进、拖动进度、下一首/上一首、播放一首未缓存的歌、加载中点暂停、暂停后继续、Cmd+Q 退出。证据：每步截图路径与时间、`Biu.log` 新增行。结束后恢复静音前的音量状态、删除临时副本。视觉/行为证据由 Opus 核对后勾选。
+  - [x] 7a. mac 界面实测（Gemini 4 Argon，mac 上 pi + lcu computer use；2026-11-10 用户提议）：用 CI 包 `e6817d7e`（`/tmp/biu-ci-e6817d7e.dmg`）从临时目录启动，系统静音；依次验证：续播当前曲目、进度前进、拖动进度、下一首/上一首、播放一首未缓存的歌、加载中点暂停、暂停后继续、Cmd+Q 退出。证据：每步截图路径与时间、`Biu.log` 新增行。结束后恢复静音前的音量状态、删除临时副本。视觉/行为证据由 Opus 核对后勾选。
     - 2026-11-10 第 1 次（Argon，mac）：20:00–20:29 CST 每分钟查一次，屏幕始终锁定，未执行；未改音量、未启动应用。dmg 保留在 mac 的 `/tmp/biu-ci-e6817d7e.dmg`。
+    - 2026-11-11 第 2 次（Argon，mac，lcu 0.13.6 锁屏可用）：01:22–01:38 CST 执行 8 步，全程 `output volume:0, muted:true`，结束恢复 `volume:19, muted:false`，`/tmp/biu-ci-app` 已删。截图 `mac:/tmp/biu-7a-shots/{00-initial,2a-resume,2b-seek,2c-next,2d-prev,2e-uncached,2f-pause-during-load,2g-resume-after-pause}.png`。
+    - Opus（osa-a1）核对：8 张播放栏截图与 `Biu.log` 一致——2a `00:08/03:32`；2b `02:12/03:32`；2c 切到 `13d0a031`（miss→stored，`switch playing after 1211ms`）`00:07/01:48`；2d 17:32:27 切回 `753d9176`（`playing after 327ms`）`00:08/03:32`，截图与 2a 字节相同，因同曲同秒画面一致，以日志为准；2e `e1d00216` 首播 miss→stored，`00:08/04:30`；2f 加载中暂停后 `is_playing=false`，缓存写完未自动起播，`-:--/04:30`；2g 继续后 `00:08/04:30`；2h Cmd+Q 后无进程。无错误提示。通过。
 
 ## 不做
 - 不改 UI 外观，不加新功能，不做大重构。
