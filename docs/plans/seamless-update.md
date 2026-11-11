@@ -74,7 +74,8 @@ Mac 用**自签名代码签名证书**（免费，CI 持有私钥）给每个版
   openssl x509 -in cert.pem -outform DER -out biu-codesign.cer
   ```
   - 结果（2026-11-04，Claude（osa-a1））：因 mac 中毒，改在 osa-a1 用同一 openssl 参数生成（rsa:3072，有效至 2046-10-30，SHA1 95:80:DF:08:0E:5D:6F:3D:14:70:E9:70:CE:D9:66:28:6A:52:9B:3C）。p12 与导出密码在 osa-a1 `~/.config/biu-codesign/`（0700/0600），key.pem 已删。
-- [ ] O2.（**仍待用户**：把 osa-a1 `~/.config/biu-codesign/biu-codesign.p12` 和 `p12-password.txt` 存进密码管理器，之后让 Claude 删除这两个文件）把 `biu-codesign.p12` 和导出密码存进密码管理器（证书唯一备份）。
+- [x] O2.把 `biu-codesign.p12` 和导出密码存进密码管理器（证书唯一备份）。
+  - 2026-11-04：用户已存入密码管理器；Claude（osa-a1）随后删除 osa-a1 `~/.config/biu-codesign/`（见线程「梳理项目进度与最后结论」）。2026-11-11 复核：该目录不存在，GitHub secrets `BIU_MAC_CERT_P12`/`BIU_MAC_CERT_PASSWORD` 仍在，`v2.0.9` 发版签名正常。
 - [x] O3. 设置仓库 secret（交互输入，密钥不出现在命令参数里）：
   ```bash
   base64 -i biu-codesign.p12 | gh secret set BIU_MAC_CERT_P12 -R mianmian7/biu
