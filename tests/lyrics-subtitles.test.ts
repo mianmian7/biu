@@ -14,6 +14,40 @@ beforeEach(() => {
 });
 
 describe("Bilibili subtitle silence boundaries", () => {
+  test("does not clear shorter overlapping subtitles while an earlier line is still running", async () => {
+    vi.mocked(getLyric).mockResolvedValue({
+      body: [
+        { from: 0, to: 10, content: "A" },
+        { from: 2, to: 4, content: "B" },
+        { from: 8, to: 9, content: "C" },
+      ],
+    });
+    expect(await getLyricsByBili({ cid: 1 })).toEqual([
+      { time: 0, text: "A" },
+      { time: 2000, text: "B" },
+      { time: 8000, endTime: 10000, text: "C" },
+    ]);
+  });
+
+  test("measures overlap gaps from the latest end rather than the latest line's end", async () => {
+    vi.mocked(getLyric).mockResolvedValue({
+      body: [
+        { from: 0, to: 10, content: "A" },
+        { from: 2, to: 4, content: "B" },
+        { from: 11, to: 15, content: "C" },
+        { from: 12, to: 13, content: "D" },
+        { from: 15.999, to: 17, content: "E" },
+      ],
+    });
+    expect(await getLyricsByBili({ cid: 1 })).toEqual([
+      { time: 0, text: "A" },
+      { time: 2000, endTime: 10000, text: "B" },
+      { time: 11000, text: "C" },
+      { time: 12000, text: "D" },
+      { time: 15999, endTime: 17000, text: "E" },
+    ]);
+  });
+
   test("retains one-second gaps and the final end, ignoring shorter gaps", async () => {
     vi.mocked(getLyric).mockResolvedValue({
       body: [

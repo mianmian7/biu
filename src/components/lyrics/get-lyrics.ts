@@ -21,12 +21,12 @@ export async function getLyricsByBili(params: WebPlayerParams) {
         })
         .filter(item => item.text)
         .toSorted((a, b) => a.time - b.time) ?? [];
+    let latestEnd = -Infinity;
     return lines.map((line, index) => {
       const next = lines[index + 1];
       const { endTime, ...rest } = line;
-      return endTime !== undefined && endTime > line.time && (!next || next.time - endTime >= 1000)
-        ? { ...rest, endTime }
-        : rest;
+      if (endTime !== undefined && endTime > line.time) latestEnd = Math.max(latestEnd, endTime);
+      return latestEnd > line.time && (!next || next.time - latestEnd >= 1000) ? { ...rest, endTime: latestEnd } : rest;
     });
   }
 
