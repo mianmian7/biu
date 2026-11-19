@@ -59,6 +59,16 @@ beforeEach(() => {
 });
 
 describe("parseLrc", () => {
+  test.each(["[00:01.00]a\n[00:01.00]\n[00:05.00]\n[00:10.00]b", "[00:01.00]\n[00:01.00]a\n[00:05.00]\n[00:10.00]b"])(
+    "ignores same-time blanks when finding a later end: %s",
+    raw => {
+      expect(parseLrc(raw)).toEqual([
+        { time: 1000, endTime: 5000, text: "a" },
+        { time: 10000, text: "b" },
+      ]);
+    },
+  );
+
   test("preserves sorted silence markers without adding companion rows", () => {
     const raw = "[00:10.000]next\n[00:02.000]\n[00:01.000]first\n[00:12.000]\n[00:13.000]";
     expect(parseLrc(raw)).toEqual([

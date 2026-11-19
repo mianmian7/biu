@@ -45,11 +45,18 @@ export function parseLrc(raw?: null | string): LyricLine[] {
 
   const sorted = result.toSorted((a, b) => a.time - b.time);
   let marker: number | undefined;
-  for (let i = sorted.length - 1; i >= 0; i -= 1) {
-    const line = sorted[i];
-    if (!line.text) marker = line.time;
-    else if (marker !== undefined && marker > line.time) line.endTime = marker;
-    if (line.text && sorted[i - 1]?.time !== line.time) marker = undefined;
+  for (let i = sorted.length - 1; i >= 0; ) {
+    const time = sorted[i].time;
+    let hasText = false;
+    while (i >= 0 && sorted[i].time === time) {
+      const line = sorted[i];
+      if (line.text) {
+        hasText = true;
+        if (marker !== undefined) line.endTime = marker;
+      }
+      i -= 1;
+    }
+    marker = hasText ? undefined : time;
   }
   return sorted.filter(line => line.text);
 }
