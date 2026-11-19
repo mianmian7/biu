@@ -59,6 +59,7 @@ declare global {
 
   /** 下一句歌词：桌面歌词窗口按自己的时钟在它开始时换句，不等主窗口的 timeupdate */
   interface DesktopLyricsUpcomingLine {
+    endTime?: number;
     index: number;
     text: string;
     romaji?: string;
@@ -70,6 +71,7 @@ declare global {
 
   /** 桌面悬浮歌词窗口的展示内容 */
   interface DesktopLyricsPayload {
+    endTime?: number;
     /** 设置里是否开启桌面歌词 */
     enabled: boolean;
     /** 是否锁定（鼠标穿透） */

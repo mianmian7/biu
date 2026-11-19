@@ -9,7 +9,7 @@ import { StoreNameMap } from "@shared/store";
 
 import { usePlayList } from "./play-list";
 
-const timeTagPattern = /\[(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?\]/g;
+const timeTagPattern = /\[(\d+):(\d{1,2})(?:\.(\d{1,3}))?\]/g;
 
 const AUTO_FAILURE: Partial<Record<AutoLyricsResult["status"], string>> = {
   unidentified: "自动歌词：未识别到歌曲",
@@ -27,7 +27,6 @@ export function parseLrc(raw?: null | string): LyricLine[] {
 
   lines.forEach(line => {
     const text = line.replace(timeTagPattern, "").trim();
-    if (!text) return;
 
     let match: null | RegExpExecArray;
     while ((match = timeTagPattern.exec(line)) !== null) {
@@ -44,7 +43,32 @@ export function parseLrc(raw?: null | string): LyricLine[] {
     timeTagPattern.lastIndex = 0;
   });
 
-  return result.toSorted((a, b) => a.time - b.time);
+  const sorted = result.toSorted((a, b) => a.time - b.time);
+  let marker: number | undefined;
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const line = sorted[i];
+    if (!line.text) marker = line.time;
+    else if (marker !== undefined && marker > line.time) line.endTime = marker;
+    if (line.text && sorted[i - 1]?.time !== line.time) marker = undefined;
+  }
+  return sorted.filter(line => line.text);
+}
+
+export function serializeLrc(lyrics: LyricLine[]): string {
+  const timestamp = (time: number) => {
+    const ms = Math.max(0, Math.round(time));
+    return `[${String(Math.floor(ms / 60000)).padStart(2, "0")}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}.${String(ms % 1000).padStart(3, "0")}]`;
+  };
+  return lyrics
+    .flatMap((line, index) => {
+      const rows = [`${timestamp(line.time)}${line.text}`];
+      const next = lyrics[index + 1];
+      if (line.endTime !== undefined && line.endTime > line.time && (!next || line.endTime <= next.time)) {
+        rows.push(timestamp(line.endTime));
+      }
+      return rows;
+    })
+    .join("\n");
 }
 
 /** 当前播放歌曲对应的歌词缓存 key（bvid-cid），本地音乐/普通音频没有歌词来源 */
@@ -71,7 +95,8 @@ export function getActiveLyricIndex(lyrics: LyricLine[], currentMs: number) {
     }
   }
 
-  return index;
+  const endTime = lyrics[index].endTime;
+  return endTime !== undefined && currentMs >= endTime ? -1 : index;
 }
 
 interface LyricsState {

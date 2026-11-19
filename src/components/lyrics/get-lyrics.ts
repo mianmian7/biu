@@ -8,19 +8,26 @@ export async function getLyricsByBili(params: WebPlayerParams) {
 
   if (subTitleUrl) {
     const getLyricsRes = await getLyric(subTitleUrl);
-    return (
+    const lines =
       getLyricsRes?.body
         ?.map(item => {
           const raw = item.content ?? "";
           const cleaned = raw.replace(/^[♪♫]+|[♪♫]+$/g, "").trim();
           return {
             time: Math.max(0, Math.round((item.from ?? 0) * 1000)),
+            endTime: typeof item.to === "number" && Number.isFinite(item.to) ? Math.round(item.to * 1000) : undefined,
             text: cleaned,
           };
         })
         .filter(item => item.text)
-        .toSorted((a, b) => a.time - b.time) ?? []
-    );
+        .toSorted((a, b) => a.time - b.time) ?? [];
+    return lines.map((line, index) => {
+      const next = lines[index + 1];
+      const { endTime, ...rest } = line;
+      return endTime !== undefined && endTime > line.time && (!next || next.time - endTime >= 1000)
+        ? { ...rest, endTime }
+        : rest;
+    });
   }
 
   return null;

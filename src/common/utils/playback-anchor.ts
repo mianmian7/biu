@@ -47,23 +47,41 @@ export function getDesktopLyricsLineProgress(payload: DesktopLyricsPayload, now:
  */
 export function resolveDisplayedLine(payload: DesktopLyricsPayload, now: number): DesktopLyricsPayload {
   const { upcoming } = payload;
-  if (!upcoming?.length) return payload;
   const position = getAnchorPositionMs(payload.anchor, payload.offsetMs, now);
+  if (payload.endTime !== undefined && position >= payload.endTime && payload.index >= 0) {
+    payload = {
+      ...payload,
+      index: -1,
+      text: undefined,
+      romaji: undefined,
+      translation: undefined,
+      nextText: undefined,
+      status: "间奏",
+      lineStartMs: undefined,
+      lineEndMs: undefined,
+      endTime: undefined,
+    };
+  }
+  if (!upcoming?.length) return payload;
   let started = -1;
   while (started + 1 < upcoming.length && upcoming[started + 1].lineStartMs <= position) started += 1;
   if (started < 0) return payload;
   const line = upcoming[started];
   const rest = upcoming.slice(started + 1);
-  return {
-    ...payload,
-    index: line.index,
-    text: line.text,
-    romaji: line.romaji,
-    translation: line.translation,
-    nextText: line.nextText,
-    status: undefined,
-    lineStartMs: line.lineStartMs,
-    lineEndMs: line.lineEndMs,
-    upcoming: rest.length ? rest : undefined,
-  };
+  return resolveDisplayedLine(
+    {
+      ...payload,
+      index: line.index,
+      text: line.text,
+      romaji: line.romaji,
+      translation: line.translation,
+      nextText: line.nextText,
+      status: undefined,
+      lineStartMs: line.lineStartMs,
+      lineEndMs: line.lineEndMs,
+      endTime: line.endTime,
+      upcoming: rest.length ? rest : undefined,
+    },
+    now,
+  );
 }

@@ -38,7 +38,8 @@ const MIN_LINE_MS = 1200;
  * 逐行 LRC 只有每行的开始时间：用下一行开始时间作为上限，
  * 再按文本长度估算演唱时长，避免间奏很长时高亮拖到间奏结束。
  */
-export function getLineHighlightEnd(text: string, startMs: number, nextStartMs?: number) {
+export function getLineHighlightEnd(text: string, startMs: number, nextStartMs?: number, endTime?: number) {
+  if (endTime !== undefined) return Math.min(endTime, nextStartMs ?? Infinity);
   let syllables = 0;
   for (const ch of text) {
     if (CJK_PATTERN.test(ch)) syllables += 1;
@@ -78,7 +79,8 @@ function buildUpcomingLines(
       translation: getCompanionByTime(translatedLyrics, line.time),
       nextText: after?.text,
       lineStartMs: line.time,
-      lineEndMs: getLineHighlightEnd(line.text, line.time, after?.time),
+      lineEndMs: getLineHighlightEnd(line.text, line.time, after?.time, line.endTime),
+      endTime: line.endTime,
     });
   }
   return lines.length ? lines : undefined;
@@ -127,14 +129,17 @@ export function computeDesktopLyricsPayload(): DesktopLyricsPayload {
   };
 
   if (!line) {
+    const inGap = lyrics.length > 0 && positionMs >= lyrics[0].time;
+    const nextIndex = lyrics.findIndex(item => item.time > positionMs);
     const title = playItem
       ? [playItem.pageTitle || playItem.title, playItem.ownerName].filter(Boolean).join(" - ")
       : "";
     return {
       ...base,
-      text: title || undefined,
-      status: playItem ? (lyrics.length > 0 ? "前奏" : getStatusText()) : undefined,
-      upcoming: playItem ? buildUpcomingLines(lyrics, 0, romajiLyrics, translatedLyrics) : undefined,
+      text: inGap ? undefined : title || undefined,
+      status: playItem ? (lyrics.length > 0 ? (inGap ? "间奏" : "前奏") : getStatusText()) : undefined,
+      upcoming:
+        playItem && nextIndex >= 0 ? buildUpcomingLines(lyrics, nextIndex, romajiLyrics, translatedLyrics) : undefined,
     };
   }
 
@@ -145,7 +150,8 @@ export function computeDesktopLyricsPayload(): DesktopLyricsPayload {
     translation: getCompanionByTime(translatedLyrics, line.time),
     nextText: nextLine?.text,
     lineStartMs: line.time,
-    lineEndMs: getLineHighlightEnd(line.text, line.time, nextLine?.time),
+    lineEndMs: getLineHighlightEnd(line.text, line.time, nextLine?.time, line.endTime),
+    endTime: line.endTime,
     upcoming: buildUpcomingLines(lyrics, index + 1, romajiLyrics, translatedLyrics),
   };
 }
