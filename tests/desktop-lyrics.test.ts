@@ -79,6 +79,33 @@ afterEach(() => {
 });
 
 describe("getLineHighlightEnd", () => {
+  test("uses explicit ends rather than the singing-duration estimate", () => {
+    expect(getLineHighlightEnd("a", 1000, 10000, 6000)).toBe(6000);
+    expect(getLineHighlightEnd("a", 1000, 5000, 6000)).toBe(5000);
+  });
+
+  test("clears gap payloads and retains upcoming companions", () => {
+    useLyricsStore
+      .getState()
+      .applyLyrics(
+        "[00:01]first\n[00:02]\n[00:10]next\n[00:12]",
+        "[00:01]译文\n[00:02]\n[00:10]下句",
+        "[00:01]romaji\n[00:02]\n[00:10]next romaji",
+      );
+    usePlayProgress.setState({ currentTime: 1 });
+    expect(computeDesktopLyricsPayload()).toMatchObject({ endTime: 2000, lineEndMs: 2000 });
+    usePlayProgress.setState({ currentTime: 2 });
+    const gap = computeDesktopLyricsPayload();
+    expect(gap).toMatchObject({
+      index: -1,
+      status: "间奏",
+      upcoming: [{ index: 1, text: "next", translation: "下句", romaji: "next romaji", endTime: 12000 }],
+    });
+    expect(gap.text).toBeUndefined();
+    expect(gap.translation).toBeUndefined();
+    usePlayProgress.setState({ currentTime: 12 });
+    expect(computeDesktopLyricsPayload().upcoming).toBeUndefined();
+  });
   test("estimates singing time from text length and caps it at the next line", () => {
     // 8 个假名约 2.56 秒，下一行在 10 秒后：取估算值
     expect(getLineHighlightEnd("かぜにゆれるまち", 1000, 11_000)).toBe(1000 + 8 * 320);

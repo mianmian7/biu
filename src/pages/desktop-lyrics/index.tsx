@@ -126,7 +126,7 @@ const DesktopLyrics = () => {
     let current = resolveDisplayedLine(payload, anchorNow());
     show(current);
     // 没有后续句或没在播放：等主窗口发来新内容
-    if (!current.upcoming || !payload.anchor.running) return;
+    if ((!current.upcoming && current.endTime === undefined) || !payload.anchor.running) return;
 
     let rafId = 0;
     const tick = () => {
@@ -135,7 +135,7 @@ const DesktopLyrics = () => {
         current = line;
         show(line);
       }
-      if (current.upcoming) rafId = requestAnimationFrame(tick);
+      if (current.upcoming || current.endTime !== undefined) rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);

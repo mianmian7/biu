@@ -122,6 +122,7 @@ interface LyricsPreference {
 
 interface LyricLine {
   time: number;
+  endTime?: number;
   text: string;
 }
 

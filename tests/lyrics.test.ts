@@ -59,6 +59,54 @@ beforeEach(() => {
 });
 
 describe("parseLrc", () => {
+  test.each(["[00:01.00]a\n[00:01.00]\n[00:05.00]\n[00:10.00]b", "[00:01.00]\n[00:01.00]a\n[00:05.00]\n[00:10.00]b"])(
+    "ignores same-time blanks when finding a later end: %s",
+    raw => {
+      expect(parseLrc(raw)).toEqual([
+        { time: 1000, endTime: 5000, text: "a" },
+        { time: 10000, text: "b" },
+      ]);
+    },
+  );
+
+  test("preserves sorted silence markers without adding companion rows", () => {
+    const raw = "[00:10.000]next\n[00:02.000]\n[00:01.000]first\n[00:12.000]\n[00:13.000]";
+    expect(parseLrc(raw)).toEqual([
+      { time: 1000, endTime: 2000, text: "first" },
+      { time: 10000, endTime: 12000, text: "next" },
+    ]);
+    const translated = parseLrc("[00:01.000]translation\n[00:02.000]\n[00:10.000]translation two");
+    const romaji = parseLrc("[00:01.000]romaji\n[00:02.000]\n[00:10.000]romaji two");
+    expect(translated.map(line => line.time)).toEqual(parseLrc(raw).map(line => line.time));
+    expect(romaji.map(line => line.time)).toEqual(parseLrc(raw).map(line => line.time));
+  });
+
+  test("restores silence boundaries and companions from persisted lyrics", async () => {
+    const lyrics = "[00:01]first\n[00:02]\n[00:10]next";
+    const cache = JSON.parse(
+      JSON.stringify({
+        "BV1xx-100": {
+          source: "manual",
+          lyrics,
+          tLyrics: "[00:01]translation\n[00:02]\n[00:10]next translation",
+        },
+      }),
+    );
+    getElectronStoreMock().mockResolvedValue(cache);
+    setPlayItem(createPlayItem());
+    await useLyricsStore.getState().load();
+    expect(useLyricsStore.getState().lyrics).toEqual(parseLrc(lyrics));
+    expect(getActiveLyricIndex(useLyricsStore.getState().lyrics, 5000)).toBe(-1);
+    expect(useLyricsStore.getState().translatedLyrics.map(line => line.time)).toEqual([1000, 10000]);
+  });
+
+  test("keeps repeated timestamps and ends each occurrence", () => {
+    expect(parseLrc("[00:01][00:10]repeat\n[00:02]\n[00:12]")).toEqual([
+      { time: 1000, endTime: 2000, text: "repeat" },
+      { time: 10000, endTime: 12000, text: "repeat" },
+    ]);
+  });
+
   test("parses timestamped lines", () => {
     const result = parseLrc("[00:01.00]first\n[00:02.500]second\n");
 
@@ -90,6 +138,17 @@ describe("parseLrc", () => {
 });
 
 describe("getActiveLyricIndex", () => {
+  test("returns no active line in explicit gaps and after the final end", () => {
+    const lines = parseLrc("[00:01]first\n[00:02]\n[00:10]next\n[00:12]");
+    expect(getActiveLyricIndex(lines, 0)).toBe(-1);
+    expect(getActiveLyricIndex(lines, 1999)).toBe(0);
+    expect(getActiveLyricIndex(lines, 2000)).toBe(-1);
+    expect(getActiveLyricIndex(lines, 9999)).toBe(-1);
+    expect(getActiveLyricIndex(lines, 10000)).toBe(1);
+    expect(getActiveLyricIndex(lines, 12000)).toBe(-1);
+    expect(getActiveLyricIndex(parseLrc("[00:01]first\n[00:10]next"), 5000)).toBe(0);
+    expect(getActiveLyricIndex(parseLrc("[00:01]first\n[00:10]next"), 99999)).toBe(1);
+  });
   const lyrics = [
     { time: 1000, text: "a" },
     { time: 3000, text: "b" },

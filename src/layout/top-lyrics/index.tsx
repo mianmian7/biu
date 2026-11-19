@@ -51,7 +51,7 @@ const TopLyrics = () => {
 
   const activeIndex = getActiveLyricIndex(lyrics, currentTime * 1000 + offset);
   // 还没唱到第一句时，把第一句当作「即将播放」的内容显示
-  const index = activeIndex >= 0 ? activeIndex : lyrics.length ? 0 : -1;
+  const index = activeIndex >= 0 ? activeIndex : lyrics.length && currentTime * 1000 + offset < lyrics[0].time ? 0 : -1;
   const line = index >= 0 ? lyrics[index] : undefined;
   const translation = line ? translationMap.get(line.time) : undefined;
   const isPending = !line && (isLoading || !isLoaded);

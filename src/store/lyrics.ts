@@ -9,7 +9,7 @@ import { StoreNameMap } from "@shared/store";
 
 import { usePlayList } from "./play-list";
 
-const timeTagPattern = /\[(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?\]/g;
+const timeTagPattern = /\[(\d+):(\d{1,2})(?:\.(\d{1,3}))?\]/g;
 
 const AUTO_FAILURE: Partial<Record<AutoLyricsResult["status"], string>> = {
   unidentified: "自动歌词：未识别到歌曲",
@@ -27,7 +27,6 @@ export function parseLrc(raw?: null | string): LyricLine[] {
 
   lines.forEach(line => {
     const text = line.replace(timeTagPattern, "").trim();
-    if (!text) return;
 
     let match: null | RegExpExecArray;
     while ((match = timeTagPattern.exec(line)) !== null) {
@@ -44,7 +43,22 @@ export function parseLrc(raw?: null | string): LyricLine[] {
     timeTagPattern.lastIndex = 0;
   });
 
-  return result.toSorted((a, b) => a.time - b.time);
+  const sorted = result.toSorted((a, b) => a.time - b.time);
+  let marker: number | undefined;
+  for (let i = sorted.length - 1; i >= 0; ) {
+    const time = sorted[i].time;
+    let hasText = false;
+    while (i >= 0 && sorted[i].time === time) {
+      const line = sorted[i];
+      if (line.text) {
+        hasText = true;
+        if (marker !== undefined) line.endTime = marker;
+      }
+      i -= 1;
+    }
+    marker = hasText ? undefined : time;
+  }
+  return sorted.filter(line => line.text);
 }
 
 /** 当前播放歌曲对应的歌词缓存 key（bvid-cid），本地音乐/普通音频没有歌词来源 */
@@ -71,7 +85,8 @@ export function getActiveLyricIndex(lyrics: LyricLine[], currentMs: number) {
     }
   }
 
-  return index;
+  const endTime = lyrics[index].endTime;
+  return endTime !== undefined && currentMs >= endTime ? -1 : index;
 }
 
 interface LyricsState {

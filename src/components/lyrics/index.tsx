@@ -75,7 +75,7 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
   const activeIndex = useMemo(() => {
     const found = getActiveLyricIndex(lyrics, currentMs);
     if (found >= 0) return found;
-    return lyrics.length ? 0 : -1;
+    return lyrics.length && currentMs < lyrics[0].time ? 0 : -1;
   }, [currentMs, lyrics]);
 
   const persistLyricsCache = useMemo(
@@ -123,7 +123,6 @@ const Lyrics = ({ color, centered, showControls }: { color?: string; centered?: 
 
   const updateCenterPadding = useCallback(() => {
     if (activeIndex < 0) {
-      setCenterPadding(0);
       return;
     }
 

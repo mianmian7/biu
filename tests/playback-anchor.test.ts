@@ -56,6 +56,33 @@ describe("getAnchorPositionMs", () => {
 });
 
 describe("getDesktopLyricsLineProgress", () => {
+  test("clears explicit ends on the window clock, including the final line", () => {
+    const current: DesktopLyricsPayload = {
+      ...payload,
+      text: "first",
+      endTime: anchor.mediaMs + 1000,
+      upcoming: [
+        {
+          index: 1,
+          text: "next",
+          lineStartMs: anchor.mediaMs + 5000,
+          lineEndMs: anchor.mediaMs + 6000,
+          endTime: anchor.mediaMs + 6000,
+        },
+      ],
+    };
+    const gap = resolveDisplayedLine(current, anchor.at + 1000);
+    expect(gap.index).toBe(-1);
+    expect(gap.text).toBeUndefined();
+    expect(gap.upcoming).toHaveLength(1);
+    const next = resolveDisplayedLine(gap, anchor.at + 5000);
+    expect(next.text).toBe("next");
+    expect(resolveDisplayedLine(next, anchor.at + 6000).text).toBeUndefined();
+    expect(resolveDisplayedLine(current, anchor.at + 7000).index).toBe(-1);
+    expect(resolveDisplayedLine({ ...current, anchor: { ...anchor, running: false } }, anchor.at + 7000).text).toBe(
+      "first",
+    );
+  });
   test("sweeps a 4480ms line to completion using the cached anchor", () => {
     expect(getDesktopLyricsLineProgress(payload, anchor.at + 2240)).toBe(0.5);
     expect(getDesktopLyricsLineProgress(payload, anchor.at + 4480)).toBeGreaterThanOrEqual(1);
