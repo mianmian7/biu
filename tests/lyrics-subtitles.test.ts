@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { getLyricsByBili } from "@/components/lyrics/get-lyrics";
 import { getLyric } from "@/service/ai-lyrics";
 import { getWebPlayerInfo } from "@/service/web-player";
-import { parseLrc, serializeLrc } from "@/store/lyrics";
 
 vi.mock("@/service/ai-lyrics", () => ({ getLyric: vi.fn() }));
 vi.mock("@/service/web-player", () => ({ getWebPlayerInfo: vi.fn() }));
@@ -31,7 +30,6 @@ describe("Bilibili subtitle silence boundaries", () => {
       { time: 5000, text: "third" },
       { time: 10000, endTime: 11000, text: "last" },
     ]);
-    expect(parseLrc(serializeLrc(lines!))).toEqual(lines);
   });
 
   test("ignores missing or invalid ends and empty subtitle rows", async () => {

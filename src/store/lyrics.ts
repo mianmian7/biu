@@ -54,23 +54,6 @@ export function parseLrc(raw?: null | string): LyricLine[] {
   return sorted.filter(line => line.text);
 }
 
-export function serializeLrc(lyrics: LyricLine[]): string {
-  const timestamp = (time: number) => {
-    const ms = Math.max(0, Math.round(time));
-    return `[${String(Math.floor(ms / 60000)).padStart(2, "0")}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}.${String(ms % 1000).padStart(3, "0")}]`;
-  };
-  return lyrics
-    .flatMap((line, index) => {
-      const rows = [`${timestamp(line.time)}${line.text}`];
-      const next = lyrics[index + 1];
-      if (line.endTime !== undefined && line.endTime > line.time && (!next || line.endTime <= next.time)) {
-        rows.push(timestamp(line.endTime));
-      }
-      return rows;
-    })
-    .join("\n");
-}
-
 /** 当前播放歌曲对应的歌词缓存 key（bvid-cid），本地音乐/普通音频没有歌词来源 */
 export function getLyricsCacheKey(bvid?: string, cid?: string) {
   return bvid && cid ? `${bvid}-${cid}` : null;

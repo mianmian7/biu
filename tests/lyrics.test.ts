@@ -5,7 +5,7 @@ import type { AutoLyricsProgress, AutoLyricsResult } from "@shared/auto-lyrics/s
 
 import { startDesktopLyricsSync } from "@/common/utils/desktop-lyrics";
 import { getLyricsByBili } from "@/components/lyrics/get-lyrics";
-import { getActiveLyricIndex, parseLrc, serializeLrc, useLyricsStore } from "@/store/lyrics";
+import { getActiveLyricIndex, parseLrc, useLyricsStore } from "@/store/lyrics";
 import { usePlayList } from "@/store/play-list";
 import { useSettings } from "@/store/settings";
 
@@ -69,19 +69,6 @@ describe("parseLrc", () => {
     const romaji = parseLrc("[00:01.000]romaji\n[00:02.000]\n[00:10.000]romaji two");
     expect(translated.map(line => line.time)).toEqual(parseLrc(raw).map(line => line.time));
     expect(romaji.map(line => line.time)).toEqual(parseLrc(raw).map(line => line.time));
-  });
-
-  test("round trips explicit ends through LRC and JSON cache serialization", () => {
-    const lines = parseLrc("[00:01.123]first\n[00:02.456]\n[100:00.000]last\n[100:03.000]");
-    expect(parseLrc(serializeLrc(lines))).toEqual(lines);
-    expect(JSON.parse(JSON.stringify(lines))).toEqual(lines);
-    expect(serializeLrc([])).toBe("");
-    expect(parseLrc("[00:01.000]\n[00:02.000]")).toEqual([]);
-    const adjacent = [
-      { time: 1000, endTime: 2000, text: "one" },
-      { time: 2000, text: "two" },
-    ];
-    expect(parseLrc(serializeLrc(adjacent))).toEqual(adjacent);
   });
 
   test("restores silence boundaries and companions from persisted lyrics", async () => {
