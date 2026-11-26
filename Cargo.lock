@@ -769,10 +769,12 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "smallvec",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "url",
  "windows 0.62.2",
 ]
 

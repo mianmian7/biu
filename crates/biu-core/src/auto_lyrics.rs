@@ -299,7 +299,11 @@ async fn search_candidates(
     if !artist.trim().is_empty() {
         queries.insert(0, format!("{} {}", queries[0], artist.trim()));
     }
-    let netease = stream::iter(queries.iter().map(|query| client.search_netease(query, 10)))
+    let netease_futs: Vec<_> = queries
+        .iter()
+        .map(|query| client.search_netease(query, 10))
+        .collect();
+    let netease = stream::iter(netease_futs)
         .buffered(3)
         .collect::<Vec<_>>();
     let (results, lrclib) = tokio::join!(netease, client.search_lrclib(&queries[0]));
