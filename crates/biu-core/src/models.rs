@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use serde_json::{Map, Value};
 
 /// Unified playable track representation across Bilibili videos, Bilibili audio (au), and local files.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -68,8 +69,6 @@ impl PlayMode {
     }
 }
 
-use serde_json::{Map, Value};
-
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AudioQuality {
@@ -81,8 +80,7 @@ pub enum AudioQuality {
     Low,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 pub struct ProxySettings {
     #[serde(rename = "type")]
     pub proxy_type: String,
@@ -96,8 +94,8 @@ pub struct ProxySettings {
     pub password: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub auto_start: bool,
     pub close_window_option: String,
@@ -173,15 +171,14 @@ impl Default for AppSettings {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct CollectionFolded {
     pub created: bool,
     pub collected: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DesktopLyricsStyle {
     pub layout: String,
     pub align: String,
@@ -208,6 +205,129 @@ impl Default for DesktopLyricsStyle {
             stroke_color: "#000000".into(),
             extra: Map::new(),
         }
+    }
+}
+
+// Tauri settings are JSON from the web UI, where a setting can be null and
+// numeric values can have a fractional part. Keep the defaults for invalid
+// known values and leave unrecognized fields available for round-tripping.
+struct SettingsFields(Map<String, Value>);
+
+impl SettingsFields {
+    fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let fields = match Value::deserialize(deserializer)? {
+            Value::Object(fields) => fields,
+            _ => Map::new(),
+        };
+        Ok(Self(fields))
+    }
+
+    fn read<T: DeserializeOwned>(&mut self, key: &str, field: &mut T) {
+        if let Some(value) = self.0.remove(key).filter(|value| !value.is_null())
+            && let Ok(value) = serde_json::from_value(value)
+        {
+            *field = value;
+        }
+    }
+
+    fn unsigned<T: TryFrom<u32>>(&mut self, key: &str) -> Option<T> {
+        let number = self.0.remove(key)?.as_f64()?;
+        if (0.0..f64::from(u32::MAX) + 1.0).contains(&number) {
+            T::try_from(number as u32).ok()
+        } else {
+            None
+        }
+    }
+
+    fn read_unsigned(&mut self, key: &str, field: &mut u32) {
+        if let Some(value) = self.unsigned(key) {
+            *field = value;
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AppSettings {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut fields = SettingsFields::deserialize(deserializer)?;
+        let mut settings = Self::default();
+        fields.read("autoStart", &mut settings.auto_start);
+        fields.read("closeWindowOption", &mut settings.close_window_option);
+        fields.read("fontFamily", &mut settings.font_family);
+        fields.read_unsigned("borderRadius", &mut settings.border_radius);
+        fields.read("downloadPath", &mut settings.download_path);
+        fields.read("primaryColor", &mut settings.primary_color);
+        fields.read("backgroundColor", &mut settings.background_color);
+        fields.read("audioQuality", &mut settings.audio_quality);
+        fields.read("hiddenMenuKeys", &mut settings.hidden_menu_keys);
+        fields.read("displayMode", &mut settings.display_mode);
+        fields.read("ffmpegPath", &mut settings.ffmpeg_path);
+        fields.read("themeMode", &mut settings.theme_mode);
+        fields.read("pageTransition", &mut settings.page_transition);
+        fields.read("showSearchHistory", &mut settings.show_search_history);
+        fields.read("proxySettings", &mut settings.proxy_settings);
+        fields.read("sideMenuCollapsed", &mut settings.side_menu_collapsed);
+        fields.read_unsigned("sideMenuWidth", &mut settings.side_menu_width);
+        fields.read(
+            "sideMenuCollectionFolded",
+            &mut settings.side_menu_collection_folded,
+        );
+        fields.read("reportPlayHistory", &mut settings.report_play_history);
+        fields.read("localMusicDirs", &mut settings.local_music_dirs);
+        fields.read_unsigned("lyricsFontSize", &mut settings.lyrics_font_size);
+        fields.read("showTopLyrics", &mut settings.show_top_lyrics);
+        fields.read(
+            "showTopLyricsTranslation",
+            &mut settings.show_top_lyrics_translation,
+        );
+        fields.read("showDesktopLyrics", &mut settings.show_desktop_lyrics);
+        fields.read("desktopLyricsLocked", &mut settings.desktop_lyrics_locked);
+        fields.read_unsigned(
+            "desktopLyricsFontSize",
+            &mut settings.desktop_lyrics_font_size,
+        );
+        fields.read("desktopLyricsStyle", &mut settings.desktop_lyrics_style);
+        settings.extra = fields.0;
+        Ok(settings)
+    }
+}
+
+impl<'de> Deserialize<'de> for DesktopLyricsStyle {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut fields = SettingsFields::deserialize(deserializer)?;
+        let mut style = Self::default();
+        fields.read("layout", &mut style.layout);
+        fields.read("align", &mut style.align);
+        fields.read("showTranslation", &mut style.show_translation);
+        fields.read("showRomaji", &mut style.show_romaji);
+        fields.read("karaoke", &mut style.karaoke);
+        fields.read("playedColor", &mut style.played_color);
+        fields.read("unplayedColor", &mut style.unplayed_color);
+        fields.read("strokeColor", &mut style.stroke_color);
+        style.extra = fields.0;
+        Ok(style)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProxySettings {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut fields = SettingsFields::deserialize(deserializer)?;
+        let mut proxy = Self::default();
+        fields.read("type", &mut proxy.proxy_type);
+        fields.read("host", &mut proxy.host);
+        proxy.port = fields.unsigned("port");
+        fields.read("username", &mut proxy.username);
+        fields.read("password", &mut proxy.password);
+        Ok(proxy)
+    }
+}
+
+impl<'de> Deserialize<'de> for CollectionFolded {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut fields = SettingsFields::deserialize(deserializer)?;
+        let mut folded = Self::default();
+        fields.read("created", &mut folded.created);
+        fields.read("collected", &mut folded.collected);
+        Ok(folded)
     }
 }
 

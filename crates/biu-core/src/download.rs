@@ -37,11 +37,16 @@ impl DownloadFormat {
 pub struct DownloadManager {
     bili: Arc<BiliClient>,
     store: Store,
+    settings_override: Option<DownloadSettings>,
+    state: Mutex<State>,
+    permits: Semaphore,
+}
+
+#[derive(Clone)]
+struct DownloadSettings {
     directory: PathBuf,
     ffmpeg: Option<PathBuf>,
     quality: AudioQuality,
-    state: Mutex<State>,
-    permits: Semaphore,
 }
 
 struct State {
@@ -51,15 +56,7 @@ struct State {
 
 impl DownloadManager {
     pub fn open(store: Store, bili: Arc<BiliClient>) -> Result<Arc<Self>> {
-        let settings = store.app_settings()?;
-        let directory = if settings.download_path.trim().is_empty() {
-            dirs::download_dir().unwrap_or_else(|| store.directory().join("downloads"))
-        } else {
-            PathBuf::from(settings.download_path)
-        };
-        let ffmpeg =
-            (!settings.ffmpeg_path.trim().is_empty()).then(|| PathBuf::from(settings.ffmpeg_path));
-        Self::new(store, bili, directory, ffmpeg, settings.audio_quality)
+        Self::restore(store, bili, None)
     }
 
     pub fn new(
@@ -68,6 +65,22 @@ impl DownloadManager {
         directory: PathBuf,
         ffmpeg: Option<PathBuf>,
         quality: AudioQuality,
+    ) -> Result<Arc<Self>> {
+        Self::restore(
+            store,
+            bili,
+            Some(DownloadSettings {
+                directory,
+                ffmpeg,
+                quality,
+            }),
+        )
+    }
+
+    fn restore(
+        store: Store,
+        bili: Arc<BiliClient>,
+        settings_override: Option<DownloadSettings>,
     ) -> Result<Arc<Self>> {
         let data = store.read("media-downloads")?;
         let mut tasks = HashMap::new();
@@ -84,15 +97,30 @@ impl DownloadManager {
         Ok(Arc::new(Self {
             bili,
             store,
-            directory,
-            ffmpeg,
-            quality,
+            settings_override,
             state: Mutex::new(State {
                 tasks,
                 running: HashMap::new(),
             }),
             permits: Semaphore::new(CONCURRENT_DOWNLOADS),
         }))
+    }
+
+    fn download_settings(&self) -> Result<DownloadSettings> {
+        if let Some(settings) = &self.settings_override {
+            return Ok(settings.clone());
+        }
+        let settings = self.store.app_settings()?;
+        Ok(DownloadSettings {
+            directory: if settings.download_path.trim().is_empty() {
+                dirs::download_dir().unwrap_or_else(|| self.store.directory().join("downloads"))
+            } else {
+                PathBuf::from(settings.download_path)
+            },
+            ffmpeg: (!settings.ffmpeg_path.trim().is_empty())
+                .then(|| PathBuf::from(settings.ffmpeg_path)),
+            quality: settings.audio_quality,
+        })
     }
 
     pub fn tasks(&self) -> Vec<DownloadTask> {
@@ -178,6 +206,49 @@ impl DownloadManager {
         Ok(true)
     }
 
+    /// Restart a paused, failed, or cancelled task with its original source and format.
+    pub fn retry(self: &Arc<Self>, id: &str) -> Result<bool> {
+        let mut state = self.state.lock().unwrap();
+        if state.running.contains_key(id) {
+            return Ok(false);
+        }
+        let Some(task) = state.tasks.get_mut(id) else {
+            return Ok(false);
+        };
+        if !matches!(
+            task.status,
+            DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Cancelled
+        ) {
+            return Ok(false);
+        }
+        let runtime = tokio::runtime::Handle::try_current()
+            .context("retrying a download requires a Tokio runtime")?;
+        let track = retry_track(task)?;
+        let format = match task.extra.get("requestedFormat").and_then(Value::as_str) {
+            Some("mp3") => DownloadFormat::Mp3,
+            Some("m4a") => DownloadFormat::M4a,
+            Some("flac") => DownloadFormat::Flac,
+            _ => DownloadFormat::Native,
+        };
+        let mut updated = task.clone();
+        updated.status = DownloadStatus::Queued;
+        updated.save_path = None;
+        updated.total_bytes = 0;
+        updated.downloaded_bytes = 0;
+        updated.download_progress = 0;
+        updated.error = None;
+        updated.extra.remove("cancelled");
+        self.persist(&updated)?;
+        *task = updated;
+
+        let (sender, receiver) = watch::channel(false);
+        state.running.insert(id.to_owned(), sender);
+        let manager = self.clone();
+        let id = id.to_owned();
+        runtime.spawn(async move { manager.run(id, track, format, receiver).await });
+        Ok(true)
+    }
+
     /// Remove a task from history and cancel it if active. The completed file is preserved.
     pub fn delete(&self, id: &str) -> Result<bool> {
         let mut state = self.state.lock().unwrap();
@@ -253,7 +324,7 @@ impl DownloadManager {
         {
             let result = result.and_then(|(temp, extension)| {
                 let mut updated = task.clone();
-                let path = commit_output(&temp, &self.directory, &track.title, &extension)?;
+                let path = commit_output(&temp, &track.title, &extension)?;
                 updated
                     .extra
                     .insert("fileExtension".into(), json!(extension));
@@ -284,9 +355,10 @@ impl DownloadManager {
         temporary: &mut TempFiles,
     ) -> Result<(PathBuf, String)> {
         let _permit = self.permits.acquire().await?;
+        let settings = self.download_settings()?;
         self.update_stage(id, DownloadStatus::Downloading)?;
-        tokio::fs::create_dir_all(&self.directory).await?;
-        let input = temporary.path(&self.directory, id, "source-part");
+        tokio::fs::create_dir_all(&settings.directory).await?;
+        let input = temporary.path(&settings.directory, "source-part");
         let (extension, total) = match &track.source {
             TrackSource::LocalFile { path, format } => {
                 let mut source = tokio::fs::File::open(path).await?;
@@ -309,7 +381,7 @@ impl DownloadManager {
                 (extension, bytes)
             }
             source => {
-                let playurl = self.resolve(source).await?;
+                let playurl = self.resolve(source, settings.quality).await?;
                 self.download_remote(id, &playurl, &input).await?
             }
         };
@@ -317,19 +389,19 @@ impl DownloadManager {
         if format == DownloadFormat::Native || format.extension() == extension {
             return Ok((input, extension));
         }
-        let Some(executable) = find_ffmpeg(self.ffmpeg.as_deref()).await else {
+        let Some(executable) = find_ffmpeg(settings.ffmpeg.as_deref()).await else {
             return Ok((input, extension));
         };
         self.update_stage(id, DownloadStatus::Converting)?;
-        let output = temporary.path(&self.directory, id, format.extension());
+        let output = temporary.path(&settings.directory, format.extension());
         convert(&executable, &input, &output, format).await?;
         Ok((output, format.extension().into()))
     }
 
-    async fn resolve(&self, source: &TrackSource) -> Result<PlayUrlInfo> {
+    async fn resolve(&self, source: &TrackSource, quality: AudioQuality) -> Result<PlayUrlInfo> {
         match source {
             TrackSource::BiliVideo { bvid, cid, .. } => {
-                self.bili.get_playurl(bvid, *cid, self.quality).await
+                self.bili.get_playurl(bvid, *cid, quality).await
             }
             TrackSource::BiliAudio { sid } => self.bili.get_audio_playurl(*sid).await,
             TrackSource::LocalFile { .. } => bail!("local file has no CDN URL"),
@@ -444,12 +516,53 @@ fn restore_task(tasks: &mut HashMap<String, DownloadTask>, value: Value) {
     }
 }
 
+fn retry_track(task: &DownloadTask) -> Result<TrackItem> {
+    ensure!(
+        task.output_file_type != "video",
+        "video downloads are unsupported"
+    );
+    if let Some(track) = task.extra.get("track") {
+        return serde_json::from_value(track.clone()).context("read saved download track");
+    }
+    // Tauri history stores source IDs directly, sometimes as strings.
+    let parse_id = |value: &Value| value.as_u64().or_else(|| value.as_str()?.parse().ok());
+    let (id, source) =
+        if let Some(sid) = task.sid.as_ref().and_then(parse_id).filter(|sid| *sid != 0) {
+            (format!("au:{sid}"), TrackSource::BiliAudio { sid })
+        } else {
+            let bvid = task
+                .bvid
+                .as_deref()
+                .filter(|bvid| !bvid.is_empty())
+                .context("download has no saved track source")?;
+            let cid = task.cid.as_ref().and_then(parse_id).unwrap_or_default();
+            (
+                format!("{bvid}:{cid}"),
+                TrackSource::BiliVideo {
+                    bvid: bvid.to_owned(),
+                    aid: 0,
+                    cid,
+                    part_title: None,
+                },
+            )
+        };
+    Ok(TrackItem {
+        id,
+        title: task.title.clone(),
+        artist: String::new(),
+        artist_mid: None,
+        cover: task.cover.clone().unwrap_or_default(),
+        duration_secs: 0.0,
+        source,
+    })
+}
+
 #[derive(Default)]
 struct TempFiles(Vec<PathBuf>);
 
 impl TempFiles {
-    fn path(&mut self, directory: &Path, id: &str, extension: &str) -> PathBuf {
-        let path = directory.join(format!(".biu-{id}.{extension}"));
+    fn path(&mut self, directory: &Path, extension: &str) -> PathBuf {
+        let path = directory.join(format!(".biu-{}.{extension}", uuid::Uuid::new_v4()));
         self.0.push(path.clone());
         path
     }
@@ -612,7 +725,10 @@ pub fn sanitize_filename(input: &str) -> String {
     }
 }
 
-fn commit_output(temp: &Path, directory: &Path, title: &str, extension: &str) -> Result<PathBuf> {
+fn commit_output(temp: &Path, title: &str, extension: &str) -> Result<PathBuf> {
+    let directory = temp
+        .parent()
+        .context("download file has no parent directory")?;
     let stem = sanitize_filename(title);
     for number in 0..10_000 {
         let filename = if number == 0 {
@@ -751,6 +867,101 @@ mod tests {
         let restored = DownloadManager::new(store, bili, output, None, AudioQuality::Auto)?;
         assert_eq!(restored.tasks()[0].status, DownloadStatus::Cancelled);
         assert_eq!(restored.tasks()[0].output_file_type, "audio");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retries_restored_tasks_using_settings_at_execution_time() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::new(dir.path().join("settings"));
+        let old_output = dir.path().join("old");
+        let new_output = dir.path().join("new");
+        let mut settings = store.app_settings()?;
+        settings.download_path = old_output.to_string_lossy().into_owned();
+        store.save_app_settings(&settings)?;
+
+        let input = dir.path().join("in.mp3");
+        let bytes = b"ID3\x04\x00\x00\x00\x00\x00\x00sound";
+        tokio::fs::write(&input, bytes).await?;
+        let fixtures = [
+            ("paused", "downloadPaused", false, DownloadStatus::Paused),
+            ("failed", "failed", false, DownloadStatus::Failed),
+            ("cancelled", "failed", true, DownloadStatus::Cancelled),
+        ];
+        let mut entries = Map::new();
+        for (id, status, cancelled, _) in &fixtures {
+            let track = TrackItem {
+                id: format!("local:{id}"),
+                title: (*id).into(),
+                artist: String::new(),
+                artist_mid: None,
+                cover: String::new(),
+                duration_secs: 0.0,
+                source: TrackSource::LocalFile {
+                    path: input.to_string_lossy().into_owned(),
+                    format: "mp3".into(),
+                },
+            };
+            let task = json!({
+                "id": id,
+                "outputFileType": "audio",
+                "title": id,
+                "status": status,
+                "cancelled": cancelled,
+                "error": "old error",
+                "downloadedBytes": 100,
+                "track": track,
+                "requestedFormat": "mp3"
+            });
+            entries.insert(format!("downloads.{id}"), task);
+        }
+        store.write("media-downloads", Value::Object(entries))?;
+        let bili = Arc::new(BiliClient::new(dir.path().join("cookies.json"), None)?);
+        let manager = DownloadManager::open(store.clone(), bili)?;
+        let permits = manager
+            .permits
+            .acquire_many(CONCURRENT_DOWNLOADS as u32)
+            .await?;
+        for (id, _, _, status) in &fixtures {
+            assert!(
+                manager
+                    .tasks()
+                    .iter()
+                    .any(|task| task.id == *id && task.status == *status)
+            );
+            assert!(manager.retry(id)?);
+            assert!(!manager.retry(id)?);
+        }
+        settings.download_path = new_output.to_string_lossy().into_owned();
+        settings.audio_quality = AudioQuality::Low;
+        settings.ffmpeg_path = "/fixture/ffmpeg".into();
+        store.save_app_settings(&settings)?;
+        drop(permits);
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while manager
+                .tasks()
+                .iter()
+                .any(|task| task.status != DownloadStatus::Done)
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await?;
+        assert!(!old_output.exists());
+        let history = store.read("media-downloads")?;
+        for (id, _, _, _) in fixtures {
+            assert_eq!(
+                tokio::fs::read(new_output.join(format!("{id}.mp3"))).await?,
+                bytes
+            );
+            let task = &history[format!("downloads.{id}")];
+            assert_eq!(task["status"], "completed");
+            assert_eq!(task["downloadedBytes"], bytes.len() as u64);
+            assert!(task.get("cancelled").is_none());
+            assert!(task.get("error").is_none());
+            assert!(!manager.retry(id)?);
+        }
         Ok(())
     }
 }

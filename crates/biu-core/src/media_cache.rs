@@ -279,33 +279,40 @@ impl MediaCache {
     ) -> Result<PreparedAudio> {
         ensure!(allowed_check(&url), "audio source is not allowlisted");
         let key = Self::key(&url);
-        let (state, mut receiver) = {
-            let _storage = self.storage.lock().await;
-            if let Some(ready) = self.lookup(&key).await {
-                return Ok(ready);
-            }
-            let mut fills = self.fills.lock().unwrap();
-            if let Some(fill) = fills.get(&key) {
-                fill.clone()
-            } else {
-                let state = FillState::default();
-                let (sender, receiver) = watch::channel(None);
-                fills.insert(key.clone(), (state.clone(), receiver.clone()));
-                let guard = FillGuard {
-                    cache: self.clone(),
-                    key,
-                    state: state.clone(),
-                };
-                tokio::spawn(async move {
-                    let result = guard.cache.fill(&guard, url, media_client, &sender).await;
-                    if let Err(err) = result {
-                        *guard.state.error.lock().unwrap() = Some(err.to_string());
+        let (state, mut receiver) = loop {
+            let mut cancelled = {
+                let _storage = self.storage.lock().await;
+                if let Some(ready) = self.lookup(&key).await {
+                    return Ok(ready);
+                }
+                let mut fills = self.fills.lock().unwrap();
+                if let Some((state, receiver)) = fills.get(&key) {
+                    if !state.aborted.load(Ordering::Acquire) {
+                        break (state.clone(), receiver.clone());
                     }
-                    guard.state.done.store(true, Ordering::Release);
-                    drop(guard);
-                });
-                (state, receiver)
-            }
+                    receiver.clone()
+                } else {
+                    let state = FillState::default();
+                    let (sender, receiver) = watch::channel(None);
+                    fills.insert(key.clone(), (state.clone(), receiver.clone()));
+                    let guard = FillGuard {
+                        cache: self.clone(),
+                        key,
+                        state: state.clone(),
+                    };
+                    tokio::spawn(async move {
+                        let result = guard.cache.fill(&guard, url, media_client, &sender).await;
+                        if let Err(err) = result {
+                            *guard.state.error.lock().unwrap() = Some(err.to_string());
+                        }
+                        guard.state.done.store(true, Ordering::Release);
+                        drop(guard);
+                    });
+                    break (state, receiver);
+                }
+            };
+            // Wait for the cancelled worker to release the shared staging paths.
+            while cancelled.changed().await.is_ok() {}
         };
         loop {
             if let Some(prepared) = receiver.borrow_and_update().clone() {
@@ -470,26 +477,11 @@ impl MediaCache {
             .sum())
     }
 
+    /// Remove committed entries while allowing active fills to finish.
     pub async fn clear_cache(&self) -> io::Result<()> {
-        let receivers = {
-            let _storage = self.storage.lock().await;
-            let receivers = self
-                .fills
-                .lock()
-                .unwrap()
-                .values()
-                .map(|(state, receiver)| {
-                    state.aborted.store(true, Ordering::Release);
-                    receiver.clone()
-                })
-                .collect::<Vec<_>>();
-            for file in cache_files(&self.directory, &["audio", "bin", "json"]).await? {
-                remove_if_present(&file.path).await?;
-            }
-            receivers
-        };
-        for mut receiver in receivers {
-            while receiver.changed().await.is_ok() {}
+        let _storage = self.storage.lock().await;
+        for file in cache_files(&self.directory, &["audio", "bin", "json"]).await? {
+            remove_if_present(&file.path).await?;
         }
         Ok(())
     }
@@ -605,6 +597,79 @@ pub(crate) async fn remove_if_present(path: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use tokio::{io::AsyncReadExt, net::TcpListener, sync::oneshot};
+
+    #[tokio::test]
+    async fn replays_immediately_after_aborting_a_stream() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let cache = Arc::new(MediaCache::new(dir.path())?);
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let url = Url::parse(&format!("http://{}/track.m4s", listener.local_addr()?))?;
+        let server = tokio::spawn(async move {
+            let stalled = serve_audio(&listener, b"old").await?;
+            let _replay = serve_audio(&listener, b"replay").await?;
+            drop(stalled);
+            Ok::<_, io::Error>(())
+        });
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let prepare = || cache.prepare_audio_file(url.clone(), client.clone(), |_| true);
+        let audio = prepare().await?;
+        assert!(matches!(audio, PreparedAudio::Streaming { .. }));
+        audio.abort();
+
+        let replay = tokio::time::timeout(Duration::from_secs(3), prepare()).await??;
+        assert_eq!(read_audio(replay).await?, b"replay");
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn clearing_cache_preserves_an_active_stream() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let cache = Arc::new(MediaCache::new(dir.path())?);
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let url = Url::parse(&format!("http://{}/track.m4s", listener.local_addr()?))?;
+        let (finish, finished) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut socket = serve_audio(&listener, b"abc").await?;
+            finished.await?;
+            socket.write_all(b"def").await?;
+            Ok::<_, anyhow::Error>(())
+        });
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let audio = cache.prepare_audio_file(url, client, |_| true).await?;
+        let PreparedAudio::Streaming { path, .. } = &audio else {
+            panic!("expected an active stream");
+        };
+        cache.clear_cache().await?;
+        assert!(path.exists());
+        finish.send(()).unwrap();
+        assert_eq!(read_audio(audio).await?, b"abcdef");
+        server.await??;
+        Ok(())
+    }
+
+    async fn serve_audio(
+        listener: &TcpListener,
+        bytes: &[u8],
+    ) -> io::Result<tokio::net::TcpStream> {
+        let (mut socket, _) = listener.accept().await?;
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(socket.read_u8().await?);
+        }
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: audio/mp4\r\nConnection: close\r\n\r\n").await?;
+        socket.write_all(bytes).await?;
+        Ok(socket)
+    }
+
+    async fn read_audio(audio: PreparedAudio) -> Result<Vec<u8>> {
+        Ok(tokio::task::spawn_blocking(move || {
+            let mut bytes = Vec::new();
+            audio.open()?.read_to_end(&mut bytes)?;
+            Ok::<_, io::Error>(bytes)
+        })
+        .await??)
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn streams_real_http_bytes_then_commits_and_evicts_lru() -> Result<()> {

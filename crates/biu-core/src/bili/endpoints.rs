@@ -51,14 +51,17 @@ impl BiliClient {
     }
 
     pub async fn logout(&self) -> Result<()> {
-        if self.get_cookie("bili_jct").is_some() {
-            self.post(
-                PASSPORT,
-                "/login/exit/v2",
-                json!({ "gourl": BILI_REFERER }),
-                None,
-            )
-            .await?;
+        if self.get_cookie("bili_jct").is_some()
+            && let Err(err) = self
+                .post(
+                    PASSPORT,
+                    "/login/exit/v2",
+                    json!({ "gourl": BILI_REFERER }),
+                    None,
+                )
+                .await
+        {
+            log::warn!("Bilibili network logout failed: {err}");
         }
         self.cookies.lock().unwrap().clear();
         *self.wbi.lock().await = None;
@@ -255,7 +258,6 @@ impl BiliClient {
         let mut regular = self.audio_streams(list(&dash["audio"]));
         let mut premium = self.audio_streams(std::slice::from_ref(&dash["flac"]["audio"]));
         premium.extend(self.audio_streams(list(&dash["dolby"]["audio"])));
-        self.audio_streams(list(&dash["video"]));
         const QUALITY_ORDER: [u64; 8] = [30257, 30216, 30259, 30260, 30232, 30280, 30250, 30251];
         regular.sort_by_key(|stream| {
             std::cmp::Reverse((
@@ -273,13 +275,17 @@ impl BiliClient {
             let selected = regular.remove(index);
             regular.insert(0, selected);
         }
-        let streams = if matches!(quality, AudioQuality::Auto | AudioQuality::Lossless)
+        let mut streams = if matches!(quality, AudioQuality::Auto | AudioQuality::Lossless)
             || regular.is_empty()
         {
             premium.into_iter().chain(regular).collect::<Vec<_>>()
         } else {
             regular.into_iter().chain(premium).collect()
         };
+        if quality == AudioQuality::Auto {
+            // Symphonia can decode FLAC and AAC directly. Keep Dolby E-AC-3 as a fallback.
+            streams.sort_by_key(|stream| stream.id == 30250);
+        }
         let urls = streams
             .first()
             .context("Bilibili returned no DASH audio")?
@@ -380,6 +386,29 @@ impl BiliClient {
             )
             .await?;
         decode(Value::Array(list(&data["list"]).to_vec()))
+    }
+
+    pub async fn get_created_fav_folders_for_resource(
+        &self,
+        mid: u64,
+        rid: u64,
+    ) -> Result<Vec<(FavFolder, bool)>> {
+        let data = self
+            .get(
+                API,
+                "/x/v3/fav/folder/created/list-all",
+                json!({ "up_mid": mid, "rid": rid, "type": 2 }),
+                false,
+            )
+            .await?;
+        let folders: Vec<FavFolder> = decode(Value::Array(list(&data["list"]).to_vec()))?;
+        Ok(folders
+            .into_iter()
+            .map(|folder| {
+                let contains_resource = folder.extra.get("fav_state").and_then(number) == Some(1);
+                (folder, contains_resource)
+            })
+            .collect())
     }
 
     pub async fn get_collected_fav_folders(&self, mid: u64, pn: u64) -> Result<Page<FavFolder>> {
@@ -979,7 +1008,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sorts_dash_and_registers_all_hosts() -> Result<()> {
+    fn prefers_supported_audio_and_registers_audio_hosts_only() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let client = BiliClient::new(dir.path().join("cookies.json"), None)?;
         let payload = json!({"dash":{
@@ -987,18 +1016,65 @@ mod tests {
                 {"id":30280,"bandwidth":128,"base_url":"https://b.fixture.example/b.m4s",
                  "backup_url":["https://c.fixture.example/b.m4s"]}],
             "flac":{"audio":{"id":30251,"baseUrl":"https://d.fixture.example/c.m4s"}},
-            "dolby":{"audio":[{"id":30250,"baseUrl":"https://e.fixture.example/c.m4s"}]}
+            "dolby":{"audio":[{"id":30250,"baseUrl":"https://e.fixture.example/c.m4s"}]},
+            "video":[{"baseUrl":"https://video.fixture.example/video.m4s"}]
         }});
         let auto = client.playurl_info(&payload, AudioQuality::Auto)?;
+        let lossless = client.playurl_info(&payload, AudioQuality::Lossless)?;
         let high = client.playurl_info(&payload, AudioQuality::High)?;
         let low = client.playurl_info(&payload, AudioQuality::Low)?;
         assert_eq!(
             auto.streams.iter().map(|s| s.id).collect::<Vec<_>>(),
-            [30251, 30250, 30280, 30216]
+            [30251, 30280, 30216, 30250]
         );
+        assert_eq!(lossless.streams[1].id, 30250);
         assert_eq!(high.urls.len(), 2);
         assert_eq!(low.streams[0].id, 30216);
-        assert!(client.is_media_url_allowed(&high.urls[1]));
+        assert!(
+            auto.streams
+                .iter()
+                .flat_map(|stream| &stream.urls)
+                .all(|url| client.is_media_url_allowed(url))
+        );
+        assert!(
+            !client.is_media_url_allowed(&Url::parse("https://video.fixture.example/video.m4s")?)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn logs_out_locally_when_the_server_is_unreachable() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("cookies.json");
+        let client = BiliClient::new(path.clone(), None)?;
+        client.set_cookie("bili_jct", "fixture", None)?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let proxy = reqwest::Proxy::all(format!("http://{}", listener.local_addr()?))?;
+        client.clients.write().unwrap().0 = Client::builder()
+            .proxy(proxy)
+            .timeout(Duration::from_secs(3))
+            .build()?;
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await?;
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await?);
+            }
+            assert!(request.starts_with(b"CONNECT passport.bilibili.com:443 "));
+            socket
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            Ok::<_, std::io::Error>(())
+        });
+        client.logout().await?;
+        tokio::time::timeout(Duration::from_secs(3), server).await???;
+        assert!(client.get_cookie("bili_jct").is_none());
+        assert!(
+            BiliClient::new(path, None)?
+                .get_cookie("bili_jct")
+                .is_none()
+        );
         Ok(())
     }
 }

@@ -44,9 +44,11 @@ fn is_image_host(url: &Url) -> bool {
         && url.username().is_empty()
         && url.password().is_none()
         && url.port().is_none()
-        && url
-            .host_str()
-            .is_some_and(|host| host == "hdslb.com" || host.ends_with(".hdslb.com"))
+        && url.host_str().is_some_and(|host| {
+            matches!(host, "hdslb.com" | "biliimg.com")
+                || host.ends_with(".hdslb.com")
+                || host.ends_with(".biliimg.com")
+        })
 }
 
 fn original_path(url: &Url) -> String {
@@ -145,7 +147,7 @@ impl ImageCache {
         })
     }
 
-    /// Fetch a bounded RGBA image. Network, decoding, resizing and blur run outside the memory lock.
+    /// Fetch and resize a bounded RGBA image, including unblurred pixels for `BlurBg`.
     pub async fn get(&self, input: &str, size: ThumbSize) -> Result<Arc<RgbaImage>> {
         let thumbnail = thumbnail_url(input, size)?;
         let key = format!("{:x}", Sha256::digest(thumbnail.as_str().as_bytes()));
@@ -280,17 +282,13 @@ fn decode_image(bytes: Vec<u8>, size: ThumbSize) -> Result<(RgbaImage, Vec<u8>)>
     reader.limits(limits);
     let source = reader.decode().context("decode Bilibili image")?;
     let (width, height) = size.dimensions();
-    let mut image = if source.width() == width && source.height() == height {
+    let image = if source.width() == width && source.height() == height {
         source.into_rgba8()
     } else {
         source
             .resize_to_fill(width, height, FilterType::Triangle)
             .into_rgba8()
     };
-    if size == ThumbSize::BlurBg {
-        image = RgbaImage::from_raw(width, height, blur_rgba_240x135(image.as_raw())?)
-            .expect("blur preserves the input dimensions");
-    }
     Ok((image, bytes))
 }
 
@@ -371,7 +369,35 @@ mod tests {
             thumbnail_url("https://i1.hdslb.com/a.avif", ThumbSize::Cover)?.path(),
             "/a.webp@960w_720h_1c.webp"
         );
+        assert_eq!(
+            thumbnail_url("https://i0.biliimg.com/bfs/face/a.jpg", ThumbSize::Card)?.as_str(),
+            "https://i0.biliimg.com/bfs/face/a.jpg@320w_180h_1c.webp"
+        );
         assert!(thumbnail_url("https://hdslb.com.example.org/a.png", ThumbSize::Card).is_err());
+        assert!(thumbnail_url("https://biliimg.com.example.org/a.png", ThumbSize::Card).is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gets_unblurred_background_pixels_from_disk() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let cache = ImageCache::new(dir.path())?;
+        let url = "https://i0.biliimg.com/cover.png";
+        let thumbnail = thumbnail_url(url, ThumbSize::BlurBg)?;
+        let key = format!("{:x}", Sha256::digest(thumbnail.as_str().as_bytes()));
+        let (width, height) = ThumbSize::BlurBg.dimensions();
+        let image = RgbaImage::from_fn(width, height, |x, _| {
+            image::Rgba(if x < width / 2 {
+                [0, 0, 0, 255]
+            } else {
+                [255; 4]
+            })
+        });
+        image.save_with_format(
+            dir.path().join(format!("{key}.source")),
+            image::ImageFormat::Png,
+        )?;
+        assert_eq!(*cache.get(url, ThumbSize::BlurBg).await?, image);
         Ok(())
     }
 

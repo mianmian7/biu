@@ -243,6 +243,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reads_and_preserves_tauri_settings_with_null_and_fractional_values() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::new(dir.path());
+        fs::write(
+            dir.path().join("app-settings.json"),
+            r##"{
+                "appSettings": {
+                    "closeWindowOption": "exit",
+                    "displayMode": "card",
+                    "ffmpegPath": null,
+                    "reportPlayHistory": null,
+                    "sideMenuWidth": 213.5,
+                    "borderRadius": 8.0,
+                    "desktopLyricsFontSize": 42.0,
+                    "proxySettings": { "type": "http", "host": "localhost", "port": 8080.0 },
+                    "sideMenuCollectionFolded": { "created": true, "collected": null },
+                    "desktopLyricsStyle": {
+                        "lineMode": "single",
+                        "colorPreset": "custom",
+                        "customPlayedColor": "#ffba08",
+                        "effect": "shadow",
+                        "opacity": 0.85,
+                        "align": null,
+                        "showTranslation": false
+                    },
+                    "futureSetting": { "optional": null }
+                }
+            }"##,
+        )?;
+        let settings = store.app_settings()?;
+        assert_eq!(settings.close_window_option, "exit");
+        assert_eq!(settings.display_mode, "card");
+        assert_eq!(settings.ffmpeg_path, "");
+        assert!(settings.report_play_history);
+        assert_eq!(settings.side_menu_width, 213);
+        assert_eq!(settings.border_radius, 8);
+        assert_eq!(settings.desktop_lyrics_font_size, 42);
+        assert_eq!(settings.proxy_settings.port, Some(8080));
+        assert!(settings.side_menu_collection_folded.created);
+        assert_eq!(settings.desktop_lyrics_style.align, "center");
+        assert!(!settings.desktop_lyrics_style.show_translation);
+        store.save_app_settings(&settings)?;
+        let disk = store.read("app-settings")?;
+        let settings = &disk["appSettings"];
+        assert_eq!(settings["closeWindowOption"], "exit");
+        assert_eq!(settings["displayMode"], "card");
+        assert_eq!(settings["futureSetting"], json!({ "optional": null }));
+        let style = &settings["desktopLyricsStyle"];
+        for (key, value) in [
+            ("lineMode", json!("single")),
+            ("colorPreset", json!("custom")),
+            ("customPlayedColor", json!("#ffba08")),
+            ("effect", json!("shadow")),
+            ("opacity", json!(0.85)),
+        ] {
+            assert_eq!(style[key], value);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn existing_tauri_settings_and_manual_lyrics_round_trip() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let store = Store::new(dir.path());
