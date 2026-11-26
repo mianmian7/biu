@@ -1,13 +1,18 @@
+mod desktop_lyrics;
+mod full_screen;
 mod image_loader;
+mod mini_player;
 mod modals;
 mod pages;
+mod player_bar;
 mod shell;
 mod state;
+mod system;
 mod theme;
 mod widgets;
 
-use crate::shell::MainShell;
 use crate::state::{AppState, Services};
+use crate::system::GlobalAppState;
 use gpui_kit::*;
 use std::sync::Arc;
 
@@ -21,26 +26,30 @@ fn main() {
 
     let services = Arc::new(Services::new().expect("failed to initialize Biu services"));
 
-    gpui_kit::application().run(move |cx| {
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+
+    // macOS dock click while the main window is closed to the tray.
+    app.on_reopen(|cx| {
+        if let Some(state) = system::global_state(cx) {
+            system::open_or_focus_main_window(state, cx);
+        }
+    });
+
+    app.run(move |cx| {
         gpui_kit::init(cx);
+        // Closing the main window hides to tray; only an explicit quit ends the app.
+        cx.set_quit_mode(QuitMode::Explicit);
+
         let state = cx.new(|cx| AppState::new(services.clone(), cx));
+        cx.set_global(GlobalAppState(state.clone()));
         state.update(cx, |s, cx| s.refresh_user_and_folders(cx));
 
-        let bounds = Bounds::centered(None, size(px(1160.0), px(760.0)), cx);
-        let opts = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(880.0), px(600.0))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Biu".into()),
-                appears_transparent: true,
-                traffic_light_position: Some(point(px(12.0), px(12.0))),
-            }),
-            ..Default::default()
-        };
+        system::observe_window_closures(state.clone(), cx);
+        system::init_tray_and_hotkeys(state.clone(), cx);
+        system::open_or_focus_main_window(state.clone(), cx);
 
-        let _ = gpui_kit::open_window(opts, cx, |window, cx| {
-            let state_clone = state.clone();
-            cx.new(move |cx| MainShell::new(state_clone, window, cx))
-        });
+        if state.read(cx).settings.show_desktop_lyrics {
+            desktop_lyrics::open_or_toggle_desktop_lyrics(state.clone(), cx);
+        }
     });
 }
