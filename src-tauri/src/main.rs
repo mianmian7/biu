@@ -16,11 +16,13 @@ mod shortcut;
 mod store;
 mod tray;
 mod updater;
+mod window_visibility;
 
 use auto_lyrics::{
     auto_lyrics_cache_set, auto_lyrics_decode_audio, auto_lyrics_fetch_audio,
-    auto_lyrics_get_netease_lyric, auto_lyrics_ref_set, auto_lyrics_search_bili_videos,
-    auto_lyrics_search_netease, auto_lyrics_state_snapshot, auto_lyrics_view, AutoLyricsState,
+    auto_lyrics_get_netease_lyric, auto_lyrics_ref_set, auto_lyrics_release_audio,
+    auto_lyrics_search_bili_videos, auto_lyrics_search_netease, auto_lyrics_state_snapshot,
+    auto_lyrics_view, AutoLyricsState,
 };
 use bili::{
     bili_request, cookie_get, cookie_set, inject_auth_cookies, parse_proxy_settings_value,
@@ -53,15 +55,14 @@ use store::{
 };
 use tauri::{AppHandle, Manager, Runtime};
 use updater::{check_app_update, download_app_update, get_update_mode, quit_and_install};
+use window_visibility::set_main_window_visibility;
 
 // Must stay async: a sync command runs on the main thread, and building a window there deadlocks on WebView2.
 #[tauri::command]
 async fn ensure_main_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("main") {
         log::info!("[window] main shown by ensure_main_window");
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
+        set_main_window_visibility(&w, true);
         return Ok(());
     }
     let builder =
@@ -83,7 +84,8 @@ async fn ensure_main_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String>
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(false);
-    builder.build().map_err(|e| e.to_string())?;
+    let window = builder.build().map_err(|e| e.to_string())?;
+    set_main_window_visibility(&window, true);
     Ok(())
 }
 
@@ -134,14 +136,28 @@ fn bili_state_for_startup(
 }
 
 fn main() {
-    tauri::Builder::default()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .max_blocking_threads(8)
+        .build()
+        .expect("failed to initialize Biu's Tokio runtime");
+    tauri::async_runtime::set(runtime.handle().clone());
+
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(
+        tauri::plugin::Builder::<_, ()>::new("webkit-cache")
+            .on_webview_ready(window_visibility::configure_webkit_cache)
+            .build(),
+    );
+
+    builder
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             log::info!("[window] main shown by single-instance relaunch");
             desktop_lyrics::destroy_mini_player(app);
             if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize();
-                let _ = w.show();
-                let _ = w.set_focus();
+                set_main_window_visibility(&w, true);
             }
         }))
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -252,6 +268,7 @@ fn main() {
             auto_lyrics_search_bili_videos,
             auto_lyrics_fetch_audio,
             auto_lyrics_decode_audio,
+            auto_lyrics_release_audio,
             auto_lyrics_state_snapshot,
             auto_lyrics_cache_set,
             auto_lyrics_ref_set,
@@ -340,9 +357,7 @@ fn main() {
             if let tauri::RunEvent::Reopen { .. } = event {
                 log::info!("[window] main shown by RunEvent::Reopen");
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.unminimize();
-                    let _ = w.show();
-                    let _ = w.set_focus();
+                    set_main_window_visibility(&w, true);
                 }
             }
         });
@@ -1124,7 +1139,7 @@ mod tests {
             assert!(scanned[0].duration.unwrap_or(0.0) >= 1.0);
 
             let wav_bytes = std::fs::read(&wav_path).unwrap();
-            let pcm = decode_audio_to_s16le(&ffmpeg, &wav_bytes).unwrap();
+            let pcm = decode_audio_to_s16le(&ffmpeg, wav_bytes).unwrap();
             assert!(pcm.len() >= 22050 * 2);
         }
 

@@ -81,6 +81,8 @@ fn lyrics_http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
+            .pool_max_idle_per_host(2)
+            .pool_idle_timeout(Duration::from_secs(30))
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(10))
@@ -257,6 +259,8 @@ pub async fn ensure_kuromoji_dict_in_dir(
     fs::create_dir_all(dict_dir).map_err(|e| e.to_string())?;
 
     let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(2)
+        .pool_idle_timeout(Duration::from_secs(30))
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
@@ -350,6 +354,8 @@ async fn extract_dict_from_tarball(
     missing: &[(&str, &str)],
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(2)
+        .pool_idle_timeout(Duration::from_secs(30))
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(180))

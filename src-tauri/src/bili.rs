@@ -9,7 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
@@ -394,6 +394,8 @@ fn build_client(
     );
 
     let mut builder = reqwest::Client::builder()
+        .pool_max_idle_per_host(2)
+        .pool_idle_timeout(Duration::from_secs(30))
         .cookie_provider(cookies)
         .user_agent(USER_AGENT)
         .connect_timeout(std::time::Duration::from_secs(10))

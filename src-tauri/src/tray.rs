@@ -171,12 +171,10 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             "toggle_window" => {
                 if let Some(w) = app.get_webview_window("main") {
                     if w.is_visible().unwrap_or(false) {
-                        let _ = w.hide();
+                        crate::window_visibility::set_main_window_visibility(&w, false);
                     } else {
                         log::info!("[window] main shown by tray toggle_window");
-                        let _ = w.unminimize();
-                        let _ = w.show();
-                        let _ = w.set_focus();
+                        crate::window_visibility::set_main_window_visibility(&w, true);
                     }
                 }
             }
@@ -204,9 +202,7 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             "settings" => {
                 log::info!("[window] main shown by tray settings");
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.unminimize();
-                    let _ = w.show();
-                    let _ = w.set_focus();
+                    crate::window_visibility::set_main_window_visibility(&w, true);
                     let _ = w.emit("router:navigate", "/settings");
                 }
             }
@@ -226,9 +222,7 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                 log::info!("[window] main shown by tray icon click");
                 destroy_mini_player(app);
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.unminimize();
-                    let _ = w.show();
-                    let _ = w.set_focus();
+                    crate::window_visibility::set_main_window_visibility(&w, true);
                 }
             }
         });
@@ -280,7 +274,7 @@ pub fn handle_main_window_close_request<R: Runtime>(app: &AppHandle<R>) -> bool 
 
     if close_option == "hide" {
         if let Some(w) = app.get_webview_window("main") {
-            let _ = w.hide();
+            crate::window_visibility::set_main_window_visibility(&w, false);
         }
         log::info!("[tray] main window hidden to tray (closeWindowOption=hide)");
         true

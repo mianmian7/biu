@@ -57,9 +57,7 @@ pub fn setup_media_keys<R: Runtime>(app: &AppHandle<R>) {
             MediaControlEvent::Raise => {
                 log::info!("[window] main shown by media key Raise");
                 if let Some(w) = cb_app.get_webview_window("main") {
-                    let _ = w.unminimize();
-                    let _ = w.show();
-                    let _ = w.set_focus();
+                    crate::window_visibility::set_main_window_visibility(&w, true);
                 }
             }
             MediaControlEvent::Quit => {

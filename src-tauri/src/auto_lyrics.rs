@@ -19,7 +19,7 @@ use tauri_plugin_store::StoreExt;
 use url::Url;
 
 pub const SAMPLE_RATE: u32 = 22050;
-const MAX_CACHED_AUDIO_BUFFERS: usize = 8;
+const MAX_CACHED_AUDIO_BUFFERS: usize = 2;
 
 const NETEASE_SEARCH_URL: &str = "https://interface.music.163.com/api/search/get";
 const NETEASE_LYRIC_URL: &str = "https://interface.music.163.com/api/song/lyric";
@@ -61,6 +61,8 @@ impl AutoLyricsState {
         };
 
         let netease_client = reqwest::Client::builder()
+            .pool_max_idle_per_host(2)
+            .pool_idle_timeout(Duration::from_secs(30))
             .user_agent(USER_AGENT)
             .timeout(Duration::from_secs(10))
             .redirect(crate::bili::allowlist_redirect_policy(
@@ -190,13 +192,13 @@ pub fn strip_html_tags(input: &str) -> String {
 const FFMPEG_DECODE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_FFMPEG_STDERR_BYTES: usize = 16 * 1024;
 
-pub fn decode_audio_to_s16le(ffmpeg_path: &Path, data: &[u8]) -> Result<Vec<u8>, String> {
+pub fn decode_audio_to_s16le(ffmpeg_path: &Path, data: Vec<u8>) -> Result<Vec<u8>, String> {
     decode_audio_to_s16le_with_timeout(ffmpeg_path, data, FFMPEG_DECODE_TIMEOUT)
 }
 
 pub fn decode_audio_to_s16le_with_timeout(
     ffmpeg_path: &Path,
-    data: &[u8],
+    data: Vec<u8>,
     timeout: Duration,
 ) -> Result<Vec<u8>, String> {
     let mut cmd = Command::new(ffmpeg_path);
@@ -233,9 +235,8 @@ pub fn decode_audio_to_s16le_with_timeout(
         .stdin
         .take()
         .ok_or_else(|| "Failed to open ffmpeg stdin".to_string())?;
-    let input_vec = data.to_vec();
     let writer_handle = std::thread::spawn(move || {
-        let _ = stdin.write_all(&input_vec);
+        let _ = stdin.write_all(&data);
     });
 
     let stdout_opt = child.stdout.take();
@@ -781,15 +782,27 @@ pub async fn auto_lyrics_decode_audio<R: Runtime>(
         .take_audio_buffer(&token)
         .ok_or_else(|| "Audio buffer token expired or missing".to_string())?;
 
-    let user_ffmpeg = user_ffmpeg_setting(&app);
-    let ffmpeg_bin = resolve_ffmpeg_path(user_ffmpeg.as_deref())?;
-
-    let pcm_s16le =
-        tokio::task::spawn_blocking(move || decode_audio_to_s16le(&ffmpeg_bin, &audio_bytes))
+    let decoded = async move {
+        let user_ffmpeg = user_ffmpeg_setting(&app);
+        let ffmpeg_bin = resolve_ffmpeg_path(user_ffmpeg.as_deref())?;
+        tokio::task::spawn_blocking(move || decode_audio_to_s16le(&ffmpeg_bin, audio_bytes))
             .await
-            .map_err(|e| e.to_string())??;
+            .map_err(|e| e.to_string())?
+    }
+    .await;
 
-    Ok(Response::new(pcm_s16le))
+    #[cfg(target_os = "linux")]
+    crate::window_visibility::trim_heap();
+
+    decoded.map(Response::new)
+}
+
+#[tauri::command]
+pub fn auto_lyrics_release_audio(
+    auto_state: tauri::State<'_, Arc<AutoLyricsState>>,
+    token: String,
+) {
+    auto_state.take_audio_buffer(&token);
 }
 
 #[tauri::command]
@@ -830,6 +843,47 @@ pub fn auto_lyrics_ref_set(
 mod tests {
     use super::*;
 
+    fn audio_state() -> AutoLyricsState {
+        AutoLyricsState::new(std::env::temp_dir().join(format!(
+            "biu-autolyrics-references-{}.json",
+            uuid::Uuid::new_v4()
+        )))
+        .unwrap()
+    }
+
+    #[test]
+    fn audio_cache_retains_two_most_recent_buffers() {
+        let state = audio_state();
+        let oldest = state.store_audio_buffer(vec![1]);
+        let second = state.store_audio_buffer(vec![2]);
+        let newest = state.store_audio_buffer(vec![3]);
+
+        assert_eq!(state.take_audio_buffer(&oldest), None);
+        assert_eq!(state.take_audio_buffer(&second), Some(vec![2]));
+        assert_eq!(state.take_audio_buffer(&newest), Some(vec![3]));
+    }
+
+    #[test]
+    fn release_audio_is_idempotent_and_frees_a_cache_slot() {
+        use tauri::Manager;
+
+        let state = Arc::new(audio_state());
+        let app = tauri::test::mock_builder()
+            .manage(state.clone())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let retained = state.store_audio_buffer(vec![1]);
+        let released = state.store_audio_buffer(vec![2]);
+
+        auto_lyrics_release_audio(app.state(), released.clone());
+        auto_lyrics_release_audio(app.state(), released.clone());
+        let newest = state.store_audio_buffer(vec![3]);
+
+        assert_eq!(state.take_audio_buffer(&released), None);
+        assert_eq!(state.take_audio_buffer(&retained), Some(vec![1]));
+        assert_eq!(state.take_audio_buffer(&newest), Some(vec![3]));
+    }
+
     #[cfg(unix)]
     #[test]
     fn decode_audio_drains_large_stderr_without_hanging_and_enforces_timeout() {
@@ -843,12 +897,12 @@ mod tests {
         let flood_script = dir.join("fake-ffmpeg-flood.sh");
         fs::write(
             &flood_script,
-            "#!/bin/sh\ncat >/dev/null\ndd if=/dev/zero bs=4096 count=80 2>/dev/null | tr '\\0' 'E' >&2\nprintf 'ABCD'\nexit 0\n",
+            "#!/bin/sh\n[ \"$(cat)\" = 'dummy-input' ] || exit 2\ndd if=/dev/zero bs=4096 count=80 2>/dev/null | tr '\\0' 'E' >&2\nprintf 'ABCD'\nexit 0\n",
         )
         .unwrap();
         fs::set_permissions(&flood_script, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let pcm = decode_audio_to_s16le(&flood_script, b"dummy-input").unwrap();
+        let pcm = decode_audio_to_s16le(&flood_script, b"dummy-input".to_vec()).unwrap();
         assert_eq!(pcm, b"ABCD".to_vec());
 
         // 2. Fake ffmpeg that floods stderr and exits with non-zero code
@@ -860,7 +914,7 @@ mod tests {
         .unwrap();
         fs::set_permissions(&fail_script, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let err = decode_audio_to_s16le(&fail_script, b"dummy-input").unwrap_err();
+        let err = decode_audio_to_s16le(&fail_script, b"dummy-input".to_vec()).unwrap_err();
         assert!(err.contains("FINAL_ERR_TAIL"), "err was: {err}");
 
         // 3. Fake ffmpeg that hangs and gets killed by timeout
@@ -871,7 +925,7 @@ mod tests {
         let start = std::time::Instant::now();
         let timeout_err = decode_audio_to_s16le_with_timeout(
             &hang_script,
-            b"dummy-input",
+            b"dummy-input".to_vec(),
             Duration::from_millis(200),
         )
         .unwrap_err();

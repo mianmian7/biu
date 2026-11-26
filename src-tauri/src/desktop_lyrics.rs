@@ -1,4 +1,5 @@
 use crate::store::{read_store_object, store_set};
+use crate::window_visibility::set_main_window_visibility;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::{
@@ -175,11 +176,63 @@ pub fn apply_locked_state<R: Runtime>(
     }
     let ignore = locked && !state.hover_unlock_button.load(Ordering::Relaxed);
     let prev = state.ignore_mouse.swap(ignore, Ordering::Relaxed);
-    if let Err(e) = win.set_ignore_cursor_events(ignore) {
+    if let Err(e) = set_ignore_cursor_events(win, ignore) {
         log::warn!("[desktop-lyrics] set_ignore_cursor_events({ignore}) failed: {e}");
     } else if prev != ignore {
         log::info!("[desktop-lyrics] set_ignore_cursor_events({ignore}) (locked={locked})");
     }
+}
+
+#[cfg(target_os = "linux")]
+fn set_ignore_cursor_events<R: Runtime>(win: &WebviewWindow<R>, ignore: bool) -> tauri::Result<()> {
+    use gtk::prelude::WidgetExt;
+
+    let window = win.clone();
+    win.run_on_main_thread(move || {
+        // GTK stores the input shape until realization. Tao's setter assumes the GDK
+        // window already exists, which can panic when opening the lyrics hidden.
+        match window.gtk_window() {
+            Ok(widget) => {
+                let region = ignore.then(gtk::cairo::Region::create);
+                widget.input_shape_combine_region(region.as_ref());
+            }
+            Err(err) => log::debug!("[desktop-lyrics] failed to access GTK window: {err}"),
+        }
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_ignore_cursor_events<R: Runtime>(win: &WebviewWindow<R>, ignore: bool) -> tauri::Result<()> {
+    win.set_ignore_cursor_events(ignore)
+}
+
+fn poll_on_main_thread<R: Runtime>(
+    app: &AppHandle<R>,
+    interval: Duration,
+    mut poll: impl FnMut() -> bool + Send + 'static,
+) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let (send, done) = tokio::sync::oneshot::channel();
+            if app
+                .run_on_main_thread(move || {
+                    if poll() {
+                        let _ = send.send(poll);
+                    }
+                })
+                .is_err()
+            {
+                break;
+            }
+            // Wait for this tick before scheduling another, even if the UI thread stalls.
+            let Ok(next_poll) = done.await else {
+                break;
+            };
+            poll = next_poll;
+            tokio::time::sleep(interval).await;
+        }
+    });
 }
 
 pub fn apply_content_height<R: Runtime>(
@@ -228,7 +281,7 @@ pub async fn ensure_desktop_lyrics_window<R: Runtime>(
     let win = WebviewWindowBuilder::new(
         app,
         "desktop-lyrics",
-        WebviewUrl::App("index.html#desktop-lyrics".into()),
+        WebviewUrl::App("desktop-lyrics.html".into()),
     )
     .title("Biu Desktop Lyrics")
     .inner_size(bounds.width, bounds.height)
@@ -292,51 +345,51 @@ pub async fn ensure_desktop_lyrics_window<R: Runtime>(
     // even when OS-level click-through suppresses mousemove events.
     let poll_win = win.clone();
     let poll_state = state.clone();
-    std::thread::spawn(move || {
-        let mut was_inside_window = false;
-        while alive.load(Ordering::Relaxed) {
-            if poll_state.locked.load(Ordering::Relaxed) && poll_win.is_visible().unwrap_or(false) {
-                if let (Ok(cursor), Ok(pos), Ok(size)) = (
-                    poll_win.cursor_position(),
-                    poll_win.outer_position(),
-                    poll_win.outer_size(),
-                ) {
-                    let scale = poll_win.scale_factor().unwrap_or(1.0);
-                    let rel_x = (cursor.x - pos.x as f64) / scale;
-                    let rel_y = (cursor.y - pos.y as f64) / scale;
-                    let w_logical = size.width as f64 / scale;
-                    let h_logical = size.height as f64 / scale;
-
-                    let inside_win =
-                        rel_x >= 0.0 && rel_x <= w_logical && rel_y >= 0.0 && rel_y <= h_logical;
-                    if inside_win {
-                        let _ = poll_win.emit("desktop-lyrics:cursor-inside", ());
-                    } else if was_inside_window {
-                        let _ = poll_win.emit("desktop-lyrics:cursor-leave", ());
-                    }
-                    was_inside_window = inside_win;
-
-                    // Top-center unlock button region (28x28 button inside 34px toolbar)
-                    let center_x = w_logical / 2.0;
-                    let hit_unlock = inside_win
-                        && (rel_x - center_x).abs() <= 24.0
-                        && (0.0..=38.0).contains(&rel_y);
-                    let prev_hover = poll_state
-                        .hover_unlock_button
-                        .swap(hit_unlock, Ordering::Relaxed);
-                    if prev_hover != hit_unlock {
-                        apply_locked_state(
-                            &poll_win,
-                            &poll_state,
-                            poll_state.locked.load(Ordering::Relaxed),
-                        );
-                    }
-                }
-            } else {
-                was_inside_window = false;
-            }
-            std::thread::sleep(Duration::from_millis(80));
+    let mut was_inside_window = false;
+    poll_on_main_thread(app, Duration::from_millis(80), move || {
+        if !alive.load(Ordering::Relaxed) {
+            return false;
         }
+        if poll_state.locked.load(Ordering::Relaxed) && poll_win.is_visible().unwrap_or(false) {
+            if let (Ok(cursor), Ok(pos), Ok(size)) = (
+                poll_win.cursor_position(),
+                poll_win.outer_position(),
+                poll_win.outer_size(),
+            ) {
+                let scale = poll_win.scale_factor().unwrap_or(1.0);
+                let rel_x = (cursor.x - pos.x as f64) / scale;
+                let rel_y = (cursor.y - pos.y as f64) / scale;
+                let w_logical = size.width as f64 / scale;
+                let h_logical = size.height as f64 / scale;
+
+                let inside_win =
+                    rel_x >= 0.0 && rel_x <= w_logical && rel_y >= 0.0 && rel_y <= h_logical;
+                if inside_win {
+                    let _ = poll_win.emit("desktop-lyrics:cursor-inside", ());
+                } else if was_inside_window {
+                    let _ = poll_win.emit("desktop-lyrics:cursor-leave", ());
+                }
+                was_inside_window = inside_win;
+
+                // Top-center unlock button region (28x28 button inside 34px toolbar)
+                let center_x = w_logical / 2.0;
+                let hit_unlock =
+                    inside_win && (rel_x - center_x).abs() <= 24.0 && (0.0..=38.0).contains(&rel_y);
+                let prev_hover = poll_state
+                    .hover_unlock_button
+                    .swap(hit_unlock, Ordering::Relaxed);
+                if prev_hover != hit_unlock {
+                    apply_locked_state(
+                        &poll_win,
+                        &poll_state,
+                        poll_state.locked.load(Ordering::Relaxed),
+                    );
+                }
+            }
+        } else {
+            was_inside_window = false;
+        }
+        true
     });
 
     Ok(win)
@@ -445,9 +498,7 @@ pub fn desktop_lyrics_command<R: Runtime>(
     };
     if command == "openSettings" {
         log::info!("[window] main shown by desktop-lyrics openSettings");
-        let _ = main_win.unminimize();
-        let _ = main_win.show();
-        let _ = main_win.set_focus();
+        set_main_window_visibility(&main_win, true);
         let _ = main_win.emit("router:navigate", "/settings?tab=desktop-lyrics");
         return Ok(());
     }
@@ -472,16 +523,17 @@ pub fn desktop_lyrics_start_drag<R: Runtime>(
     };
     state.dragging.store(true, Ordering::Relaxed);
     let drag_state = state.inner().clone();
-    std::thread::spawn(move || {
-        while drag_state.dragging.load(Ordering::Relaxed) {
-            let Ok(cursor) = win.cursor_position() else {
-                break;
-            };
-            let dx = (cursor.x - start_cursor.x).round() as i32;
-            let dy = (cursor.y - start_cursor.y).round() as i32;
-            let _ = win.set_position(PhysicalPosition::new(start_pos.x + dx, start_pos.y + dy));
-            std::thread::sleep(Duration::from_millis(DRAG_INTERVAL_MS));
+    poll_on_main_thread(&app, Duration::from_millis(DRAG_INTERVAL_MS), move || {
+        if !drag_state.dragging.load(Ordering::Relaxed) {
+            return false;
         }
+        let Ok(cursor) = win.cursor_position() else {
+            return false;
+        };
+        let dx = (cursor.x - start_cursor.x).round() as i32;
+        let dy = (cursor.y - start_cursor.y).round() as i32;
+        let _ = win.set_position(PhysicalPosition::new(start_pos.x + dx, start_pos.y + dy));
+        true
     });
 }
 
@@ -562,21 +614,19 @@ pub async fn toggle_mini_player<R: Runtime>(app: AppHandle<R>) -> Result<(), Str
     if destroy_mini_player(&app) {
         log::info!("[window] main shown by toggle_mini_player");
         if let Some(main) = app.get_webview_window("main") {
-            let _ = main.unminimize();
-            let _ = main.show();
-            let _ = main.set_focus();
+            set_main_window_visibility(&main, true);
         }
         return Ok(());
     }
 
     if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
+        set_main_window_visibility(&main, false);
     }
 
     WebviewWindowBuilder::new(
         &app,
         "mini-player",
-        WebviewUrl::App("index.html#mini-player".into()),
+        WebviewUrl::App("mini-player.html".into()),
     )
     .title("Biu Mini Player")
     .inner_size(320.0, 100.0)
