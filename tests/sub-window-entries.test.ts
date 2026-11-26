@@ -85,13 +85,13 @@ describe("main entry", () => {
     expect(graph.packages).not.toContain("moment-duration-format");
   });
 
-  test("index.html forwards the sub-window hashes the Rust side still opens", () => {
+  test("sub-windows open dedicated lightweight HTML entries and index.html retains hash fallback", () => {
     const html = readFileSync(path.join(ROOT, "src/index.html"), "utf8");
     expect(html).toContain('"desktop-lyrics"');
     expect(html).toContain('"mini-player"');
     expect(html).toContain("location.replace");
     const rust = readFileSync(path.join(ROOT, "src-tauri/src/desktop_lyrics.rs"), "utf8");
-    expect(rust).toContain('"index.html#desktop-lyrics"');
-    expect(rust).toContain('"index.html#mini-player"');
+    expect(rust).toContain('"desktop-lyrics.html"');
+    expect(rust).toContain('"mini-player.html"');
   });
 });
