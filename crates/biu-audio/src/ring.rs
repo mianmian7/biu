@@ -6,12 +6,21 @@
 //! the worker and the control thread touch, which gives:
 //!  * atomic "flush + invalidate in-flight producers" on seek / new track, and
 //!  * accurate playback position (interpolated from markers at the consumer's read head).
+//!
+//! A flush moves `flush_to` past samples the consumer may be copying *right now*. To stop a
+//! producer from immediately refilling (and tearing) those slots, `pop` publishes a lower bound
+//! of its read range in `reading` before it samples `flush_to`, and producers never write past
+//! `reading + cap`. Both sides use `SeqCst` for this store/load pair (Dekker-style), so either
+//! the producer sees the in-flight read, or the consumer sees the new `flush_to` and skips the
+//! flushed range.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 const MAX_MARKERS: usize = 1024;
+/// `reading` value while no `pop` is in flight.
+const NOT_READING: u64 = u64::MAX;
 
 pub(crate) struct SampleRing {
     buf: Box<[AtomicU32]>,
@@ -22,6 +31,8 @@ pub(crate) struct SampleRing {
     tail: AtomicU64,
     /// Everything before this sample index has been discarded by a flush.
     flush_to: AtomicU64,
+    /// Lower bound of the slots an in-flight `pop` may be reading, or `NOT_READING`.
+    reading: AtomicU64,
     producer: Mutex<ProducerState>,
 }
 
@@ -49,6 +60,7 @@ impl SampleRing {
             head: AtomicU64::new(0),
             tail: AtomicU64::new(0),
             flush_to: AtomicU64::new(0),
+            reading: AtomicU64::new(NOT_READING),
             producer: Mutex::new(ProducerState {
                 epoch: 0,
                 markers: VecDeque::new(),
@@ -64,7 +76,7 @@ impl SampleRing {
     fn effective_head(&self) -> u64 {
         self.head
             .load(Ordering::Acquire)
-            .max(self.flush_to.load(Ordering::Acquire))
+            .max(self.flush_to.load(Ordering::SeqCst))
     }
 
     /// Buffered samples not yet consumed.
@@ -83,7 +95,7 @@ impl SampleRing {
         let mut st = self.lock();
         st.epoch += 1;
         let t = self.tail.load(Ordering::Acquire);
-        self.flush_to.store(t, Ordering::Release);
+        self.flush_to.store(t, Ordering::SeqCst);
         st.markers.clear();
         st.markers.push_back((t, secs));
         st.epoch
@@ -97,9 +109,12 @@ impl SampleRing {
         if st.epoch != epoch {
             return PushResult::Stale;
         }
+        // Slots from an in-flight read are still occupied even if a flush skipped past them.
+        let reading = self.reading.load(Ordering::SeqCst);
         let head = self.effective_head();
         let tail = self.tail.load(Ordering::Relaxed);
-        let free = self.cap.saturating_sub(tail - head.min(tail));
+        let reserved = head.min(reading).min(tail);
+        let free = self.cap.saturating_sub(tail - reserved);
         let n = (free.min(samples.len() as u64) as usize) & !1;
         if n == 0 {
             return PushResult::Pushed(0);
@@ -128,17 +143,28 @@ impl SampleRing {
 
     /// Consumer (real-time safe): read up to `out.len()` samples (whole frames), returns count.
     pub fn pop(&self, out: &mut [f32]) -> usize {
-        let head = self.effective_head();
+        self.pop_inner(out, || {})
+    }
+
+    /// `pop` with a hook between sizing the read and copying it (deterministic race tests).
+    #[inline]
+    fn pop_inner(&self, out: &mut [f32], before_copy: impl FnOnce()) -> usize {
+        // Publish (before sampling `flush_to`) that slots from our raw head on may be read.
+        let own_head = self.head.load(Ordering::Relaxed);
+        self.reading.store(own_head, Ordering::SeqCst);
+        let head = own_head.max(self.flush_to.load(Ordering::SeqCst));
         let tail = self.tail.load(Ordering::Acquire);
         let avail = tail.saturating_sub(head);
         let n = (avail.min(out.len() as u64) as usize) & !1;
+        before_copy();
         for (i, o) in out[..n].iter_mut().enumerate() {
             let slot = ((head + i as u64) % self.cap) as usize;
             *o = f32::from_bits(self.buf[slot].load(Ordering::Relaxed));
         }
-        if n > 0 {
-            self.head.store(head + n as u64, Ordering::Release);
-        }
+        // Always advance (even by 0) so the raw head catches up with a flush and the
+        // `reading` bound published next time does not hold back producers.
+        self.head.store(head + n as u64, Ordering::Release);
+        self.reading.store(NOT_READING, Ordering::Release);
         n
     }
 
@@ -205,7 +231,10 @@ mod tests {
     fn push_pop_wraps_and_tracks_position() {
         let r = SampleRing::new(8);
         let e = r.reset(10.0);
-        assert_eq!(r.push(e, &[1.0, 2.0, 3.0, 4.0], 10.0, 11.0), PushResult::Pushed(4));
+        assert_eq!(
+            r.push(e, &[1.0, 2.0, 3.0, 4.0], 10.0, 11.0),
+            PushResult::Pushed(4)
+        );
         assert_eq!(r.position(), Some(10.0));
         let mut out = [0.0; 2];
         assert_eq!(r.pop(&mut out), 2);
@@ -233,6 +262,48 @@ mod tests {
         assert_eq!(r.pop(&mut out), 4);
         assert_eq!(&out[..4], &[7.0; 4]);
         assert_eq!(r.position(), Some(6.0));
+    }
+
+    #[test]
+    fn reset_during_in_flight_pop_does_not_overwrite_read_slots() {
+        let r = SampleRing::new(8);
+        let e1 = r.reset(0.0);
+        let old: Vec<f32> = (1..=8).map(|i| i as f32).collect();
+        assert_eq!(r.push(e1, &old, 0.0, 1.0), PushResult::Pushed(8));
+        let mut out = [0.0; 8];
+        let mut during = None;
+        // The callback has sized its read of slots 0..8; a seek resets and the new producer
+        // immediately tries to refill the whole ring before the callback copies.
+        let n = r.pop_inner(&mut out, || {
+            let e2 = r.reset(5.0);
+            during = Some((e2, r.push(e2, &[9.0; 8], 5.0, 6.0)));
+        });
+        assert_eq!(n, 8);
+        assert_eq!(
+            out.to_vec(),
+            old,
+            "in-flight read was torn by the new producer"
+        );
+        let (e2, pushed) = during.unwrap();
+        assert_eq!(pushed, PushResult::Pushed(0));
+        // Once the read finishes the producer gets the full ring.
+        assert_eq!(r.push(e2, &[9.0; 8], 5.0, 6.0), PushResult::Pushed(8));
+        let mut out = [0.0; 8];
+        assert_eq!(r.pop(&mut out), 8);
+        assert_eq!(out, [9.0; 8]);
+    }
+
+    #[test]
+    fn stale_head_after_reset_does_not_block_producer() {
+        let r = SampleRing::new(8);
+        let e1 = r.reset(0.0);
+        r.push(e1, &[1.0; 8], 0.0, 1.0);
+        let e2 = r.reset(1.0);
+        // Consumer idle (no pop in flight): the flushed range is free immediately.
+        assert_eq!(r.push(e2, &[2.0; 8], 1.0, 2.0), PushResult::Pushed(8));
+        let mut out = [0.0; 8];
+        assert_eq!(r.pop(&mut out), 8);
+        assert_eq!(out, [2.0; 8]);
     }
 
     #[test]

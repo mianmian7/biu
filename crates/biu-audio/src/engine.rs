@@ -91,9 +91,14 @@ pub struct PlaybackSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioEvent {
     /// The track started by `play()` with this generation finished naturally.
-    TrackEnded { generation: u64 },
+    TrackEnded {
+        generation: u64,
+    },
     StateChanged(PlaybackState),
-    Error { generation: u64, message: String },
+    Error {
+        generation: u64,
+        message: String,
+    },
 }
 
 /// Where audio goes.
@@ -202,6 +207,10 @@ enum Cmd {
     RateChanged,
     StreamError(String),
     Worker(WorkerMsg),
+    /// Test hook: change the null sink rate used the next time output is (re)opened, to
+    /// simulate the default device switching sample rate while the stream was torn down.
+    #[cfg(test)]
+    SetNullRate(u32),
     Shutdown,
 }
 
@@ -212,10 +221,12 @@ enum WorkerMsg {
     },
     Eof {
         worker_id: u64,
+        generation: u64,
         epoch: u64,
     },
     Failed {
         worker_id: u64,
+        generation: u64,
         message: String,
     },
 }
@@ -361,7 +372,10 @@ impl AudioEngine {
     /// Playback speed `0.5..=2.0` (pitch follows speed).
     pub fn set_rate(&self, rate: f32) {
         let rate = clamp_rate(rate);
-        let old = self.shared().rate_bits.swap(rate.to_bits(), Ordering::Relaxed);
+        let old = self
+            .shared()
+            .rate_bits
+            .swap(rate.to_bits(), Ordering::Relaxed);
         if old != rate.to_bits() {
             self.send(Cmd::RateChanged);
         }
@@ -619,6 +633,11 @@ struct Control {
     output: Option<Output>,
     worker: Option<WorkerHandle>,
     next_worker_id: u64,
+    /// Generation of the last `Cmd::Play` actually processed. Events are tagged with this, never
+    /// with `Shared::generation`, which `play()` bumps before its command reaches this thread.
+    active_gen: u64,
+    /// Generation whose decoder reported EOF (valid while `decoder_done`).
+    done_gen: u64,
     source: Option<AudioSource>,
     want_playing: bool,
     decoder_done: bool,
@@ -641,6 +660,8 @@ impl Control {
             output: None,
             worker: None,
             next_worker_id: 0,
+            active_gen: 0,
+            done_gen: 0,
             source: None,
             want_playing: false,
             decoder_done: false,
@@ -704,6 +725,7 @@ impl Control {
                 if generation != self.shared.generation() {
                     return; // superseded by a newer play() still in the queue
                 }
+                self.active_gen = generation;
                 self.source = Some(source);
                 self.start_track(sanitize(start_secs), true);
             }
@@ -725,6 +747,8 @@ impl Control {
                 }
             }
             Cmd::Worker(msg) => self.handle_worker(msg),
+            #[cfg(test)]
+            Cmd::SetNullRate(rate) => self.config.null_sample_rate = rate,
             Cmd::Shutdown => {}
         }
     }
@@ -747,12 +771,19 @@ impl Control {
                     self.idle_since = Some(Instant::now());
                 }
             }
-            WorkerMsg::Eof { worker_id, epoch }
-                if Some(worker_id) == current && epoch == self.shared.ring.epoch() =>
-            {
+            WorkerMsg::Eof {
+                worker_id,
+                generation,
+                epoch,
+            } if Some(worker_id) == current && epoch == self.shared.ring.epoch() => {
                 self.decoder_done = true;
+                self.done_gen = generation;
             }
-            WorkerMsg::Failed { worker_id, message } if Some(worker_id) == current => {
+            WorkerMsg::Failed {
+                worker_id,
+                generation,
+                message,
+            } if Some(worker_id) == current => {
                 log::warn!("[biu-audio] playback error: {message}");
                 self.worker = None;
                 self.shared.output_active.store(false, Ordering::Release);
@@ -760,7 +791,7 @@ impl Control {
                 self.shared.set_state(PlaybackState::Error);
                 self.idle_since = Some(Instant::now());
                 let _ = self.shared.events.send(AudioEvent::Error {
-                    generation: self.shared.generation(),
+                    generation,
                     message,
                 });
             }
@@ -790,8 +821,10 @@ impl Control {
         let id = self.next_worker_id;
         let cancel = Arc::new(AtomicBool::new(false));
         let (wtx, wrx) = mpsc::channel();
+        let generation = self.active_gen;
         let ctx = WorkerCtx {
             id,
+            generation,
             source,
             start_secs,
             epoch,
@@ -816,7 +849,7 @@ impl Control {
                 *lock(&self.shared.error) = Some(message.clone());
                 self.shared.set_state(PlaybackState::Error);
                 let _ = self.shared.events.send(AudioEvent::Error {
-                    generation: self.shared.generation(),
+                    generation,
                     message,
                 });
             }
@@ -936,11 +969,35 @@ impl Control {
                 )
             }
         };
-        self.shared.out_rate.store(rate, Ordering::Release);
+        let old_rate = self.shared.out_rate.swap(rate, Ordering::AcqRel);
         self.shared.has_device.store(has_device, Ordering::Relaxed);
         self.shared.stream_alive.store(true, Ordering::Relaxed);
         self.analyzer.set_sample_rate(rate);
         self.output = Some(output);
+        if old_rate != rate {
+            self.resync_after_rate_change(old_rate, rate);
+        }
+    }
+
+    /// The (re)opened output runs at a different sample rate (e.g. the default device changed
+    /// while the stream was released during an idle pause). Everything buffered was resampled
+    /// for the old rate and would play at the wrong pitch/speed, and would skew the clock, so
+    /// flush it and re-decode from the current position; the worker picks up the new
+    /// `out_rate` for every chunk it resamples.
+    fn resync_after_rate_change(&mut self, old_rate: u32, new_rate: u32) {
+        let state = self.shared.state();
+        if self.worker.is_none()
+            || !matches!(
+                state,
+                PlaybackState::Loading | PlaybackState::Playing | PlaybackState::Paused
+            )
+        {
+            return;
+        }
+        log::info!("[biu-audio] output rate changed {old_rate} -> {new_rate} Hz; resyncing");
+        if let Some(pos) = self.shared.ring.position() {
+            self.seek(pos);
+        }
     }
 
     fn drop_output(&mut self) {
@@ -950,6 +1007,7 @@ impl Control {
     }
 
     fn end_track(&mut self) {
+        let generation = self.done_gen;
         self.worker = None;
         self.want_playing = false;
         self.decoder_done = false;
@@ -963,9 +1021,10 @@ impl Control {
         }
         self.shared.set_state(PlaybackState::Ended);
         self.idle_since = Some(Instant::now());
-        let _ = self.shared.events.send(AudioEvent::TrackEnded {
-            generation: self.shared.generation(),
-        });
+        let _ = self
+            .shared
+            .events
+            .send(AudioEvent::TrackEnded { generation });
     }
 
     fn tick(&mut self) {
@@ -977,7 +1036,11 @@ impl Control {
             && let Some(pos) = self.shared.ring.position()
         {
             let duration = load_f64(&self.shared.duration_bits);
-            let pos = if duration > 0.0 { pos.min(duration) } else { pos };
+            let pos = if duration > 0.0 {
+                pos.min(duration)
+            } else {
+                pos
+            };
             store_f64(&self.shared.position_bits, pos.max(0.0));
         }
         if state == PlaybackState::Playing && self.decoder_done && self.shared.ring.len() == 0 {
@@ -1031,6 +1094,7 @@ impl Control {
 
 struct WorkerCtx {
     id: u64,
+    generation: u64,
     source: AudioSource,
     start_secs: f64,
     epoch: u64,
@@ -1054,6 +1118,7 @@ impl WorkerCtx {
     fn fail(&self, message: String) {
         self.send(WorkerMsg::Failed {
             worker_id: self.id,
+            generation: self.generation,
             message,
         });
     }
@@ -1064,10 +1129,16 @@ fn worker_main(ctx: WorkerCtx) {
         ffmpeg_path: lock(&ctx.shared.ffmpeg_path).clone(),
         ffmpeg_out_rate: ctx.shared.out_rate.load(Ordering::Acquire),
         disable_ffmpeg: false,
+        cancel: Some(ctx.cancel.clone()),
     };
     let mut dec = match open_decoder(&ctx.source, ctx.start_secs, &opts) {
         Ok(d) => d,
-        Err(e) => return ctx.fail(format!("{e:#}")),
+        Err(e) => {
+            if ctx.cancelled() {
+                return;
+            }
+            return ctx.fail(format!("{e:#}"));
+        }
     };
     if ctx.cancelled() {
         return;
@@ -1107,6 +1178,7 @@ fn worker_main(ctx: WorkerCtx) {
         if let Some(WorkerCmd::Seek { secs, epoch: e }) = seek {
             match dec.seek(secs) {
                 Ok(actual) => src_secs = actual,
+                Err(_) if ctx.cancelled() => return,
                 Err(err) => return ctx.fail(format!("seek failed: {err:#}")),
             }
             epoch = e;
@@ -1170,6 +1242,7 @@ fn worker_main(ctx: WorkerCtx) {
             if !eof_sent {
                 ctx.send(WorkerMsg::Eof {
                     worker_id: ctx.id,
+                    generation: ctx.generation,
                     epoch,
                 });
                 eof_sent = true;
@@ -1261,7 +1334,10 @@ mod tests {
         // Output is released after the idle timeout.
         let start = Instant::now();
         while e.is_output_open() {
-            assert!(start.elapsed() < Duration::from_secs(3), "stream not dropped");
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "stream not dropped"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -1278,7 +1354,9 @@ mod tests {
         assert!((1.15..1.6).contains(&p1), "position {p1}");
 
         e.pause();
-        wait_for(&e, Duration::from_secs(2), |s| s.state == PlaybackState::Paused);
+        wait_for(&e, Duration::from_secs(2), |s| {
+            s.state == PlaybackState::Paused
+        });
         let paused_at = e.snapshot().position_secs;
         std::thread::sleep(Duration::from_millis(200));
         assert!((e.snapshot().position_secs - paused_at).abs() < 0.02);
@@ -1289,7 +1367,9 @@ mod tests {
         });
         e.set_rate(2.0);
         e.resume();
-        wait_for(&e, Duration::from_secs(2), |s| s.state == PlaybackState::Playing);
+        wait_for(&e, Duration::from_secs(2), |s| {
+            s.state == PlaybackState::Playing
+        });
         std::thread::sleep(Duration::from_millis(400));
         let p2 = e.snapshot().position_secs;
         // 2x speed: ~0.8 s of media in 0.4 s (allow ramp/latency slack).
@@ -1302,7 +1382,9 @@ mod tests {
         let s = e.snapshot();
         assert_eq!((s.volume, s.muted), (1.0, true));
         e.stop();
-        wait_for(&e, Duration::from_secs(2), |s| s.state == PlaybackState::Stopped);
+        wait_for(&e, Duration::from_secs(2), |s| {
+            s.state == PlaybackState::Stopped
+        });
         assert!(!e.is_output_open());
     }
 
@@ -1310,14 +1392,24 @@ mod tests {
     fn toggle_and_resume_after_end_restarts() {
         let e = null_engine();
         e.play(tone(0.2), 0.0);
-        wait_for(&e, Duration::from_secs(5), |s| s.state == PlaybackState::Playing);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Playing
+        });
         e.toggle_play();
-        wait_for(&e, Duration::from_secs(2), |s| s.state == PlaybackState::Paused);
+        wait_for(&e, Duration::from_secs(2), |s| {
+            s.state == PlaybackState::Paused
+        });
         e.toggle_play();
-        wait_for(&e, Duration::from_secs(5), |s| s.state == PlaybackState::Ended);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Ended
+        });
         e.toggle_play();
-        wait_for(&e, Duration::from_secs(5), |s| s.state == PlaybackState::Playing);
-        wait_for(&e, Duration::from_secs(5), |s| s.state == PlaybackState::Ended);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Playing
+        });
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Ended
+        });
     }
 
     #[test]
@@ -1326,7 +1418,9 @@ mod tests {
         e.set_ffmpeg_path(Some(PathBuf::from("/nonexistent/ffmpeg")));
         let mut rx = e.subscribe_events();
         let generation = e.play(AudioSource::bytes(vec![7u8; 2048], Some("xyz")), 0.0);
-        wait_for(&e, Duration::from_secs(5), |s| s.state == PlaybackState::Error);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Error
+        });
         assert!(e.snapshot().error.is_some());
         let mut got = false;
         while let Ok(ev) = rx.try_recv() {
@@ -1342,13 +1436,22 @@ mod tests {
     fn spectrum_follows_waveform_flag() {
         let e = null_engine();
         e.play(tone(3.0), 0.0);
-        wait_for(&e, Duration::from_secs(5), |s| s.state == PlaybackState::Playing);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Playing
+        });
         std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(e.spectrum(), [0.0; SPECTRUM_BARS], "disabled => no analysis");
+        assert_eq!(
+            e.spectrum(),
+            [0.0; SPECTRUM_BARS],
+            "disabled => no analysis"
+        );
         e.set_waveform_enabled(true);
         let start = Instant::now();
         while e.spectrum().iter().all(|&b| b == 0.0) {
-            assert!(start.elapsed() < Duration::from_secs(3), "spectrum never updated");
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "spectrum never updated"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
         let bars = e.spectrum();
@@ -1361,7 +1464,10 @@ mod tests {
         let expected = SpectrumAnalyzer::new(DEFAULT_OUT_RATE)
             .bar_for_freq(440.0)
             .unwrap();
-        assert!((peak as i64 - expected as i64).abs() <= 1, "{peak} vs {expected}");
+        assert!(
+            (peak as i64 - expected as i64).abs() <= 1,
+            "{peak} vs {expected}"
+        );
         e.set_waveform_enabled(false);
         wait_for(&e, Duration::from_secs(2), |_| {
             e.spectrum() == [0.0; SPECTRUM_BARS]
@@ -1386,7 +1492,9 @@ mod tests {
                 e.toggle_play();
             }
         }
-        wait_for(&e, Duration::from_secs(10), |s| s.state == PlaybackState::Ended);
+        wait_for(&e, Duration::from_secs(10), |s| {
+            s.state == PlaybackState::Ended
+        });
         let mut ended = Vec::new();
         while let Ok(ev) = rx.try_recv() {
             if let AudioEvent::TrackEnded { generation } = ev {
@@ -1427,7 +1535,9 @@ mod tests {
         let e = null_engine();
         let mut rx = e.subscribe_events();
         e.play(src, 0.0);
-        wait_for(&e, Duration::from_secs(10), |s| s.state == PlaybackState::Ended);
+        wait_for(&e, Duration::from_secs(10), |s| {
+            s.state == PlaybackState::Ended
+        });
         producer.join().unwrap();
         assert!((e.snapshot().position_secs - 0.5).abs() < 0.02);
         let mut ended = false;
@@ -1435,6 +1545,132 @@ mod tests {
             ended |= matches!(ev, AudioEvent::TrackEnded { generation: 1 });
         }
         assert!(ended);
+    }
+
+    #[test]
+    fn stale_track_end_never_adopts_newer_generation() {
+        let e = null_engine();
+        let mut rx = e.subscribe_events();
+        let generation = e.play(tone(0.3), 0.0);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Playing
+        });
+        // A new `play()` has bumped the shared counter but its `Cmd::Play` has not been
+        // processed yet when the old track finishes.
+        e.inner.shared.generation.fetch_add(1, Ordering::AcqRel);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Ended
+        });
+        let mut ended = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let AudioEvent::TrackEnded { generation } = ev {
+                ended.push(generation);
+            }
+        }
+        assert_eq!(ended, vec![generation]);
+    }
+
+    #[test]
+    fn stale_error_never_adopts_newer_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stale.wav");
+        let wav = sine_wav(44_100, 2, 44_100 * 5, 440.0);
+        std::fs::write(&path, &wav[..wav.len() / 10]).unwrap();
+        let src = AudioSource::streaming_file(&path, Some(wav.len() as u64));
+        let AudioSource::StreamingFile { aborted, .. } = &src else {
+            unreachable!()
+        };
+        let aborted = aborted.clone();
+        let e = null_engine();
+        let mut rx = e.subscribe_events();
+        let generation = e.play(src, 0.0);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Playing
+        });
+        e.inner.shared.generation.fetch_add(1, Ordering::AcqRel);
+        aborted.store(true, Ordering::Release);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Error
+        });
+        let mut errors = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let AudioEvent::Error { generation, .. } = ev {
+                errors.push(generation);
+            }
+        }
+        assert_eq!(errors, vec![generation]);
+    }
+
+    #[test]
+    fn stop_interrupts_blocked_streaming_read_promptly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stalled.wav");
+        let wav = sine_wav(44_100, 2, 44_100 * 5, 440.0);
+        // Only ~0.25 s downloaded and no more bytes ever arrive (idle timeout is 30 s).
+        std::fs::write(&path, &wav[..wav.len() / 20]).unwrap();
+        let src = AudioSource::streaming_file(&path, Some(wav.len() as u64));
+        let AudioSource::StreamingFile { done, .. } = &src else {
+            unreachable!()
+        };
+        let done = done.clone();
+        let e = null_engine();
+        e.play(src, 0.0);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Playing
+        });
+        // Let the worker drain what exists and block in the growing-file wait loop.
+        std::thread::sleep(Duration::from_millis(400));
+        // Holders: this test, Control::source, the worker's ctx and the open media source.
+        assert!(
+            Arc::strong_count(&done) >= 3,
+            "{}",
+            Arc::strong_count(&done)
+        );
+        e.stop();
+        let stopped = Instant::now();
+        // Only this test and Control::source remain once the worker thread has exited.
+        while Arc::strong_count(&done) > 2 {
+            assert!(
+                stopped.elapsed() < Duration::from_millis(200),
+                "worker still blocked after stop ({} holders)",
+                Arc::strong_count(&done)
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn output_rate_change_on_reopen_flushes_stale_rate_audio() {
+        let e = null_engine();
+        e.play(tone(10.0), 0.0);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Playing
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        e.pause();
+        wait_for(&e, Duration::from_secs(2), |s| {
+            s.state == PlaybackState::Paused
+        });
+        // Idle teardown; the ring stays full of 48 kHz audio meanwhile.
+        let start = Instant::now();
+        while e.is_output_open() {
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "stream not dropped"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        e.send(Cmd::SetNullRate(22_050));
+        let p0 = e.snapshot().position_secs;
+        e.resume();
+        wait_for(&e, Duration::from_secs(2), |s| {
+            s.state == PlaybackState::Playing
+        });
+        assert_eq!(e.inner.shared.out_rate.load(Ordering::Acquire), 22_050);
+        std::thread::sleep(Duration::from_millis(400));
+        let advanced = e.snapshot().position_secs - p0;
+        // Stale 48 kHz samples played at 22.05 kHz would advance only ~0.18 s.
+        assert!((0.3..0.5).contains(&advanced), "advanced {advanced}");
     }
 
     /// Opens the real default output device (muted). Run with `--ignored` on a dev machine.
@@ -1447,17 +1683,27 @@ mod tests {
         });
         e.set_muted(true);
         e.play(tone(0.6), 0.0);
-        wait_for(&e, Duration::from_secs(5), |s| s.state == PlaybackState::Playing);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Playing
+        });
         let s = e.snapshot();
         eprintln!("device snapshot while playing: {s:?}");
         assert!(e.is_output_open());
-        wait_for(&e, Duration::from_secs(5), |s| s.state == PlaybackState::Ended);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Ended
+        });
         let start = Instant::now();
         while e.is_output_open() {
-            assert!(start.elapsed() < Duration::from_secs(3), "device stream not released");
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "device stream not released"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
-        eprintln!("device stream released after idle; has_audio_device={}", s.has_audio_device);
+        eprintln!(
+            "device stream released after idle; has_audio_device={}",
+            s.has_audio_device
+        );
     }
 
     #[test]
@@ -1474,9 +1720,13 @@ mod tests {
         let e = null_engine();
         let mut rx = e.subscribe_events();
         e.play(src, 0.0);
-        wait_for(&e, Duration::from_secs(5), |s| s.state == PlaybackState::Playing);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Playing
+        });
         aborted.store(true, Ordering::Release);
-        wait_for(&e, Duration::from_secs(5), |s| s.state == PlaybackState::Error);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Error
+        });
         assert!(e.snapshot().error.unwrap().contains("aborted"));
         while let Ok(ev) = rx.try_recv() {
             assert!(!matches!(ev, AudioEvent::TrackEnded { .. }));

@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -57,6 +58,8 @@ pub struct DecoderOptions {
     pub ffmpeg_out_rate: u32,
     /// Disable the ffmpeg fallback entirely.
     pub disable_ffmpeg: bool,
+    /// Once set, blocked reads of a still-downloading source fail promptly (track switch/stop).
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 /// Open the best decoder for `source`, positioned at `start_secs`.
@@ -69,7 +72,7 @@ pub fn open_decoder(
     opts: &DecoderOptions,
 ) -> Result<Box<dyn Decoder>> {
     let start_secs = sanitize_secs(start_secs);
-    let sym_err = match SymphoniaDecoder::open(source.clone()) {
+    let sym_err = match SymphoniaDecoder::open_cancellable(source.clone(), opts.cancel.clone()) {
         Ok(mut dec) => {
             if start_secs > 0.0 {
                 dec.seek(start_secs)?;
@@ -78,6 +81,13 @@ pub fn open_decoder(
         }
         Err(e) => e,
     };
+    if opts
+        .cancel
+        .as_ref()
+        .is_some_and(|c| c.load(Ordering::Acquire))
+    {
+        return Err(sym_err.context("cancelled"));
+    }
     if opts.disable_ffmpeg {
         return Err(sym_err.context("symphonia failed and ffmpeg fallback is disabled"));
     }
@@ -87,7 +97,13 @@ pub fn open_decoder(
     } else {
         opts.ffmpeg_out_rate
     };
-    match FfmpegDecoder::spawn(source.clone(), start_secs, rate, opts.ffmpeg_path.clone()) {
+    match FfmpegDecoder::spawn_cancellable(
+        source.clone(),
+        start_secs,
+        rate,
+        opts.ffmpeg_path.clone(),
+        opts.cancel.clone(),
+    ) {
         Ok(dec) => Ok(Box::new(dec)),
         Err(ff_err) => Err(anyhow!(
             "unable to decode audio: symphonia: {sym_err:#}; ffmpeg: {ff_err:#}"
@@ -165,6 +181,7 @@ fn clamp_sample(s: f32) -> f32 {
 /// Symphonia-based decoder (MP4/fMP4 `.m4s`, M4A, FLAC, MP3, OGG Vorbis, WAV, ALAC, AAC, ...).
 pub struct SymphoniaDecoder {
     source: AudioSource,
+    cancel: Option<Arc<AtomicBool>>,
     format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
@@ -183,7 +200,12 @@ pub struct SymphoniaDecoder {
 impl SymphoniaDecoder {
     /// Probe and open `source`, decoding the first block to prove it is playable.
     pub fn open(source: AudioSource) -> Result<Self> {
-        let mut dec = Self::open_unprimed(source)?;
+        Self::open_cancellable(source, None)
+    }
+
+    /// Like [`open`](Self::open); setting `cancel` interrupts blocked streaming reads.
+    pub fn open_cancellable(source: AudioSource, cancel: Option<Arc<AtomicBool>>) -> Result<Self> {
+        let mut dec = Self::open_unprimed(source, cancel)?;
         let mut first = Vec::new();
         if !dec.decode_raw(&mut first)? {
             bail!("stream contains no decodable audio");
@@ -192,8 +214,10 @@ impl SymphoniaDecoder {
         Ok(dec)
     }
 
-    fn open_unprimed(source: AudioSource) -> Result<Self> {
-        let ms = source.open_media_source().context("open media source")?;
+    fn open_unprimed(source: AudioSource, cancel: Option<Arc<AtomicBool>>) -> Result<Self> {
+        let ms = source
+            .open_media_source_cancellable(cancel.as_slice())
+            .context("open media source")?;
         let mss = MediaSourceStream::new(ms, Default::default());
         let mut hint = Hint::new();
         if let Some(ext) = source.hint_extension() {
@@ -240,6 +264,7 @@ impl SymphoniaDecoder {
         let track_id = track.id;
         Ok(Self {
             source,
+            cancel,
             format,
             decoder,
             track_id,
@@ -371,7 +396,7 @@ impl SymphoniaDecoder {
     /// Fallback seek: reopen when going backwards, then decode-and-discard forward.
     fn seek_by_discard(&mut self, secs: f64) -> Result<f64> {
         if secs < self.position_secs() {
-            let fresh = Self::open_unprimed(self.source.clone())?;
+            let fresh = Self::open_unprimed(self.source.clone(), self.cancel.clone())?;
             *self = fresh;
         }
         self.pending.clear();
@@ -454,14 +479,41 @@ pub struct FfmpegDecoder {
     source: AudioSource,
     ffmpeg: PathBuf,
     out_rate: u32,
-    child: Option<Child>,
+    child: Option<ChildGuard>,
     stdout: Option<ChildStdout>,
     stderr_info: Arc<Mutex<StderrInfo>>,
+    /// Engine-level cancel (track switch / stop) forwarded to the stdin feeder's source.
+    cancel: Option<Arc<AtomicBool>>,
+    /// Per-process feeder state; replaced on every (re)start.
+    feeder: Option<FeederState>,
     start_secs: f64,
     frames_read: u64,
     leftover: Vec<u8>,
     byte_buf: Vec<u8>,
     pending: Vec<f32>,
+}
+
+/// Kills and reaps the ffmpeg process when dropped, so no early return can leak it.
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+struct FeederState {
+    /// Set when the process is torn down so a feeder blocked on a growing file exits promptly.
+    stop: Arc<AtomicBool>,
+    /// Read/open error hit while feeding ffmpeg's stdin (input truncated => not a clean EOF).
+    error: Arc<Mutex<Option<String>>>,
+}
+
+impl Drop for FeederState {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
 }
 
 #[derive(Default)]
@@ -478,6 +530,18 @@ impl FfmpegDecoder {
         out_rate: u32,
         ffmpeg_path: Option<PathBuf>,
     ) -> Result<Self> {
+        Self::spawn_cancellable(source, start_secs, out_rate, ffmpeg_path, None)
+    }
+
+    /// Like [`spawn`](Self::spawn); setting `cancel` interrupts a stdin feeder that is blocked
+    /// on a still-downloading source.
+    pub fn spawn_cancellable(
+        source: AudioSource,
+        start_secs: f64,
+        out_rate: u32,
+        ffmpeg_path: Option<PathBuf>,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<Self> {
         let ffmpeg = ffmpeg_path.unwrap_or_else(|| PathBuf::from(ffmpeg_binary_name()));
         let mut dec = Self {
             source,
@@ -486,6 +550,8 @@ impl FfmpegDecoder {
             child: None,
             stdout: None,
             stderr_info: Arc::new(Mutex::new(StderrInfo::default())),
+            cancel,
+            feeder: None,
             start_secs: 0.0,
             frames_read: 0,
             leftover: Vec::new(),
@@ -503,10 +569,8 @@ impl FfmpegDecoder {
 
     fn kill(&mut self) {
         self.stdout = None;
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.feeder = None; // stops the old feeder
+        self.child = None; // ChildGuard kills + reaps
     }
 
     fn restart(&mut self, start_secs: f64) -> Result<()> {
@@ -552,33 +616,49 @@ impl FfmpegDecoder {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("spawn {}", self.ffmpeg.display()))?;
+        // Guard immediately: any `?` below drops it, killing and reaping the process.
+        let mut child = ChildGuard(
+            cmd.spawn()
+                .with_context(|| format!("spawn {}", self.ffmpeg.display()))?,
+        );
+        let feeder = FeederState {
+            stop: Arc::new(AtomicBool::new(false)),
+            error: Arc::new(Mutex::new(None)),
+        };
 
-        if let Some(mut stdin) = child.stdin.take() {
+        if let Some(mut stdin) = child.0.stdin.take() {
             let src = self.source.clone();
+            let mut cancel = vec![feeder.stop.clone()];
+            cancel.extend(self.cancel.clone());
+            let error = feeder.error.clone();
             std::thread::Builder::new()
                 .name("biu-ffmpeg-stdin".into())
                 .spawn(move || {
-                    let Ok(mut ms) = src.open_media_source() else {
-                        return;
+                    let record = |msg: String| {
+                        *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(msg);
+                    };
+                    let mut ms = match src.open_media_source_cancellable(&cancel) {
+                        Ok(ms) => ms,
+                        Err(e) => return record(format!("open input: {e}")),
                     };
                     let mut buf = vec![0u8; 64 * 1024];
                     loop {
                         match ms.read(&mut buf) {
-                            Ok(0) | Err(_) => break,
+                            Ok(0) => break,
                             Ok(n) => {
                                 if stdin.write_all(&buf[..n]).is_err() {
                                     break; // ffmpeg exited / was killed
                                 }
                             }
+                            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                            // Recorded before `stdin` drops, so the reader sees it at EOF.
+                            Err(e) => return record(format!("read input: {e}")),
                         }
                     }
                 })
                 .context("spawn ffmpeg stdin feeder")?;
         }
-        if let Some(stderr) = child.stderr.take() {
+        if let Some(stderr) = child.0.stderr.take() {
             let info = self.stderr_info.clone();
             std::thread::Builder::new()
                 .name("biu-ffmpeg-stderr".into())
@@ -596,8 +676,9 @@ impl FfmpegDecoder {
                 })
                 .context("spawn ffmpeg stderr reader")?;
         }
-        self.stdout = child.stdout.take();
+        self.stdout = child.0.stdout.take();
         self.child = Some(child);
+        self.feeder = Some(feeder);
         Ok(())
     }
 
@@ -606,7 +687,10 @@ impl FfmpegDecoder {
         if info.tail.is_empty() {
             String::new()
         } else {
-            format!(": {}", info.tail.iter().cloned().collect::<Vec<_>>().join(" | "))
+            format!(
+                ": {}",
+                info.tail.iter().cloned().collect::<Vec<_>>().join(" | ")
+            )
         }
     }
 
@@ -621,11 +705,21 @@ impl FfmpegDecoder {
                 Err(e) => return Err(anyhow!("ffmpeg pipe read failed: {e}")),
             };
             if n == 0 {
-                let status = self.child.as_mut().and_then(|c| c.wait().ok());
                 self.stdout = None;
+                let status = match self.child.as_mut() {
+                    Some(c) => Some(c.0.wait().context("wait for ffmpeg")?),
+                    None => None,
+                };
+                // Input truncated by a feeder failure is an error, not a clean end of stream.
+                let feeder_err = self
+                    .feeder
+                    .as_ref()
+                    .and_then(|f| f.error.lock().unwrap_or_else(|p| p.into_inner()).take());
+                if let Some(msg) = feeder_err {
+                    bail!("ffmpeg input failed: {msg}{}", self.stderr_tail());
+                }
                 if let Some(st) = status
                     && !st.success()
-                    && self.frames_read == 0
                 {
                     bail!("ffmpeg exited with {st}{}", self.stderr_tail());
                 }
@@ -690,7 +784,11 @@ impl Decoder for FfmpegDecoder {
 }
 
 fn ffmpeg_binary_name() -> &'static str {
-    if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }
+    if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    }
 }
 
 /// Parse `Duration: 00:03:21.45,` from ffmpeg's stderr banner.
@@ -803,7 +901,11 @@ mod tests {
         assert_eq!(dec.backend(), DecoderBackend::Symphonia);
         let pcm = decode_all(dec.as_mut());
         producer.join().unwrap();
-        assert_eq!(pcm.len(), frames * 2, "no premature cutoff, no extra samples");
+        assert_eq!(
+            pcm.len(),
+            frames * 2,
+            "no premature cutoff, no extra samples"
+        );
     }
 
     #[test]
@@ -852,9 +954,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tone.wav");
         std::fs::write(&path, sine_wav(44_100, 2, 44_100, 440.0)).unwrap();
-        let mut dec =
-            FfmpegDecoder::spawn(AudioSource::File(path.clone()), 0.0, 48_000, Some(ff.clone()))
-                .unwrap();
+        let mut dec = FfmpegDecoder::spawn(
+            AudioSource::File(path.clone()),
+            0.0,
+            48_000,
+            Some(ff.clone()),
+        )
+        .unwrap();
         let pcm = decode_all(&mut dec);
         let frames = pcm.len() / 2;
         assert!((frames as i64 - 48_000).abs() < 200, "frames {frames}");
@@ -872,6 +978,106 @@ mod tests {
         .unwrap();
         let pcm = decode_all(&mut dec);
         assert!(((pcm.len() / 2) as i64 - 24_000).abs() < 200);
+    }
+
+    /// Write an executable shell script standing in for ffmpeg.
+    #[cfg(unix)]
+    fn fake_ffmpeg(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("fake-ffmpeg");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// Decode until the first error or clean EOF.
+    fn drain(dec: &mut dyn Decoder) -> Result<usize> {
+        let mut frames = 0;
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            if !dec.decode_next(&mut buf)? {
+                return Ok(frames);
+            }
+            frames += buf.len() / 2;
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ffmpeg_nonzero_exit_after_audio_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // Emits 1000 silent stereo f32 frames, then fails mid-stream.
+        let ff = fake_ffmpeg(
+            dir.path(),
+            "head -c 8000 /dev/zero; echo 'decode blew up' >&2; exit 3",
+        );
+        let input = dir.path().join("in.bin");
+        std::fs::write(&input, [0u8; 16]).unwrap();
+        let mut dec =
+            FfmpegDecoder::spawn(AudioSource::File(input), 0.0, 48_000, Some(ff)).unwrap();
+        let err = drain(&mut dec).unwrap_err().to_string();
+        assert!(err.contains("exited"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ffmpeg_feeder_read_error_is_an_error_not_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        // "Decodes" by echoing stdin, so output ends exactly when the feeder stops.
+        let ff = fake_ffmpeg(dir.path(), "cat");
+        let path = dir.path().join("dl.part");
+        std::fs::write(&path, vec![0u8; 64 * 1024]).unwrap();
+        let src = AudioSource::streaming_file(&path, Some(10 << 20));
+        let AudioSource::StreamingFile { error, .. } = &src else {
+            unreachable!()
+        };
+        let error = error.clone();
+        let mut dec = FfmpegDecoder::spawn(src, 0.0, 48_000, Some(ff)).unwrap();
+        *error.lock().unwrap() = Some("http 500".into());
+        let err = drain(&mut dec).unwrap_err().to_string();
+        assert!(err.contains("http 500"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ffmpeg_child_is_reaped_when_spawn_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        // Writes its pid, produces no audio, and would otherwise linger for a minute.
+        let ff = fake_ffmpeg(
+            dir.path(),
+            &format!("echo $$ > '{}'; exec sleep 60", pid_file.display()),
+        );
+        let input = dir.path().join("in.bin");
+        std::fs::write(&input, [0u8; 16]).unwrap();
+        let src = AudioSource::File(input);
+        let handle = std::thread::spawn(move || {
+            FfmpegDecoder::spawn(src, 0.0, 48_000, Some(ff)).map(|_| ())
+        });
+        // Wait for the child to start, then kill it from outside: spawn() sees EOF + failure.
+        let start = std::time::Instant::now();
+        let pid = loop {
+            if let Ok(s) = std::fs::read_to_string(&pid_file)
+                && let Ok(pid) = s.trim().parse::<u32>()
+            {
+                break pid;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let alive = |pid: u32| {
+            Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        assert!(alive(pid));
+        Command::new("kill").arg(pid.to_string()).status().unwrap();
+        assert!(handle.join().unwrap().is_err());
+        // Reaped (not a zombie / leaked child).
+        assert!(!alive(pid), "ffmpeg child {pid} leaked");
     }
 
     #[test]

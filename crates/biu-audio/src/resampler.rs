@@ -136,8 +136,11 @@ impl Resampler {
         while self.pos < limit {
             self.emit(out);
         }
-        // Discard consumed frames, keeping one frame of history.
-        let drop = (self.pos.floor() as usize).saturating_sub(1);
+        // Discard consumed frames, keeping one frame of history (`floor(pos) - 1`). With a large
+        // step (e.g. 192 kHz -> 48 kHz at 2x => 8) the read position can land past the end of
+        // the buffer; then every buffered frame is consumed and `pos` stays relative to frames
+        // that have not arrived yet, preserving the fractional phase.
+        let drop = (self.pos.floor() as usize).saturating_sub(1).min(frames);
         if drop > 0 {
             self.buf.drain(..drop * 2);
             self.pos -= drop as f64;
@@ -175,8 +178,8 @@ mod tests {
     fn sine_stereo(rate: u32, frames: usize, freq: f64) -> Vec<f32> {
         (0..frames)
             .flat_map(|i| {
-                let s = (2.0 * std::f64::consts::PI * freq * i as f64 / rate as f64).sin() as f32
-                    * 0.5;
+                let s =
+                    (2.0 * std::f64::consts::PI * freq * i as f64 / rate as f64).sin() as f32 * 0.5;
                 [s, s]
             })
             .collect()
@@ -228,7 +231,9 @@ mod tests {
 
     #[test]
     fn identity_is_exact_and_rate_is_clamped() {
-        let input: Vec<f32> = (0..2000).map(|i| ((i % 200) as f32 / 200.0) - 0.5).collect();
+        let input: Vec<f32> = (0..2000)
+            .map(|i| ((i % 200) as f32 / 200.0) - 0.5)
+            .collect();
         let mut r = Resampler::new(48_000, 48_000);
         let out = run_chunked(&mut r, &input, 128);
         assert_eq!(out.len(), input.len());
@@ -244,6 +249,47 @@ mod tests {
     }
 
     #[test]
+    fn high_sample_rate_192k_at_2x_does_not_panic() {
+        // step = 192k / 48k * 2 = 8 source frames per output frame.
+        let input = sine_stereo(192_000, 192_000, 1000.0);
+        let mut reference: Option<Vec<f32>> = None;
+        for chunk in [1, 2, 3, 5, 7, 64, 700, 1024, 4096] {
+            let mut r = Resampler::new(192_000, 48_000);
+            r.set_rate(2.0);
+            assert_eq!(r.step(), 8.0);
+            let out = run_chunked(&mut r, &input, chunk);
+            let frames = out.len() / 2;
+            // 1 s of 192 kHz at 2x => 0.5 s at 48 kHz.
+            assert!(
+                (frames as i64 - 24_000).abs() <= 2,
+                "chunk {chunk}: frames {frames}"
+            );
+            // Pitch doubles: 2 kHz for 0.5 s => ~2000 crossings.
+            let zc = zero_crossings(&out) as i64;
+            assert!((zc - 2000).abs() <= 4, "chunk {chunk}: zero crossings {zc}");
+            // Chunking must not change the output (phase is preserved across chunks).
+            match &reference {
+                None => reference = Some(out),
+                Some(want) => {
+                    let n = want.len().min(out.len());
+                    for (a, b) in want[..n].iter().zip(&out[..n]) {
+                        assert!((a - b).abs() < 1e-5, "chunk {chunk} diverged");
+                    }
+                }
+            }
+        }
+        // Non-integer large step with mid-stream rate flips also stays in bounds.
+        let mut r = Resampler::new(192_000, 44_100);
+        let mut out = Vec::new();
+        for (n, chunk) in input.chunks(700 * 2).enumerate() {
+            r.set_rate(if n % 2 == 0 { 2.0 } else { 0.5 });
+            r.process(chunk, &mut out);
+        }
+        r.flush(&mut out);
+        assert!(!out.is_empty());
+    }
+
+    #[test]
     fn mid_stream_rate_change_is_continuous() {
         let input = sine_stereo(48_000, 48_000, 200.0);
         let mut r = Resampler::new(48_000, 48_000);
@@ -254,7 +300,9 @@ mod tests {
         }
         // A 200 Hz sine sped up to at most 1.3x never jumps more than ~0.04 per sample.
         let max_jump = out
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .collect::<Vec<_>>()
             .windows(2)
             .map(|w| (w[1][0] - w[0][0]).abs())
