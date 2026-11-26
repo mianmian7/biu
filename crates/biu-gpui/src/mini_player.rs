@@ -1,6 +1,7 @@
 //! Compact always-on-top floating mini player.
 
 use crate::desktop_lyrics::open_or_toggle_desktop_lyrics;
+use crate::image_loader::CoverKey;
 use crate::player_bar::{
     effective_duration, icon_button, is_playing, play_button, seek_slider, time_label,
 };
@@ -79,19 +80,29 @@ impl MiniPlayerWindow {
 
 impl Render for MiniPlayerWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let cover_url = self
-            .state
-            .read(cx)
-            .current_track()
-            .map(|t| t.cover.clone())
-            .unwrap_or_default();
-        let cover = if cover_url.is_empty() {
-            None
-        } else {
-            self.state.update(cx, |s, cx| {
-                s.ensure_cover(&cover_url, ThumbSize::Card, false, cx)
-            })
+        let (cover, missing_cover) = {
+            let s = self.state.read(cx);
+            let cover_url = s
+                .current_track()
+                .map(|t| t.cover.clone())
+                .unwrap_or_default();
+            if cover_url.is_empty() {
+                (None, None)
+            } else {
+                let key = CoverKey::thumb(cover_url.clone(), ThumbSize::Card);
+                let img = s.covers.get(&key);
+                let miss = (img.is_none() && s.covers.should_fetch(&key)).then_some(cover_url);
+                (img, miss)
+            }
         };
+        if let Some(url) = missing_cover {
+            let st = self.state.clone();
+            window.defer(cx, move |_, cx| {
+                st.update(cx, |s, cx| {
+                    s.ensure_cover(&url, ThumbSize::Card, false, cx);
+                });
+            });
+        }
 
         let s = self.state.read(cx);
         let palette = s.palette(window);

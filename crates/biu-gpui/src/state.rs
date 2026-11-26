@@ -141,9 +141,16 @@ pub struct AppState {
 
     // Navigation & overlays
     pub route: Route,
+    pub nav_history: Vec<Route>,
+    pub nav_index: usize,
     pub modal: ActiveModal,
     pub is_full_screen: bool,
     pub sidebar_collapsed: bool,
+
+    // Coarse-grained dirty versions so 100ms playback ticks never rebuild page trees
+    pub ui_version: u64,
+    pub playback_version: u64,
+    cover_notify_scheduled: bool,
 
     // Settings & user
     pub settings: AppSettings,
@@ -198,9 +205,14 @@ impl AppState {
             services,
             windows: WindowRegistry::default(),
             route: Route::MusicRecommend,
+            nav_history: vec![Route::MusicRecommend],
+            nav_index: 0,
             modal: ActiveModal::None,
             is_full_screen: false,
             sidebar_collapsed,
+            ui_version: 1,
+            playback_version: 1,
+            cover_notify_scheduled: false,
             settings,
             user: None,
             created_folders: Vec::new(),
@@ -244,6 +256,90 @@ impl AppState {
         self.queue.current()
     }
 
+    pub fn notify_ui(&mut self, cx: &mut Context<Self>) {
+        self.ui_version = self.ui_version.wrapping_add(1);
+        self.playback_version = self.playback_version.wrapping_add(1);
+        cx.notify();
+    }
+
+    pub fn notify_playback(&mut self, cx: &mut Context<Self>) {
+        self.playback_version = self.playback_version.wrapping_add(1);
+        cx.notify();
+    }
+
+    pub fn covers_version(&self) -> u64 {
+        self.covers.version()
+    }
+
+    fn schedule_cover_notify(&mut self, cx: &mut Context<Self>) {
+        if self.cover_notify_scheduled {
+            return;
+        }
+        self.cover_notify_scheduled = true;
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.background_executor()
+                .timer(Duration::from_millis(45))
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                state.cover_notify_scheduled = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn sync_pinned_covers(&mut self) {
+        let mut keys = Vec::new();
+        if let Some(track) = self.queue.current()
+            && !track.cover.is_empty()
+        {
+            keys.push(CoverKey::thumb(track.cover.clone(), ThumbSize::Tiny));
+            keys.push(CoverKey::thumb(track.cover.clone(), ThumbSize::Card));
+            keys.push(CoverKey::thumb(track.cover.clone(), ThumbSize::Cover));
+            keys.push(CoverKey::blurred(track.cover.clone()));
+        }
+        if let Some(ref u) = self.user
+            && !u.face.is_empty()
+        {
+            keys.push(CoverKey::thumb(u.face.clone(), ThumbSize::Tiny));
+        }
+        self.covers.set_pinned(keys);
+    }
+
+    pub fn can_go_back(&self) -> bool {
+        self.nav_index > 0
+    }
+
+    pub fn can_go_forward(&self) -> bool {
+        self.nav_index + 1 < self.nav_history.len()
+    }
+
+    pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        if self.nav_index == 0 {
+            return;
+        }
+        self.nav_index -= 1;
+        self.route = self.nav_history[self.nav_index].clone();
+        if self.is_full_screen {
+            self.is_full_screen = false;
+            self.services.audio.set_waveform_enabled(false);
+        }
+        self.notify_ui(cx);
+    }
+
+    pub fn go_forward(&mut self, cx: &mut Context<Self>) {
+        if self.nav_index + 1 >= self.nav_history.len() {
+            return;
+        }
+        self.nav_index += 1;
+        self.route = self.nav_history[self.nav_index].clone();
+        if self.is_full_screen {
+            self.is_full_screen = false;
+            self.services.audio.set_waveform_enabled(false);
+        }
+        self.notify_ui(cx);
+    }
+
     pub fn navigate(&mut self, route: Route, cx: &mut Context<Self>) {
         if let Route::Search { ref query } = route {
             let trimmed = query.trim();
@@ -251,22 +347,30 @@ impl AppState {
                 self.push_search_history(trimmed.to_string());
             }
         }
+        if self.route != route {
+            self.nav_history.truncate(self.nav_index + 1);
+            self.nav_history.push(route.clone());
+            if self.nav_history.len() > 50 {
+                self.nav_history.remove(0);
+            }
+            self.nav_index = self.nav_history.len().saturating_sub(1);
+        }
         self.route = route;
         if self.is_full_screen {
             self.is_full_screen = false;
             self.services.audio.set_waveform_enabled(false);
         }
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     pub fn open_modal(&mut self, modal: ActiveModal, cx: &mut Context<Self>) {
         self.modal = modal;
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     pub fn close_modal(&mut self, cx: &mut Context<Self>) {
         self.modal = ActiveModal::None;
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -280,11 +384,12 @@ impl AppState {
         self.services.audio.set_waveform_enabled(self.is_full_screen);
         if self.is_full_screen
             && let Some(track) = self.current_track().cloned()
-                && !track.cover.is_empty() {
-                    self.ensure_cover(&track.cover, ThumbSize::Cover, false, cx);
-                    self.ensure_cover(&track.cover, ThumbSize::BlurBg, true, cx);
-                }
-        cx.notify();
+            && !track.cover.is_empty()
+        {
+            self.ensure_cover(&track.cover, ThumbSize::Cover, false, cx);
+            self.ensure_cover(&track.cover, ThumbSize::BlurBg, true, cx);
+        }
+        self.notify_ui(cx);
     }
 
     pub fn show_toast(&mut self, text: impl Into<String>, is_error: bool, cx: &mut Context<Self>) {
@@ -293,7 +398,7 @@ impl AppState {
             is_error,
             expires_at: Instant::now() + Duration::from_secs(3),
         });
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     pub fn update_settings(&mut self, f: impl FnOnce(&mut AppSettings), cx: &mut Context<Self>) {
@@ -313,7 +418,7 @@ impl AppState {
                 .audio
                 .set_ffmpeg_path((!p.is_empty()).then(|| PathBuf::from(p)));
         }
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     pub fn push_search_history(&mut self, term: String) {
@@ -332,7 +437,7 @@ impl AppState {
             .services
             .store
             .write("search-history", serde_json::json!({ "items": [] }));
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     pub fn persist_queue(&self) {
@@ -378,14 +483,16 @@ impl AppState {
 
             if let Ok((nav, created, collected)) = handle.await {
                 let _ = this.update(cx, |state, cx| {
-                    if let Some(ref u) = nav
-                        && u.is_login && !u.face.is_empty() {
-                            state.ensure_cover(&u.face, ThumbSize::Tiny, false, cx);
-                        }
                     state.user = nav.filter(|u| u.is_login);
                     state.created_folders = created;
                     state.collected_folders = collected;
-                    cx.notify();
+                    state.sync_pinned_covers();
+                    if let Some(face) = state.user.as_ref().map(|u| u.face.clone())
+                        && !face.is_empty()
+                    {
+                        state.ensure_cover(&face, ThumbSize::Tiny, false, cx);
+                    }
+                    state.notify_ui(cx);
                 });
             }
         })
@@ -417,6 +524,7 @@ impl AppState {
             CoverKey::thumb(url, size)
         };
         if let Some(img) = self.covers.get(&key) {
+            self.covers.touch(&key);
             return Some(img);
         }
         if !self.covers.should_fetch(&key) {
@@ -441,14 +549,29 @@ impl AppState {
                         for old in evicted {
                             cx.drop_image(old, None);
                         }
+                        // Coalesce burst cover arrivals into a single UI repaint (~22Hz max)
+                        // instead of rebuilding the entire page tree per thumbnail.
+                        state.schedule_cover_notify(cx);
                     }
                     _ => state.covers.mark_failed(epoch, &key),
                 }
-                cx.notify();
             });
         })
         .detach();
         None
+    }
+
+    /// Prefetch a batch of covers without blocking rendering.
+    pub fn prefetch_covers(
+        &mut self,
+        items: impl IntoIterator<Item = (String, ThumbSize)>,
+        cx: &mut Context<Self>,
+    ) {
+        for (url, size) in items {
+            if !url.is_empty() {
+                self.ensure_cover(&url, size, false, cx);
+            }
+        }
     }
 
     pub fn play_queue(
@@ -503,14 +626,14 @@ impl AppState {
                 self.invalidate_active_playback();
             }
         }
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     pub fn clear_queue(&mut self, cx: &mut Context<Self>) {
         self.queue.clear();
         self.invalidate_active_playback();
         self.persist_queue();
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     fn invalidate_active_playback(&mut self) {
@@ -529,13 +652,14 @@ impl AppState {
 
     pub fn toggle_play(&mut self, cx: &mut Context<Self>) {
         if self.snapshot.state == PlaybackState::Idle
-            && let Some(track) = self.queue.current().cloned() {
-                self.start_playback_for_track(track, cx);
-                return;
-            }
+            && let Some(track) = self.queue.current().cloned()
+        {
+            self.start_playback_for_track(track, cx);
+            return;
+        }
         self.services.audio.toggle_play();
         self.snapshot = self.services.audio.snapshot();
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     pub fn next_track(&mut self, auto_advance: bool, cx: &mut Context<Self>) {
@@ -544,7 +668,7 @@ impl AppState {
             self.start_playback_for_track(track, cx);
         } else {
             self.services.audio.stop();
-            cx.notify();
+            self.notify_ui(cx);
         }
     }
 
@@ -561,13 +685,13 @@ impl AppState {
         self.snapshot = self.services.audio.snapshot();
         let playing = self.snapshot.state == PlaybackState::Playing;
         self.services.media_controls.set_playback(playing, target);
-        cx.notify();
+        self.notify_playback(cx);
     }
 
     pub fn set_volume(&mut self, volume: f32, cx: &mut Context<Self>) {
         self.services.audio.set_volume(volume.clamp(0.0, 1.0));
         self.snapshot = self.services.audio.snapshot();
-        cx.notify();
+        self.notify_playback(cx);
     }
 
     pub fn adjust_volume(&mut self, delta: f32, cx: &mut Context<Self>) {
@@ -578,19 +702,19 @@ impl AppState {
     pub fn toggle_mute(&mut self, cx: &mut Context<Self>) {
         self.services.audio.set_muted(!self.snapshot.muted);
         self.snapshot = self.services.audio.snapshot();
-        cx.notify();
+        self.notify_playback(cx);
     }
 
     pub fn set_rate(&mut self, rate: f32, cx: &mut Context<Self>) {
         self.services.audio.set_rate(rate.clamp(0.5, 2.0));
         self.snapshot = self.services.audio.snapshot();
-        cx.notify();
+        self.notify_playback(cx);
     }
 
     pub fn toggle_play_mode(&mut self, cx: &mut Context<Self>) {
         self.queue.toggle_mode();
         self.persist_queue();
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     pub fn queue_download(
@@ -617,6 +741,7 @@ impl AppState {
         self.lyrics = LyricsData::default();
         self.lyrics_loading = true;
 
+        self.sync_pinned_covers();
         if !track.cover.is_empty() {
             self.ensure_cover(&track.cover, ThumbSize::Tiny, false, cx);
             if self.is_full_screen {
@@ -664,11 +789,11 @@ impl AppState {
                         state.show_toast(format!("播放任务异常: {err}"), true, cx);
                     }
                 }
-                cx.notify();
+                state.notify_ui(cx);
             });
         })
         .detach();
-        cx.notify();
+        self.notify_ui(cx);
     }
 
     fn load_lyrics_for_track(
@@ -748,7 +873,7 @@ impl AppState {
                     if let Ok(Ok(data)) = res {
                         state.lyrics = data;
                     }
-                    cx.notify();
+                    state.notify_playback(cx);
                 }
             });
         })
@@ -797,7 +922,7 @@ impl AppState {
                     Ok(Err(e)) => state.show_toast(format!("歌词加载失败: {e}"), true, cx),
                     Err(e) => state.show_toast(format!("歌词任务异常: {e}"), true, cx),
                 }
-                cx.notify();
+                state.notify_playback(cx);
             });
         })
         .detach();
@@ -863,7 +988,7 @@ impl AppState {
                     Ok(Err(e)) => state.show_toast(format!("自动对齐失败: {e}"), true, cx),
                     Err(e) => state.show_toast(format!("自动对齐任务异常: {e}"), true, cx),
                 }
-                cx.notify();
+                state.notify_playback(cx);
             });
         })
         .detach();
@@ -1010,7 +1135,7 @@ impl AppState {
                         && Instant::now() >= toast.expires_at
                     {
                         state.toast = None;
-                        cx.notify();
+                        state.notify_ui(cx);
                     }
 
                     if let Some(ended_generation) = ended_gen
@@ -1025,11 +1150,10 @@ impl AppState {
                         state.show_toast(format!("播放出错: {msg}"), true, cx);
                     }
 
-                    if playing
-                        || state.snapshot.state != prev_state
-                        || (state.snapshot.position_secs - prev_pos).abs() > 0.05
-                    {
-                        cx.notify();
+                    if state.snapshot.state != prev_state {
+                        state.notify_ui(cx);
+                    } else if playing || (state.snapshot.position_secs - prev_pos).abs() > 0.05 {
+                        state.notify_playback(cx);
                     }
                 });
 

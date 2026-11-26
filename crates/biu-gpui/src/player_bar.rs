@@ -1,21 +1,23 @@
-//! Persistent bottom player bar plus small shared player widgets
-//! (icons, icon buttons, the draggable `Slider`) reused by the full-screen
-//! player, the mini-player and the desktop-lyrics window.
+//! Persistent bottom player bar (isolated Entity so 100ms playback ticks only
+//! repaint this 82px bar and never rebuild the scrollable page tree), plus
+//! shared player primitives reused by the full-screen player, mini-player and
+//! desktop-lyrics window.
 
+use crate::image_loader::CoverKey;
 use crate::state::{ActiveModal, AppState, Route};
 use crate::theme::BiuPalette;
 use crate::widgets::{cover_box, format_duration};
 use biu_audio::PlaybackState;
-use biu_core::PlayMode;
 use biu_core::download::DownloadFormat;
 use biu_core::image_cache::ThumbSize;
+use biu_core::{PlayMode, TrackSource};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::rc::Rc;
 
-pub const PLAYER_BAR_HEIGHT: f32 = 76.0;
+pub const PLAYER_BAR_HEIGHT: f32 = 82.0;
 pub const PLAYBACK_RATES: [f32; 5] = [0.75, 1.0, 1.25, 1.5, 2.0];
 
 // ---------------------------------------------------------------------------
@@ -60,9 +62,9 @@ pub fn format_rate(rate: f32) -> String {
 pub fn play_mode_short_label(mode: PlayMode) -> &'static str {
     match mode {
         PlayMode::Loop => "列表循环",
-        PlayMode::Order => "顺序",
-        PlayMode::Single => "单曲",
-        PlayMode::Shuffle => "随机",
+        PlayMode::Order => "顺序播放",
+        PlayMode::Single => "单曲循环",
+        PlayMode::Shuffle => "随机播放",
     }
 }
 
@@ -86,6 +88,16 @@ pub fn effective_duration(engine_secs: f64, track_secs: f64) -> f64 {
     }
 }
 
+fn quality_tag(source: &TrackSource) -> Option<String> {
+    match source {
+        TrackSource::LocalFile { format, .. } if !format.is_empty() => {
+            Some(format.to_ascii_uppercase())
+        }
+        TrackSource::BiliAudio { .. } => Some("音频".into()),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared visual primitives
 // ---------------------------------------------------------------------------
@@ -98,7 +110,7 @@ pub fn icon(name: IconName, size: f32, color: Hsla) -> Svg {
         .text_color(color)
 }
 
-/// Square, rounded ghost icon button with hover state.
+/// Square, rounded ghost icon button with subtle hover state.
 pub fn icon_button(
     id: impl Into<ElementId>,
     name: IconName,
@@ -117,15 +129,15 @@ pub fn icon_button(
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .size(px(icon_size + 14.0))
-        .rounded(px(8.0))
+        .size(px(icon_size + 16.0))
+        .rounded_full()
         .cursor_pointer()
-        .hover(|s| s.bg(palette.surface_hover))
-        .active(|s| s.bg(palette.surface_active))
+        .hover(move |s| s.bg(palette.surface_hover))
+        .active(move |s| s.bg(palette.surface_active))
         .child(icon(name, icon_size, color))
 }
 
-/// Accent filled circular play/pause button.
+/// High-contrast circular play/pause button (white disc in dark mode, matching original Biu).
 pub fn play_button(
     id: impl Into<ElementId>,
     playing: bool,
@@ -145,11 +157,34 @@ pub fn play_button(
         .justify_center()
         .size(px(diameter))
         .rounded_full()
-        .bg(palette.accent)
+        .bg(palette.play_btn_bg)
+        .shadow_md()
         .cursor_pointer()
-        .hover(|s| s.opacity(0.88))
-        .active(|s| s.opacity(0.75))
-        .child(icon(glyph, diameter * 0.44, palette.accent_fg))
+        .hover(|s| s.opacity(0.90))
+        .active(|s| s.opacity(0.78))
+        .child(
+            div()
+                .when(!playing, |d| d.pl(px(1.5)))
+                .child(icon(glyph, diameter * 0.44, palette.play_btn_fg)),
+        )
+}
+
+/// Accent circular play button used on card hover overlays & action bars.
+pub fn accent_play_circle(diameter: f32, palette: BiuPalette) -> Div {
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .size(px(diameter))
+        .rounded_full()
+        .bg(palette.accent)
+        .shadow_lg()
+        .child(
+            div()
+                .pl(px(2.0))
+                .child(icon(IconName::Play, diameter * 0.45, palette.accent_fg)),
+        )
 }
 
 /// Build a click handler that runs `f` against `AppState`.
@@ -243,8 +278,13 @@ impl RenderOnce for Slider {
             (d.dragging, d.preview)
         };
         let shown = if dragging { preview } else { self.value }.clamp(0.0, 1.0);
-        let fill = self.fill.unwrap_or(self.palette.accent);
-        let track = self.palette.surface_active;
+        let fill = self.fill.unwrap_or(self.palette.text);
+        let hover_fill = self.palette.accent;
+        let track = if self.palette.dark {
+            hsla(0.0, 0.0, 1.0, 0.14)
+        } else {
+            hsla(0.0, 0.0, 0.0, 0.12)
+        };
         let group: SharedString = format!("slider-{:?}", self.id).into();
         let thumb = 12.0_f32;
         let on_change = self.on_change.clone();
@@ -275,7 +315,8 @@ impl RenderOnce for Slider {
                             .h_full()
                             .w(relative(shown))
                             .rounded_full()
-                            .bg(fill),
+                            .bg(if dragging { hover_fill } else { fill })
+                            .group_hover(group.clone(), move |s| s.bg(hover_fill)),
                     ),
             )
             .child(
@@ -287,9 +328,7 @@ impl RenderOnce for Slider {
                     .size(px(thumb))
                     .rounded_full()
                     .bg(gpui_kit::white())
-                    .border_2()
-                    .border_color(fill)
-                    .shadow_sm()
+                    .shadow_md()
                     .when(!dragging, |s| s.invisible())
                     .group_hover(group.clone(), |s| s.visible()),
             )
@@ -391,31 +430,96 @@ pub fn seek_slider(
 }
 
 // ---------------------------------------------------------------------------
-// Player bar
+// Isolated PlayerBarView Entity
 // ---------------------------------------------------------------------------
+
+pub struct PlayerBarView {
+    state: Entity<AppState>,
+    last_playback_ver: u64,
+    last_ui_ver: u64,
+    last_cover_present: bool,
+    _observe: Subscription,
+}
+
+impl PlayerBarView {
+    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let observe = cx.observe(&state, |this, state, cx| {
+            let s = state.read(cx);
+            let cover_present = s
+                .current_track()
+                .filter(|t| !t.cover.is_empty())
+                .is_some_and(|t| {
+                    s.covers
+                        .get(&CoverKey::thumb(t.cover.clone(), ThumbSize::Tiny))
+                        .is_some()
+                });
+            if this.last_playback_ver != s.playback_version
+                || this.last_ui_ver != s.ui_version
+                || this.last_cover_present != cover_present
+            {
+                this.last_playback_ver = s.playback_version;
+                this.last_ui_ver = s.ui_version;
+                this.last_cover_present = cover_present;
+                cx.notify();
+            }
+        });
+        let s = state.read(cx);
+        Self {
+            last_playback_ver: s.playback_version,
+            last_ui_ver: s.ui_version,
+            last_cover_present: false,
+            state,
+            _observe: observe,
+        }
+    }
+}
+
+impl Render for PlayerBarView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = self.state.read(cx).palette(window);
+        render_player_bar(&self.state, palette, window, cx)
+    }
+}
 
 pub fn render_player_bar(
     state: &Entity<AppState>,
     palette: BiuPalette,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let cover_url = state
-        .read(cx)
-        .current_track()
-        .map(|t| t.cover.clone())
-        .unwrap_or_default();
-    let cover = if cover_url.is_empty() {
-        None
-    } else {
-        state.update(cx, |s, cx| {
-            s.ensure_cover(&cover_url, ThumbSize::Tiny, false, cx)
-        })
+    let (track, cover, missing_cover, snap, mode, queue_len, full_screen) = {
+        let s = state.read(cx);
+        let track = s.current_track().cloned();
+        let cover_url = track.as_ref().map(|t| t.cover.clone()).unwrap_or_default();
+        let mut missing = None;
+        let cover = if cover_url.is_empty() {
+            None
+        } else {
+            let key = CoverKey::thumb(cover_url.clone(), ThumbSize::Tiny);
+            let img = s.covers.get(&key);
+            if img.is_none() && s.covers.should_fetch(&key) {
+                missing = Some(cover_url);
+            }
+            img
+        };
+        (
+            track,
+            cover,
+            missing,
+            s.snapshot.clone(),
+            s.queue.mode(),
+            s.queue.len(),
+            s.is_full_screen,
+        )
     };
-
-    let s = state.read(cx);
-    let track = s.current_track().cloned();
-    let snap = s.snapshot.clone();
+    if let Some(url) = missing_cover {
+        let st = state.clone();
+        window.defer(cx, move |_, cx| {
+            st.update(cx, |s, cx| {
+                s.ensure_cover(&url, ThumbSize::Tiny, false, cx);
+            });
+        });
+    }
     let duration = effective_duration(
         snap.duration_secs,
         track.as_ref().map(|t| t.duration_secs).unwrap_or(0.0),
@@ -424,12 +528,9 @@ pub fn render_player_bar(
         .position_secs
         .min(if duration > 0.0 { duration } else { f64::MAX });
     let playing = is_playing(snap.state);
-    let mode = s.queue.mode();
-    let queue_len = s.queue.len();
-    let full_screen = s.is_full_screen;
     let has_track = track.is_some();
 
-    // -- Left: cover + meta + fav/download ---------------------------------
+    // -- Left: album art + title + quality badge + artist ------------------
     let title: SharedString = track
         .as_ref()
         .map(|t| t.title.clone())
@@ -438,9 +539,10 @@ pub fn render_player_bar(
     let artist: SharedString = track
         .as_ref()
         .map(|t| t.artist.clone())
-        .unwrap_or_else(|| "选一首歌开始播放".into())
+        .unwrap_or_else(|| "挑选一首歌开始聆听".into())
         .into();
     let artist_mid = track.as_ref().and_then(|t| t.artist_mid);
+    let badge = track.as_ref().and_then(|t| quality_tag(&t.source));
 
     let mut artist_el = div()
         .id("pb-artist")
@@ -452,7 +554,7 @@ pub fn render_player_bar(
         let name = artist.to_string();
         artist_el = artist_el
             .cursor_pointer()
-            .hover(|s| s.text_color(palette.accent))
+            .hover(move |s| s.text_color(palette.text))
             .on_click(on_state(state, move |s, cx| {
                 s.navigate(
                     Route::UserProfile {
@@ -465,7 +567,7 @@ pub fn render_player_bar(
     }
 
     let left = div()
-        .w(px(260.0))
+        .w(px(280.0))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -473,15 +575,32 @@ pub fn render_player_bar(
         .child(
             div()
                 .id("pb-cover")
+                .group("pb-cover-grp")
+                .relative()
                 .cursor_pointer()
-                .rounded(px(8.0))
-                .hover(|s| s.opacity(0.85))
+                .rounded(px(10.0))
+                .shadow_md()
                 .on_click(on_state(state, |s, cx| {
                     if s.current_track().is_some() {
                         s.toggle_full_screen(cx)
                     }
                 }))
-                .child(cover_box(cover, px(48.0), px(48.0), px(8.0), palette)),
+                .child(cover_box(cover, px(52.0), px(52.0), px(10.0), palette))
+                .when(has_track, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .rounded(px(10.0))
+                            .bg(hsla(0.0, 0.0, 0.0, 0.45))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .invisible()
+                            .group_hover("pb-cover-grp", |s| s.visible())
+                            .child(icon(IconName::Maximize2, 16.0, gpui_kit::white())),
+                    )
+                }),
         )
         .child(
             div()
@@ -489,47 +608,42 @@ pub fn render_player_bar(
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(2.0))
+                .gap(px(3.0))
                 .child(
                     div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(palette.text)
-                        .truncate()
-                        .child(title),
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette.text)
+                                .truncate()
+                                .child(title),
+                        )
+                        .when_some(badge, |row, tag| {
+                            row.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .px_1p5()
+                                    .py(px(1.0))
+                                    .rounded(px(4.0))
+                                    .bg(palette.surface_elevated)
+                                    .text_size(px(10.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette.text_muted)
+                                    .child(tag),
+                            )
+                        }),
                 )
                 .child(artist_el),
-        )
-        .when_some(track.clone(), |row, t| {
-            let fav_track = t.clone();
-            let dl_track = t;
-            row.child(
-                icon_button("pb-fav", IconName::Heart, 16.0, palette, false).on_click(on_state(
-                    state,
-                    move |s, cx| {
-                        if s.user.is_none() {
-                            s.open_modal(ActiveModal::Login, cx);
-                        } else {
-                            s.open_modal(
-                                ActiveModal::FavSelect {
-                                    track: fav_track.clone(),
-                                },
-                                cx,
-                            );
-                        }
-                    },
-                )),
-            )
-            .child(
-                icon_button("pb-download", IconName::Download, 16.0, palette, false).on_click(
-                    on_state(state, move |s, cx| {
-                        s.queue_download(dl_track.clone(), DownloadFormat::Native, cx)
-                    }),
-                ),
-            )
-        });
+        );
 
-    // -- Center: transport + seek ------------------------------------------
+    // -- Center: transport + sleek seek bar --------------------------------
     let center = div()
         .flex_1()
         .min_w_0()
@@ -538,32 +652,34 @@ pub fn render_player_bar(
         .items_center()
         .justify_center()
         .gap(px(4.0))
-        .px_4()
+        .px_6()
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap_3()
                 .child(
-                    icon_button("pb-prev", IconName::SkipBack, 18.0, palette, false)
+                    icon_button("pb-prev", IconName::SkipBack, 17.0, palette, false)
+                        .tip("上一首")
                         .on_click(on_state(state, |s, cx| s.prev_track(cx))),
                 )
                 .child(
-                    play_button("pb-play", playing, 36.0, palette)
+                    play_button("pb-play", playing, 38.0, palette)
                         .on_click(on_state(state, |s, cx| s.toggle_play(cx))),
                 )
                 .child(
-                    icon_button("pb-next", IconName::SkipForward, 18.0, palette, false)
+                    icon_button("pb-next", IconName::SkipForward, 17.0, palette, false)
+                        .tip("下一首")
                         .on_click(on_state(state, |s, cx| s.next_track(false, cx))),
                 ),
         )
         .child(
             div()
                 .w_full()
-                .max_w(px(560.0))
+                .max_w(px(620.0))
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap_2p5()
                 .child(time_label(position, palette))
                 .child(
                     div()
@@ -573,7 +689,7 @@ pub fn render_player_bar(
                 .child(time_label(duration, palette)),
         );
 
-    // -- Right: mode / rate / volume / queue / expand ----------------------
+    // -- Right: mode / fav / download / queue / volume / rate / expand -----
     let vol_icon = if snap.muted || snap.volume <= 0.001 {
         IconName::VolumeX
     } else if snap.volume < 0.5 {
@@ -583,17 +699,17 @@ pub fn render_player_bar(
     };
 
     let right = div()
-        .w(px(240.0))
+        .w(px(280.0))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_end()
-        .gap_1()
+        .gap_0p5()
         .child(
             icon_button(
                 "pb-mode",
                 play_mode_icon(mode),
-                16.0,
+                15.0,
                 palette,
                 mode != PlayMode::Order,
             )
@@ -604,19 +720,49 @@ pub fn render_player_bar(
                 s.show_toast(label, false, cx);
             })),
         )
-        .child(rate_chip("pb-rate", state, snap.rate, palette))
+        .when_some(track.clone(), |row, t| {
+            let fav_track = t.clone();
+            let dl_track = t;
+            row.child(
+                icon_button("pb-fav", IconName::Star, 15.0, palette, false)
+                    .tip("收藏到收藏夹")
+                    .on_click(on_state(state, move |s, cx| {
+                        if s.user.is_none() {
+                            s.open_modal(ActiveModal::Login, cx);
+                        } else {
+                            s.open_modal(
+                                ActiveModal::FavSelect {
+                                    track: fav_track.clone(),
+                                },
+                                cx,
+                            );
+                        }
+                    })),
+            )
+            .child(
+                icon_button("pb-download", IconName::Download, 15.0, palette, false)
+                    .tip("下载音频")
+                    .on_click(on_state(state, move |s, cx| {
+                        let runtime = s.services.rt.handle().clone();
+                        let _guard = runtime.enter();
+                        s.queue_download(dl_track.clone(), DownloadFormat::Native, cx)
+                    })),
+            )
+        })
+        .child(queue_button("pb-queue", state, queue_len, palette))
         .child(
-            icon_button("pb-mute", vol_icon, 16.0, palette, false)
+            icon_button("pb-mute", vol_icon, 15.0, palette, false)
+                .tip(if snap.muted { "取消静音" } else { "静音" })
                 .on_click(on_state(state, |s, cx| s.toggle_mute(cx))),
         )
-        .child(div().w(px(64.0)).child(volume_slider_with(
+        .child(div().w(px(64.0)).mx_0p5().child(volume_slider_with(
             "pb-volume",
             state,
             snap.volume,
             snap.muted,
             palette,
         )))
-        .child(queue_button("pb-queue", state, queue_len, palette))
+        .child(rate_chip("pb-rate", state, snap.rate, palette))
         .child(
             icon_button(
                 "pb-expand",
@@ -625,11 +771,12 @@ pub fn render_player_bar(
                 } else {
                     IconName::Maximize2
                 },
-                15.0,
+                14.0,
                 palette,
                 full_screen,
             )
-            .when(!has_track, |b| b.opacity(0.4))
+            .tip("全屏歌词")
+            .when(!has_track, |b| b.opacity(0.35))
             .on_click(on_state(state, |s, cx| {
                 if s.current_track().is_some() || s.is_full_screen {
                     s.toggle_full_screen(cx)
@@ -646,7 +793,7 @@ pub fn render_player_bar(
         .items_center()
         .px_4()
         .gap_2()
-        .bg(palette.sidebar_bg)
+        .bg(palette.bar_bg)
         .border_t_1()
         .border_color(palette.border)
         .child(left)
@@ -658,7 +805,7 @@ pub fn render_player_bar(
 pub fn time_label(secs: f64, palette: BiuPalette) -> Div {
     div()
         .flex_shrink_0()
-        .min_w(px(40.0))
+        .min_w(px(38.0))
         .text_xs()
         .text_color(palette.text_dim)
         .text_center()
@@ -699,12 +846,12 @@ pub fn rate_chip(
         .id(id)
         .flex_shrink_0()
         .h(px(24.0))
-        .min_w(px(40.0))
+        .min_w(px(34.0))
         .px_1p5()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(6.0))
+        .rounded_full()
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(if non_default {
@@ -713,7 +860,7 @@ pub fn rate_chip(
             palette.text_muted
         })
         .cursor_pointer()
-        .hover(|s| s.bg(palette.surface_hover))
+        .hover(move |s| s.bg(palette.surface_hover))
         .child(format_rate(rate))
         .on_click(on_state(state, |s, cx| {
             let next = next_playback_rate(s.snapshot.rate);
@@ -732,16 +879,17 @@ pub fn queue_button(
     } else {
         count.to_string()
     };
-    icon_button(id, IconName::ListMusic, 16.0, palette, false)
+    icon_button(id, IconName::ListMusic, 15.0, palette, false)
+        .tip("播放列表")
         .relative()
         .when(count > 0, |b| {
             b.child(
                 div()
                     .absolute()
-                    .top(px(-2.0))
-                    .right(px(-4.0))
-                    .min_w(px(16.0))
-                    .h(px(14.0))
+                    .top(px(1.0))
+                    .right(px(0.0))
+                    .min_w(px(15.0))
+                    .h(px(13.0))
                     .px(px(3.0))
                     .rounded_full()
                     .bg(palette.accent)
@@ -796,12 +944,5 @@ mod tests {
         assert_eq!(format_rate(1.25), "1.25x");
         assert_eq!(format_rate(1.5), "1.5x");
         assert_eq!(format_rate(0.75), "0.75x");
-    }
-
-    #[test]
-    fn duration_falls_back_to_metadata() {
-        assert_eq!(effective_duration(0.0, 200.0), 200.0);
-        assert_eq!(effective_duration(180.0, 200.0), 180.0);
-        assert_eq!(effective_duration(f64::NAN, 0.0), 0.0);
     }
 }

@@ -14,7 +14,30 @@ mod widgets;
 use crate::state::{AppState, Services};
 use crate::system::GlobalAppState;
 use gpui_kit::*;
+use std::borrow::Cow;
 use std::sync::Arc;
+
+pub const BIU_LOGO_SVG: &str = "icons/biu-logo.svg";
+const BIU_LOGO_BYTES: &[u8] = include_bytes!("../../../src/assets/icons/logo.svg");
+
+struct BiuAssets;
+
+impl AssetSource for BiuAssets {
+    fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
+        if path == BIU_LOGO_SVG {
+            return Ok(Some(Cow::Borrowed(BIU_LOGO_BYTES)));
+        }
+        gpui_kit::assets::AllAssets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
+        let mut items = gpui_kit::assets::AllAssets.list(path)?;
+        if BIU_LOGO_SVG.starts_with(path) {
+            items.push(BIU_LOGO_SVG.into());
+        }
+        Ok(items)
+    }
+}
 
 fn main() {
     let _ = tracing_subscriber::fmt()
@@ -26,7 +49,7 @@ fn main() {
 
     let services = Arc::new(Services::new().expect("failed to initialize Biu services"));
 
-    let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+    let app = gpui_kit::application().with_assets(BiuAssets);
 
     // macOS dock click while the main window is closed to the tray.
     app.on_reopen(|cx| {

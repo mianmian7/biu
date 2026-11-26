@@ -471,7 +471,12 @@ impl BiliClient {
     }
 
     async fn get(&self, base: &str, path: &str, params: Value, wbi: bool) -> Result<Value> {
-        self.refresh_session_cookies().await;
+        if wbi && (self.get_cookie("buvid3").is_none() || self.get_cookie("bili_ticket").is_none())
+        {
+            self.inject_auth_cookies().await;
+        } else {
+            self.refresh_session_cookies().await;
+        }
         let query = if wbi {
             self.signed(&params).await?
         } else {

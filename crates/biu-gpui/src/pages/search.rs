@@ -3,7 +3,7 @@ use biu_core::{FollowingUser, SearchResult};
 use std::time::Duration;
 
 const ORDERS: [(&str, &str); 4] = [
-    ("totalrank", "综合"),
+    ("totalrank", "综合排序"),
     ("click", "最多播放"),
     ("pubdate", "最新发布"),
     ("stow", "最多收藏"),
@@ -40,7 +40,7 @@ impl PagesHost {
                 input.update(cx, |input, cx| input.set_value(query, window, cx));
             }
         } else {
-            let input = new_input("搜索视频或 UP 主", query, window, cx);
+            let input = new_input("搜索视频、音乐或 UP 主…", query, window, cx);
             cx.subscribe_in(
                 &input,
                 window,
@@ -100,7 +100,7 @@ impl PagesHost {
             cx.notify();
             return;
         }
-        self.load(
+        self.load_with(
             |h| &mut h.data.search.results,
             move |s| async move {
                 if users {
@@ -113,75 +113,233 @@ impl PagesHost {
                     )))
                 }
             },
+            |this, res, cx| match res {
+                Results::Videos(items) => this.prefetch_tracks(&items.items, cx),
+                Results::Users(items) => {
+                    let covers = items
+                        .items
+                        .iter()
+                        .take(30)
+                        .filter(|u| !u.face.is_empty())
+                        .map(|u| (u.face.clone(), ThumbSize::Tiny))
+                        .collect();
+                    this.prefetch_covers(covers, cx);
+                }
+            },
             cx,
         );
     }
 
-    pub(super) fn search_view(&self, p: BiuPalette, cx: &Context<Self>) -> Div {
+    pub(super) fn search_view(
+        &self,
+        p: BiuPalette,
+        content_width: f32,
+        cx: &Context<Self>,
+    ) -> Div {
         let search = &self.data.search;
-        let mut root = page("搜索");
+        let state = self.state.read(cx);
+        let grid = is_grid_mode(state);
+
+        let mut root = page("搜索发现");
         if let Some(input) = &search.input {
             let value = input.clone();
             root = root.child(
-                toolbar()
-                    .child(div().w(px(280.)).child(Input::new(input)))
-                    .child(button("submit-search", "搜索", p).on_click(cx.listener(
-                        move |this, _, window, cx| {
-                            this.submit_search(
-                                normalize_query(&value.read(cx).value()),
-                                window,
-                                cx,
-                            );
-                        },
-                    ))),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2p5()
+                    .child(
+                        div()
+                            .w(px(380.0))
+                            .max_w_full()
+                            .h(px(40.0))
+                            .px_4()
+                            .rounded_full()
+                            .bg(p.surface)
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(icon(IconName::Search, 16.0, p.text_dim))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .child(Input::new(input).appearance(false).cleanable(true)),
+                            ),
+                    )
+                    .child(
+                        primary_button("submit-search", IconName::Search, "搜索", p).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.submit_search(
+                                    normalize_query(&value.read(cx).value()),
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        ),
+                    ),
             );
         }
-        if let Some(Ok(suggestions)) = &search.suggestions.result {
+
+        if let Some(Ok(suggestions)) = &search.suggestions.result
+            && !suggestions.is_empty()
+        {
             root = root.child(div().id("suggestions").child(chips(suggestions, p, cx)));
         }
-        let state = self.state.read(cx);
+
         if state.settings.show_search_history && !state.search_history.is_empty() {
             root = root.child(
                 div().id("search-history").child(
                     column()
-                        .child(toolbar().child("搜索历史").child(state_button(
-                            &self.state,
-                            "clear-history",
-                            "清空历史",
-                            p,
-                            AppState::clear_search_history,
-                        )))
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(p.text_dim)
+                                        .child("最近搜索"),
+                                )
+                                .child(
+                                    div()
+                                        .id("clear-history")
+                                        .text_xs()
+                                        .text_color(p.text_dim)
+                                        .cursor_pointer()
+                                        .hover(move |s| s.text_color(p.text))
+                                        .child("清空")
+                                        .on_click({
+                                            let st = self.state.clone();
+                                            move |_, _, cx| {
+                                                st.update(cx, AppState::clear_search_history)
+                                            }
+                                        }),
+                                ),
+                        )
                         .child(chips(&state.search_history, p, cx)),
                 ),
             );
         }
-        root = root.child(
-            toolbar().children([(false, "视频"), (true, "UP 主")].into_iter().map(
-                |(users, title)| {
-                    button(title, title, p)
-                        .when(users == search.users, |b| b.border_color(p.accent))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.data.search.users = users;
-                            this.load_search(1, cx);
-                        }))
-                },
-            )),
-        );
-        if !search.users {
-            root = root.child(toolbar().children(ORDERS.iter().enumerate().map(
-                |(index, &(id, title))| {
-                    button(id, title, p)
-                        .when(index == search.order, |b| b.border_color(p.accent))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.data.search.order = index;
-                            this.load_search(1, cx);
-                        }))
-                },
-            )));
-        }
+
+        let controls = div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .p(px(3.0))
+                            .rounded(px(10.0))
+                            .bg(p.surface)
+                            .children([(false, "视频"), (true, "UP 主")].into_iter().map(
+                                |(users, title)| {
+                                    let active = users == search.users;
+                                    div()
+                                        .id(title)
+                                        .h(px(28.0))
+                                        .px_3p5()
+                                        .rounded(px(7.0))
+                                        .flex()
+                                        .items_center()
+                                        .text_xs()
+                                        .font_weight(if active {
+                                            FontWeight::SEMIBOLD
+                                        } else {
+                                            FontWeight::MEDIUM
+                                        })
+                                        .text_color(if active { p.text } else { p.text_muted })
+                                        .cursor_pointer()
+                                        .when(active, |d| d.bg(p.surface_active))
+                                        .when(!active, |d| {
+                                            d.hover(move |s| s.text_color(p.text))
+                                        })
+                                        .child(title)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.data.search.users = users;
+                                            this.load_search(1, cx);
+                                        }))
+                                },
+                            )),
+                    )
+                    .when(!search.users, |bar| {
+                        bar.child(toolbar().children(ORDERS.iter().enumerate().map(
+                            |(index, &(id, title))| {
+                                let active = index == search.order;
+                                div()
+                                    .id(id)
+                                    .h(px(28.0))
+                                    .px_3()
+                                    .rounded_full()
+                                    .flex()
+                                    .items_center()
+                                    .text_xs()
+                                    .font_weight(if active {
+                                        FontWeight::SEMIBOLD
+                                    } else {
+                                        FontWeight::NORMAL
+                                    })
+                                    .text_color(if active { p.accent } else { p.text_muted })
+                                    .bg(if active {
+                                        p.accent_soft
+                                    } else {
+                                        gpui_kit::transparent_black()
+                                    })
+                                    .cursor_pointer()
+                                    .when(!active, |d| {
+                                        d.hover(move |s| s.bg(p.surface_hover).text_color(p.text))
+                                    })
+                                    .child(title)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.data.search.order = index;
+                                        this.load_search(1, cx);
+                                    }))
+                            },
+                        )))
+                    }),
+            )
+            .when(!search.users, |bar| {
+                bar.child(display_mode_toggle(
+                    &self.state,
+                    grid,
+                    p,
+                    |this, _, cx| {
+                        if let Some(Ok(Results::Videos(v))) =
+                            this.data.search.results.result.as_ref()
+                        {
+                            let items = v.items.clone();
+                            this.prefetch_tracks(&items, cx);
+                        }
+                    },
+                    cx,
+                ))
+            });
+
+        root = root.child(controls);
+
         if search.query.is_empty() {
-            return root.child(empty_state("输入关键词开始搜索", "", p));
+            return root.child(empty_state(
+                "输入关键词开始探索",
+                "支持按歌名、歌手、BV 号或 UP 主搜索",
+                p,
+            ));
         }
+
         root.child(search.results.content(
             p,
             button("retry", "重试", p).on_click(cx.listener(|this, _, _, cx| {
@@ -191,18 +349,36 @@ impl PagesHost {
                 let go = page_change(cx, Self::load_search);
                 match result {
                     Results::Videos(items) => column()
-                        .child(track_list(&self.state, &items.items, p, cx))
+                        .gap_4()
+                        .child(track_collection(
+                            &self.state,
+                            &items.items,
+                            content_width,
+                            p,
+                            cx,
+                        ))
                         .child(pager(items, search.page, p, go)),
                     Results::Users(items) => column()
+                        .gap_2()
                         .when(items.items.is_empty(), |c| {
                             c.child(empty_state("没有找到 UP 主", "", p))
                         })
                         .children(items.items.iter().enumerate().map(|(i, user)| {
+                            let route = Route::UserProfile {
+                                mid: user.mid,
+                                name: user.name.clone(),
+                            };
+                            let st = self.state.clone();
                             div()
-                                .id(i)
-                                .p_2()
-                                .rounded(p.radius)
+                                .id(("search-user", i))
+                                .p_3()
+                                .rounded(px(12.0))
                                 .bg(p.surface)
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(p.surface_hover))
+                                .on_click(move |_, _, cx| {
+                                    st.update(cx, |s, cx| s.navigate(route.clone(), cx))
+                                })
                                 .child(user_row(&self.state, user, p, cx))
                         }))
                         .child(pager(items, search.page, p, go)),
@@ -215,9 +391,22 @@ impl PagesHost {
 fn chips(items: &[String], p: BiuPalette, cx: &Context<PagesHost>) -> Div {
     toolbar().children(items.iter().enumerate().map(|(i, term)| {
         let term = term.clone();
-        button(i, term.clone(), p).on_click(
-            cx.listener(move |this, _, window, cx| this.submit_search(term.clone(), window, cx)),
-        )
+        div()
+            .id(("chip", i))
+            .h(px(28.0))
+            .px_3()
+            .rounded_full()
+            .bg(p.surface)
+            .flex()
+            .items_center()
+            .text_xs()
+            .text_color(p.text_muted)
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.surface_hover).text_color(p.text))
+            .child(term.clone())
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.submit_search(term.clone(), window, cx)
+            }))
     }))
 }
 

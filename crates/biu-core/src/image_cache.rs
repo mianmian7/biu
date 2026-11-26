@@ -13,9 +13,9 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use url::Url;
 
-const MAX_MEMORY_ENTRIES: usize = 48;
-const MAX_MEMORY_BYTES: usize = 16 * 1024 * 1024;
-const MAX_DISK_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_MEMORY_ENTRIES: usize = 96;
+const MAX_MEMORY_BYTES: usize = 24 * 1024 * 1024;
+const MAX_DISK_BYTES: u64 = 120 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 12 * 1024 * 1024;
 const BLUR_WIDTH: usize = 240;
 const BLUR_HEIGHT: usize = 135;
@@ -143,7 +143,7 @@ impl ImageCache {
                 bytes: 0,
             }),
             disk: AsyncMutex::new(()),
-            fills: Semaphore::new(2),
+            fills: Semaphore::new(6),
         })
     }
 
@@ -432,14 +432,14 @@ mod tests {
             bytes: 0,
         };
         let large = Arc::new(RgbaImage::new(960, 720));
-        for i in 0..8 {
+        for i in 0..12 {
             lru.insert(i.to_string(), Arc::new((*large).clone()));
         }
-        assert_eq!(lru.entries.len(), 6);
+        assert_eq!(lru.entries.len(), 9);
         assert!(lru.bytes <= MAX_MEMORY_BYTES);
         assert!(lru.get("0").is_none());
         let small = Arc::new(RgbaImage::new(1, 1));
-        for i in 8..60 {
+        for i in 12..130 {
             lru.insert(i.to_string(), small.clone());
         }
         assert_eq!(lru.entries.len(), MAX_MEMORY_ENTRIES);

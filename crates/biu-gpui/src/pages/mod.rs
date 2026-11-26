@@ -11,13 +11,16 @@ mod settings;
 mod user_profile;
 
 use crate::image_loader::CoverKey;
+use crate::player_bar::{TooltipExt, accent_play_circle, icon, is_playing};
 use crate::state::{ActiveModal, AppState, Route, Services};
 use crate::theme::BiuPalette;
-use crate::widgets::{cover_box, empty_state, format_duration};
+use crate::widgets::{cover_box, empty_state, fluid_cover, format_duration};
 use biu_core::download::DownloadFormat;
 use biu_core::image_cache::ThumbSize;
 use biu_core::{Page, TrackItem, TrackSource};
+use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::future::Future;
@@ -45,12 +48,31 @@ pub struct PagesHost {
     epoch: u64,
     mutating: bool,
     collecting: Option<Task<()>>,
+    scroll_handle: ScrollHandle,
+    last_ui_ver: u64,
+    last_covers_ver: u64,
     data: PageData,
 }
 
 impl PagesHost {
     pub fn new(state: Entity<AppState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        cx.observe(&state, |_, _, cx| cx.notify()).detach();
+        let (init_ui, init_covers) = {
+            let s = state.read(cx);
+            (s.ui_version, s.covers_version())
+        };
+        // Only repaint PagesHost when UI state or cover cache changes;
+        // completely ignore 100ms playback progress ticks so scrolling stays 120 FPS!
+        cx.observe(&state, |this, state, cx| {
+            let s = state.read(cx);
+            let ui_ver = s.ui_version;
+            let covers_ver = s.covers_version();
+            if this.last_ui_ver != ui_ver || this.last_covers_ver != covers_ver {
+                this.last_ui_ver = ui_ver;
+                this.last_covers_ver = covers_ver;
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             state,
             route: None,
@@ -58,8 +80,38 @@ impl PagesHost {
             epoch: 0,
             mutating: false,
             collecting: None,
+            scroll_handle: ScrollHandle::new(),
+            last_ui_ver: init_ui,
+            last_covers_ver: init_covers,
             data: PageData::default(),
         }
+    }
+
+    pub(super) fn prefetch_covers(
+        &self,
+        items: Vec<(String, ThumbSize)>,
+        cx: &mut Context<Self>,
+    ) {
+        if items.is_empty() {
+            return;
+        }
+        self.state
+            .update(cx, |s, cx| s.prefetch_covers(items, cx));
+    }
+
+    pub(super) fn prefetch_tracks(&self, tracks: &[TrackItem], cx: &mut Context<Self>) {
+        let size = if is_grid_mode(self.state.read(cx)) {
+            ThumbSize::Card
+        } else {
+            ThumbSize::Tiny
+        };
+        let items = tracks
+            .iter()
+            .take(48)
+            .filter(|t| !t.cover.is_empty())
+            .map(|t| (t.cover.clone(), size))
+            .collect();
+        self.prefetch_covers(items, cx);
     }
 
     fn enter(
@@ -86,13 +138,14 @@ impl PagesHost {
             self.data = PageData::default();
         }
         self.epoch = self.epoch.wrapping_add(1);
+        self.scroll_handle = ScrollHandle::new();
         self.mutating = false;
         self.collecting = None;
         self.account = account;
         self.route = Some(route.clone());
 
         match route {
-            Route::MusicRecommend => self.load_recommend(cx),
+            Route::MusicRecommend => self.enter_recommend(cx),
             Route::Search { query } => self.enter_search(&query, window, cx),
             Route::Collection { .. } => self.enter_collection(window, cx),
             Route::Later => self.load_later(1, cx),
@@ -116,6 +169,20 @@ impl PagesHost {
         F: FnOnce(Arc<Services>) -> Fut + Send + 'static,
         Fut: Future<Output = anyhow::Result<T>> + Send + 'static,
     {
+        self.load_with(slot, fetch, |_, _, _| {}, cx);
+    }
+
+    fn load_with<T, F, Fut>(
+        &mut self,
+        slot: fn(&mut Self) -> &mut Load<T>,
+        fetch: F,
+        on_ready: fn(&mut Self, &T, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) where
+        T: Send + 'static,
+        F: FnOnce(Arc<Services>) -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<T>> + Send + 'static,
+    {
         let services = self.state.read(cx).services.clone();
         let slot_state = slot(self);
         slot_state.result = None;
@@ -123,6 +190,9 @@ impl PagesHost {
             let runtime = services.rt.handle().clone();
             let result = run_on(&runtime, async move { fetch(services).await }).await;
             let _ = this.update(cx, |this, cx| {
+                if let Ok(ref value) = result {
+                    on_ready(this, value, cx);
+                }
                 slot(this).result = Some(result);
                 cx.notify();
             });
@@ -259,7 +329,7 @@ impl PagesHost {
         }
         toolbar()
             .child(
-                button("play-all", "播放全部", p)
+                primary_button("play-all", IconName::Play, "播放全部", p)
                     .on_click(cx.listener(move |this, _, _, cx| collect(this, false, cx))),
             )
             .child(
@@ -269,44 +339,78 @@ impl PagesHost {
     }
 
     fn login_hint(&self, p: BiuPalette) -> Div {
-        empty_state("请先登录", "登录后可以查看账号内容", p).child(state_button(
-            &self.state,
-            "login",
-            "扫码登录",
-            p,
-            |s, cx| s.open_modal(ActiveModal::Login, cx),
-        ))
+        empty_state("请先登录 B 站账号", "登录后即可同步收藏夹、关注与历史记录", p).child(
+            div().mt_2().child(
+                primary_button("login", IconName::User, "扫码登录", p).on_click({
+                    let state = self.state.clone();
+                    move |_, _, cx| state.update(cx, |s, cx| s.open_modal(ActiveModal::Login, cx))
+                }),
+            ),
+        )
     }
 }
 
 impl Render for PagesHost {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read(cx);
-        let p = state.palette(window);
-        let route = state.route.clone();
-        let account = state.user.as_ref().map(|user| user.mid);
+        let (p, route, account, sidebar_collapsed) = {
+            let state = self.state.read(cx);
+            (
+                state.palette(window),
+                state.route.clone(),
+                state.user.as_ref().map(|user| user.mid),
+                state.sidebar_collapsed,
+            )
+        };
+        let viewport_w = f32::from(window.viewport_size().width);
+        let sidebar_w = if sidebar_collapsed {
+            crate::shell::SIDEBAR_COLLAPSED
+        } else {
+            crate::shell::SIDEBAR_EXPANDED
+        };
+        let content_width = (viewport_w - sidebar_w - 56.0).max(480.0);
+
         self.enter(route.clone(), account, window, cx);
         let content = match route {
-            Route::MusicRecommend => self.recommend_view(p, cx),
-            Route::Search { .. } => self.search_view(p, cx),
-            Route::Collection { .. } => self.collection_view(p, cx),
-            Route::Later => self.later_view(p, cx),
+            Route::MusicRecommend => self.recommend_view(p, content_width, cx),
+            Route::Search { .. } => self.search_view(p, content_width, cx),
+            Route::Collection { .. } => self.collection_view(p, content_width, cx),
+            Route::Later => self.later_view(p, content_width, cx),
             Route::History => self.history_view(p, cx),
             Route::FollowList => self.follows_view(p, cx),
-            Route::DynamicFeed => self.dynamics_view(p, cx),
-            Route::UserProfile { .. } => self.profile_view(p, cx),
+            Route::DynamicFeed => self.dynamics_view(p, content_width, cx),
+            Route::UserProfile { .. } => self.profile_view(p, content_width, cx),
             Route::LocalMusic => self.local_view(p, cx),
             Route::DownloadList => self.downloads_view(p, cx),
             Route::Settings => self.settings_view(p, cx),
         };
-        div().size_full().min_h_0().text_color(p.text).child(
+
+        div().relative().size_full().min_h_0().text_color(p.text).child(
             div()
                 .id(("content-page", self.epoch as usize))
                 .size_full()
                 .overflow_y_scroll()
-                .child(content),
+                .track_scroll(&self.scroll_handle)
+                .child(content)
+                .vertical_scrollbar(&self.scroll_handle),
         )
     }
+}
+
+pub(super) fn grid_columns_for_width(content_width: f32) -> usize {
+    if content_width >= 1180.0 {
+        5
+    } else if content_width >= 880.0 {
+        4
+    } else if content_width >= 620.0 {
+        3
+    } else {
+        2
+    }
+}
+
+pub(super) fn is_grid_mode(state: &AppState) -> bool {
+    let mode = state.settings.display_mode.as_str();
+    mode == "grid" || mode == "card"
 }
 
 struct Load<T> {
@@ -331,18 +435,35 @@ impl<T> Load<T> {
         ready: impl FnOnce(&T) -> Div,
     ) -> Div {
         match &self.result {
-            None => empty_state("加载中…", "", p),
+            None => loading_state(p),
             Some(Err(error)) => empty_state("加载失败", error.clone(), p).child(retry),
             Some(Ok(value)) => ready(value),
         }
     }
 }
 
+fn loading_state(p: BiuPalette) -> Div {
+    div()
+        .w_full()
+        .py_16()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_3()
+        .child(icon(IconName::LoaderCircle, 24.0, p.accent))
+        .child(
+            div()
+                .text_sm()
+                .text_color(p.text_muted)
+                .child("正在加载内容…"),
+        )
+}
+
 pub(crate) async fn run_on<T: Send + 'static>(
     runtime: &tokio::runtime::Handle,
     future: impl Future<Output = anyhow::Result<T>> + Send + 'static,
 ) -> Result<T, String> {
-    // Dropping a route or modal also cancels its pending network requests.
     struct Abort(tokio::task::AbortHandle);
     impl Drop for Abort {
         fn drop(&mut self) {
@@ -385,12 +506,48 @@ pub(crate) fn toolbar() -> Div {
 }
 
 fn page(title: impl Into<SharedString>) -> Div {
-    column().w_full().gap_4().p_6().child(
-        div()
-            .text_2xl()
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(title.into()),
-    )
+    let title: SharedString = title.into();
+    let has_title = !title.is_empty();
+    column()
+        .w_full()
+        .gap_5()
+        .px_7()
+        .pt_2()
+        .pb_8()
+        .when(has_title, |d| {
+            d.child(
+                div()
+                    .text_2xl()
+                    .font_weight(FontWeight::BOLD)
+                    .child(title),
+            )
+        })
+}
+
+pub(crate) fn primary_button(
+    id: impl Into<ElementId>,
+    ico: IconName,
+    label: impl Into<SharedString>,
+    p: BiuPalette,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(34.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .rounded_full()
+        .bg(p.accent)
+        .px_4()
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(p.accent_fg)
+        .cursor_pointer()
+        .hover(|s| s.opacity(0.90))
+        .active(|s| s.opacity(0.80))
+        .child(icon(ico, 15.0, p.accent_fg))
+        .child(label.into())
 }
 
 pub(crate) fn button(
@@ -400,18 +557,67 @@ pub(crate) fn button(
 ) -> Stateful<Div> {
     div()
         .id(id)
+        .h(px(34.0))
         .flex_shrink_0()
-        .rounded(p.radius)
-        .border_1()
-        .border_color(p.border)
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
         .bg(p.surface)
-        .px_3()
-        .py_1()
+        .px_3p5()
         .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.text)
         .cursor_pointer()
         .hover(move |style| style.bg(p.surface_hover))
         .active(move |style| style.bg(p.surface_active))
         .child(label.into())
+}
+
+pub(crate) fn icon_pill_button(
+    id: impl Into<ElementId>,
+    ico: IconName,
+    label: impl Into<SharedString>,
+    p: BiuPalette,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(34.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .rounded_full()
+        .bg(p.surface)
+        .px_3p5()
+        .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.text)
+        .cursor_pointer()
+        .hover(move |style| style.bg(p.surface_hover))
+        .active(move |style| style.bg(p.surface_active))
+        .child(icon(ico, 14.0, p.text_muted))
+        .child(label.into())
+}
+
+pub(crate) fn compact_icon_btn(
+    id: impl Into<ElementId>,
+    ico: IconName,
+    tip: &'static str,
+    p: BiuPalette,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .size(px(28.0))
+        .flex_shrink_0()
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.surface_active))
+        .tip(tip)
+        .child(icon(ico, 14.0, p.text_muted))
 }
 
 pub(crate) fn state_button(
@@ -428,6 +634,75 @@ pub(crate) fn state_button(
     })
 }
 
+/// View-mode toggle pill (Grid / List) matching Biu's modern chrome.
+pub(super) fn display_mode_toggle(
+    state: &Entity<AppState>,
+    grid: bool,
+    p: BiuPalette,
+    on_switch: impl Fn(&mut PagesHost, bool, &mut Context<PagesHost>) + Clone + 'static,
+    cx: &Context<PagesHost>,
+) -> Div {
+    let st1 = state.clone();
+    let st2 = state.clone();
+    let cb1 = on_switch.clone();
+    let cb2 = on_switch;
+    div()
+        .flex()
+        .items_center()
+        .p(px(3.0))
+        .rounded_full()
+        .bg(p.surface)
+        .child(
+            div()
+                .id("mode-card")
+                .size(px(28.0))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .when(grid, |d| d.bg(p.surface_active))
+                .when(!grid, |d| d.hover(move |s| s.bg(p.surface_hover)))
+                .tip("卡片网格")
+                .child(icon(
+                    IconName::LayoutGrid,
+                    14.0,
+                    if grid { p.accent } else { p.text_muted },
+                ))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    st1.update(cx, |s, cx| {
+                        s.update_settings(|st| st.display_mode = "card".into(), cx)
+                    });
+                    cb1(this, true, cx);
+                })),
+        )
+        .child(
+            div()
+                .id("mode-list")
+                .size(px(28.0))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .when(!grid, |d| d.bg(p.surface_active))
+                .when(grid, |d| d.hover(move |s| s.bg(p.surface_hover)))
+                .tip("精致列表")
+                .child(icon(
+                    IconName::List,
+                    14.0,
+                    if !grid { p.accent } else { p.text_muted },
+                ))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    st2.update(cx, |s, cx| {
+                        s.update_settings(|st| st.display_mode = "list".into(), cx)
+                    });
+                    cb2(this, false, cx);
+                })),
+        )
+}
+
+/// Pure read-only cover box with zero per-frame canvas overhead during scroll.
 pub(crate) fn thumbnail(
     state: &Entity<AppState>,
     url: &str,
@@ -438,32 +713,8 @@ pub(crate) fn thumbnail(
 ) -> Div {
     let (w, h) = (px(dimensions.0), px(dimensions.1));
     let key = CoverKey::thumb(url, size);
-    let covers = &state.read(cx).covers;
-    let image = covers.get(&key);
-    let request = covers.should_fetch(&key);
-    let root = cover_box(image, w, h, p.radius, p).relative();
-    root.when(request, |root| {
-        let state = state.clone();
-        let url = url.to_owned();
-        root.child(
-            canvas(
-                move |bounds, window, cx| {
-                    if bounds.intersects(&window.content_mask().bounds) {
-                        window.defer(cx, move |_, cx| {
-                            state.update(cx, |state, cx| {
-                                state.ensure_cover(&url, size, false, cx);
-                            });
-                        });
-                    }
-                },
-                |_, (), _, _| {},
-            )
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full(),
-        )
-    })
+    let image = state.read(cx).covers.get(&key);
+    cover_box(image, w, h, p.radius, p)
 }
 
 pub(crate) fn playable_id(track: &TrackItem) -> Option<(u64, u32)> {
@@ -478,129 +729,479 @@ fn play_all(state: &Entity<AppState>, tracks: &[TrackItem], p: BiuPalette) -> Di
     toolbar().when(!tracks.is_empty(), |bar| {
         let play = tracks.to_vec();
         let append = play.clone();
-        bar.child(state_button(
-            state,
-            "play-all",
-            "播放全部",
-            p,
-            move |s, cx| s.play_queue(play.clone(), 0, cx),
-        ))
-        .child(state_button(
-            state,
-            "append-all",
-            "加入队列",
-            p,
-            move |s, cx| s.append_to_queue(append.clone(), cx),
-        ))
+        let st1 = state.clone();
+        let st2 = state.clone();
+        bar.child(
+            primary_button("play-all", IconName::Play, "全部播放", p).on_click(move |_, _, cx| {
+                st1.update(cx, |s, cx| s.play_queue(play.clone(), 0, cx));
+            }),
+        )
+        .child(
+            icon_pill_button("append-all", IconName::Plus, "加入队列", p).on_click(
+                move |_, _, cx| {
+                    st2.update(cx, |s, cx| s.append_to_queue(append.clone(), cx));
+                },
+            ),
+        )
     })
 }
 
-fn track_actions(state: &Entity<AppState>, track: &TrackItem, p: BiuPalette) -> Div {
-    let play = track.clone();
+fn quick_track_icons(
+    state: &Entity<AppState>,
+    track: &TrackItem,
+    id_prefix: &'static str,
+    idx: usize,
+    p: BiuPalette,
+) -> Div {
     let append = track.clone();
     let fav = track.clone();
     let download = track.clone();
-    toolbar()
-        .child(state_button(state, "play", "播放", p, move |s, cx| {
-            s.play_track(play.clone(), cx)
-        }))
-        .child(state_button(
-            state,
-            "append",
-            "加入队列",
-            p,
-            move |s, cx| s.append_to_queue(vec![append.clone()], cx),
-        ))
-        .when(
-            !matches!(&track.source, TrackSource::LocalFile { .. }),
-            |bar| {
-                bar.child(state_button(
-                    state,
-                    "favorite",
-                    "收藏",
-                    p,
-                    move |s, cx| {
-                        let modal = if s.user.is_some() {
-                            ActiveModal::FavSelect { track: fav.clone() }
-                        } else {
-                            ActiveModal::Login
-                        };
-                        s.open_modal(modal, cx);
+    let is_local = matches!(&track.source, TrackSource::LocalFile { .. });
+    let st_add = state.clone();
+    let st_fav = state.clone();
+    let st_dl = state.clone();
+
+    div()
+        .flex()
+        .items_center()
+        .gap_0p5()
+        .child(
+            compact_icon_btn((id_prefix, idx * 4), IconName::Plus, "加入播放队列", p).on_click(
+                move |_, _, cx| {
+                    cx.stop_propagation();
+                    st_add.update(cx, |s, cx| s.append_to_queue(vec![append.clone()], cx));
+                },
+            ),
+        )
+        .when(!is_local, |bar| {
+            bar.child(
+                compact_icon_btn((id_prefix, idx * 4 + 1), IconName::Star, "收藏", p).on_click(
+                    move |_, _, cx| {
+                        cx.stop_propagation();
+                        st_fav.update(cx, |s, cx| {
+                            let modal = if s.user.is_some() {
+                                ActiveModal::FavSelect { track: fav.clone() }
+                            } else {
+                                ActiveModal::Login
+                            };
+                            s.open_modal(modal, cx);
+                        });
                     },
-                ))
-                .child(state_button(
-                    state,
-                    "download",
-                    "下载",
-                    p,
-                    move |s, cx| {
-                        // DownloadManager::queue requires an entered Tokio runtime.
-                        let runtime = s.services.rt.handle().clone();
-                        let _guard = runtime.enter();
-                        s.queue_download(download.clone(), DownloadFormat::Native, cx);
-                    },
-                ))
-            },
+                ),
+            )
+            .child(
+                compact_icon_btn((id_prefix, idx * 4 + 2), IconName::Download, "下载音频", p)
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        st_dl.update(cx, |s, cx| {
+                            let runtime = s.services.rt.handle().clone();
+                            let _guard = runtime.enter();
+                            s.queue_download(download.clone(), DownloadFormat::Native, cx);
+                        });
+                    }),
+            )
+        })
+}
+
+/// High-craft responsive grid of album/video cards matching `screenshots/home.png`.
+pub(super) fn track_grid(
+    state: &Entity<AppState>,
+    tracks: &[TrackItem],
+    content_width: f32,
+    p: BiuPalette,
+    cx: &App,
+) -> Div {
+    if tracks.is_empty() {
+        return empty_state("暂无歌曲", "", p);
+    }
+    let cols = grid_columns_for_width(content_width);
+    let card_cover_h = if cols >= 5 {
+        136.0
+    } else if cols == 4 {
+        152.0
+    } else {
+        164.0
+    };
+    let s = state.read(cx);
+    let current_id = s.current_track().map(|t| t.id.as_str());
+
+    let mut grid = div().flex().flex_col().gap_4().w_full();
+    for (row_idx, chunk) in tracks.chunks(cols).enumerate() {
+        let mut row = div().flex().gap_4().w_full();
+        for (col_idx, track) in chunk.iter().enumerate() {
+            let idx = row_idx * cols + col_idx;
+            let active = current_id == Some(track.id.as_str());
+            row = row.child(track_card(
+                state,
+                idx,
+                track,
+                card_cover_h,
+                active,
+                p,
+                cx,
+            ));
+        }
+        // Pad last row so cards keep exact column width.
+        for _ in chunk.len()..cols {
+            row = row.child(div().flex_1().min_w_0());
+        }
+        grid = grid.child(row);
+    }
+    grid
+}
+
+fn track_card(
+    state: &Entity<AppState>,
+    idx: usize,
+    track: &TrackItem,
+    cover_h: f32,
+    active: bool,
+    p: BiuPalette,
+    cx: &App,
+) -> Stateful<Div> {
+    let group: SharedString = format!("tcard-{idx}").into();
+    let cover_img = state
+        .read(cx)
+        .covers
+        .get(&CoverKey::thumb(track.cover.clone(), ThumbSize::Card));
+    let play_track = track.clone();
+    let st_play = state.clone();
+    let duration_text = (track.duration_secs > 0.0).then(|| format_duration(track.duration_secs));
+    let artist_mid = track.artist_mid;
+    let artist_name = track.artist.clone();
+    let st_artist = state.clone();
+
+    let mut artist_el = div()
+        .id(("card-artist", idx))
+        .flex_1()
+        .min_w_0()
+        .text_xs()
+        .text_color(p.text_muted)
+        .truncate()
+        .child(if track.artist.is_empty() {
+            "未知 UP 主".to_string()
+        } else {
+            track.artist.clone()
+        });
+    if let Some(mid) = artist_mid {
+        artist_el = artist_el
+            .cursor_pointer()
+            .hover(move |s| s.text_color(p.text))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                st_artist.update(cx, |s, cx| {
+                    s.navigate(
+                        Route::UserProfile {
+                            mid,
+                            name: artist_name.clone(),
+                        },
+                        cx,
+                    )
+                });
+            });
+    }
+
+    div()
+        .id(("track-card", idx))
+        .group(group.clone())
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .rounded(px(12.0))
+        .overflow_hidden()
+        .bg(if active { p.surface_elevated } else { p.surface })
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.surface_hover))
+        .on_click(move |_, _, cx| {
+            st_play.update(cx, |s, cx| s.play_track(play_track.clone(), cx));
+        })
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(cover_h))
+                .overflow_hidden()
+                .child(fluid_cover(cover_img, px(cover_h), px(0.0), p))
+                .when_some(duration_text, |d, dur| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(36.0))
+                            .px_2p5()
+                            .pb_1p5()
+                            .flex()
+                            .items_end()
+                            .justify_start()
+                            .bg(linear_gradient(
+                                180.0,
+                                linear_color_stop(hsla(0.0, 0.0, 0.0, 0.0), 0.0),
+                                linear_color_stop(hsla(0.0, 0.0, 0.0, 0.78), 1.0),
+                            ))
+                            .child(
+                                div()
+                                    .px_1p5()
+                                    .py(px(1.0))
+                                    .rounded(px(4.0))
+                                    .bg(hsla(0.0, 0.0, 0.0, 0.45))
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(hsla(0.0, 0.0, 1.0, 0.94))
+                                    .child(dur),
+                            ),
+                    )
+                })
+                .child(
+                    div()
+                        .absolute()
+                        .right(px(10.0))
+                        .bottom(px(10.0))
+                        .when(!active, |d| d.invisible())
+                        .group_hover(group.clone(), |s| s.visible())
+                        .child(accent_play_circle(38.0, p)),
+                ),
+        )
+        .child(
+            div()
+                .px_3()
+                .pt_2p5()
+                .pb_2p5()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if active { p.accent } else { p.text })
+                        .truncate()
+                        .child(track.title.clone()),
+                )
+                .child(
+                    div()
+                        .h(px(24.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_1()
+                        .child(artist_el)
+                        .child(
+                            div()
+                                .invisible()
+                                .group_hover(group, |s| s.visible())
+                                .child(quick_track_icons(state, track, "cact", idx, p)),
+                        ),
+                ),
         )
 }
 
-fn track_row(
+fn track_list_header(p: BiuPalette) -> Div {
+    div()
+        .w_full()
+        .h(px(32.0))
+        .px_3()
+        .mb_1()
+        .flex()
+        .items_center()
+        .gap_3()
+        .border_b_1()
+        .border_color(p.border)
+        .text_xs()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.text_dim)
+        .child(div().w(px(28.0)).text_center().child("#"))
+        .child(div().flex_1().min_w_0().child("歌曲 / 视频"))
+        .child(div().w(px(56.0)).text_right().child("时长"))
+        .child(div().w(px(104.0)).text_right().child("操作"))
+}
+
+pub(super) fn track_row(
     state: &Entity<AppState>,
     key: usize,
     track: &TrackItem,
     p: BiuPalette,
     cx: &App,
 ) -> Stateful<Div> {
+    let s = state.read(cx);
+    let active = s.current_track().is_some_and(|t| t.id == track.id);
+    let playing = active && is_playing(s.snapshot.state);
+    let group: SharedString = format!("trow-{key}").into();
+    let play_track = track.clone();
+    let st_play = state.clone();
+    let st_artist = state.clone();
+    let artist_mid = track.artist_mid;
+    let artist_name = track.artist.clone();
+
+    let mut artist_el = div()
+        .id(("row-artist", key))
+        .text_xs()
+        .text_color(p.text_muted)
+        .truncate()
+        .child(if track.artist.is_empty() {
+            "未知 UP 主".to_string()
+        } else {
+            track.artist.clone()
+        });
+    if let Some(mid) = artist_mid {
+        artist_el = artist_el
+            .cursor_pointer()
+            .hover(move |s| s.text_color(p.text))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                st_artist.update(cx, |s, cx| {
+                    s.navigate(
+                        Route::UserProfile {
+                            mid,
+                            name: artist_name.clone(),
+                        },
+                        cx,
+                    )
+                });
+            });
+    }
+
     div()
-        .id(key)
+        .id(("track-row", key))
+        .group(group.clone())
+        .h(px(60.0))
+        .w_full()
         .flex()
         .items_center()
         .gap_3()
-        .min_w_0()
-        .p_2()
-        .rounded(p.radius)
-        .bg(p.surface)
-        .child(thumbnail(
-            state,
-            &track.cover,
-            ThumbSize::Tiny,
-            (52., 44.),
-            p,
-            cx,
-        ))
-        .child(track_details(track, p))
-        .child(track_actions(state, track, p))
-}
-
-fn track_details(track: &TrackItem, p: BiuPalette) -> Div {
-    column()
-        .flex_1()
-        .gap_0()
-        .overflow_hidden()
-        .child(div().truncate().child(track.title.clone()))
+        .px_3()
+        .rounded(px(10.0))
+        .cursor_pointer()
+        .when(active, |d| d.bg(p.accent_soft))
+        .when(!active, |d| d.hover(move |s| s.bg(p.surface_hover)))
+        .on_click(move |_, _, cx| {
+            st_play.update(cx, |s, cx| s.play_track(play_track.clone(), cx));
+        })
         .child(
             div()
-                .truncate()
-                .text_sm()
-                .text_color(p.text_muted)
-                .child(format!(
-                    "{}  ·  {}",
-                    track.artist,
+                .w(px(28.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_xs()
+                .text_color(if active { p.accent } else { p.text_dim })
+                .child(if playing {
+                    icon(IconName::AudioLines, 14.0, p.accent).into_any_element()
+                } else {
+                    format!("{}", key + 1).into_any_element()
+                }),
+        )
+        .child(
+            div()
+                .relative()
+                .size(px(44.0))
+                .flex_shrink_0()
+                .child(thumbnail(
+                    state,
+                    &track.cover,
+                    ThumbSize::Tiny,
+                    (44., 44.),
+                    p,
+                    cx,
+                ))
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(p.radius)
+                        .bg(hsla(0.0, 0.0, 0.0, 0.48))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .invisible()
+                        .group_hover(group.clone(), |s| s.visible())
+                        .child(icon(IconName::Play, 15.0, gpui_kit::white())),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(if active {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::MEDIUM
+                        })
+                        .text_color(if active { p.accent } else { p.text })
+                        .truncate()
+                        .child(track.title.clone()),
+                )
+                .child(artist_el),
+        )
+        .child(
+            div()
+                .w(px(56.0))
+                .flex_shrink_0()
+                .text_right()
+                .text_xs()
+                .text_color(p.text_dim)
+                .child(if track.duration_secs > 0.0 {
                     format_duration(track.duration_secs)
-                )),
+                } else {
+                    "--:--".into()
+                }),
+        )
+        .child(
+            div()
+                .w(px(96.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_end()
+                .child(quick_track_icons(state, track, "ract", key, p)),
         )
 }
 
-fn track_list(state: &Entity<AppState>, tracks: &[TrackItem], p: BiuPalette, cx: &App) -> Div {
+pub(super) fn track_list(
+    state: &Entity<AppState>,
+    tracks: &[TrackItem],
+    p: BiuPalette,
+    cx: &App,
+) -> Div {
     if tracks.is_empty() {
         return empty_state("暂无歌曲", "", p);
     }
-    column().children(
-        tracks
-            .iter()
-            .enumerate()
-            .map(|(i, track)| track_row(state, i, track, p, cx)),
-    )
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(track_list_header(p))
+        .children(
+            tracks
+                .iter()
+                .enumerate()
+                .map(|(i, track)| track_row(state, i, track, p, cx)),
+        )
+}
+
+/// Renders tracks in either responsive card grid or clean table list depending on user preference.
+pub(super) fn track_collection(
+    state: &Entity<AppState>,
+    tracks: &[TrackItem],
+    content_width: f32,
+    p: BiuPalette,
+    cx: &App,
+) -> Div {
+    if is_grid_mode(state.read(cx)) {
+        track_grid(state, tracks, content_width, p, cx)
+    } else {
+        track_list(state, tracks, p, cx)
+    }
 }
 
 fn pager<T>(
@@ -610,24 +1211,36 @@ fn pager<T>(
     go: impl Fn(u64, &mut App) + Clone + 'static,
 ) -> Div {
     let previous = go.clone();
-    toolbar()
+    div()
+        .w_full()
+        .pt_3()
+        .flex()
+        .items_center()
+        .justify_between()
         .child(
             div()
-                .text_sm()
-                .text_color(p.text_muted)
+                .text_xs()
+                .text_color(p.text_dim)
                 .child(match data.total {
                     Some(total) => format!("第 {page} 页 · 共 {total} 项"),
                     None => format!("第 {page} 页"),
                 }),
         )
-        .when(page > 1, |bar| {
-            bar.child(
-                button("prev-page", "上一页", p).on_click(move |_, _, cx| previous(page - 1, cx)),
-            )
-        })
-        .when(page < u64::MAX && data.has_more == Some(true), |bar| {
-            bar.child(button("next-page", "下一页", p).on_click(move |_, _, cx| go(page + 1, cx)))
-        })
+        .child(
+            toolbar()
+                .when(page > 1, |bar| {
+                    bar.child(
+                        icon_pill_button("prev-page", IconName::ChevronLeft, "上一页", p)
+                            .on_click(move |_, _, cx| previous(page - 1, cx)),
+                    )
+                })
+                .when(page < u64::MAX && data.has_more == Some(true), |bar| {
+                    bar.child(
+                        icon_pill_button("next-page", IconName::ChevronRight, "下一页", p)
+                            .on_click(move |_, _, cx| go(page + 1, cx)),
+                    )
+                }),
+        )
 }
 
 fn page_change(
@@ -648,8 +1261,29 @@ fn filter_bar<T: 'static>(
     submit: impl Fn(&mut T, String, &mut Context<T>) + 'static,
 ) -> Div {
     let value = input.clone();
-    toolbar()
-        .child(div().w(px(280.)).child(Input::new(input)))
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .w(px(260.0))
+                .h(px(34.0))
+                .px_3()
+                .rounded_full()
+                .bg(p.surface)
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(icon(IconName::Search, 14.0, p.text_dim))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .child(Input::new(input).appearance(false).cleanable(true)),
+                ),
+        )
         .child(
             button("submit-filter", label, p).on_click(cx.listener(move |this, _, _, cx| {
                 submit(this, normalize_query(&value.read(cx).value()), cx);
@@ -667,36 +1301,51 @@ fn user_row(
         mid: user.mid,
         name: user.name.clone(),
     };
-    toolbar()
+    div()
         .flex_1()
-        .flex_nowrap()
         .min_w_0()
+        .flex()
+        .items_center()
+        .gap_3()
         .child(thumbnail(
             state,
             &user.face,
             ThumbSize::Tiny,
             (44., 44.),
-            p,
+            BiuPalette {
+                radius: px(22.0),
+                ..p
+            },
             cx,
         ))
         .child(
             column()
                 .flex_1()
-                .gap_0()
+                .gap(px(2.0))
                 .overflow_hidden()
-                .child(div().truncate().child(user.name.clone()))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .truncate()
+                        .child(user.name.clone()),
+                )
                 .child(
                     div()
                         .truncate()
-                        .text_sm()
+                        .text_xs()
                         .text_color(p.text_muted)
-                        .child(user.sign.clone()),
+                        .child(if user.sign.is_empty() {
+                            "这个人很懒，什么都没有写".into()
+                        } else {
+                            user.sign.clone()
+                        }),
                 ),
         )
         .child(state_button(
             state,
             "profile",
-            "查看主页",
+            "主页",
             p,
             move |s, cx| s.navigate(route.clone(), cx),
         ))

@@ -1,13 +1,15 @@
-//! Main window shell: sidebar, header, content host, player bar and overlays
-//! (full-screen player, modals, toast), plus window-level shortcuts and the
-//! close-to-tray lifecycle.
+//! Main window shell: full-height branded sidebar (matching original Biu),
+//! right-pane top navbar with back/forward + pill search + isolated TopLyrics
+//! entity, scrollable PagesHost, isolated PlayerBarView, and overlays.
 
+use crate::BIU_LOGO_SVG;
 use crate::desktop_lyrics::open_or_toggle_desktop_lyrics;
 use crate::full_screen::FullScreenPlayer;
+use crate::image_loader::CoverKey;
 use crate::mini_player::open_or_toggle_mini_player;
 use crate::modals::ModalsHost;
 use crate::pages::PagesHost;
-use crate::player_bar::{TooltipExt, icon, icon_button, is_playing, on_state, render_player_bar};
+use crate::player_bar::{PlayerBarView, TooltipExt, icon, icon_button, is_playing, on_state};
 use crate::state::{ActiveModal, AppState, CollectionKind, Route};
 use crate::system;
 use crate::theme::BiuPalette;
@@ -20,9 +22,9 @@ use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-pub const SIDEBAR_EXPANDED: f32 = 216.0;
-pub const SIDEBAR_COLLAPSED: f32 = 64.0;
-pub const HEADER_HEIGHT: f32 = 52.0;
+pub const SIDEBAR_EXPANDED: f32 = 220.0;
+pub const SIDEBAR_COLLAPSED: f32 = 70.0;
+pub const HEADER_HEIGHT: f32 = 58.0;
 
 /// Bilibili `type` for collected UGC seasons (合集) in the collected-folders list.
 const BILI_FOLDER_TYPE_SEASON: u64 = 21;
@@ -36,24 +38,14 @@ struct NavItem {
 
 const NAV_ITEMS: [NavItem; 9] = [
     NavItem {
-        label: "音乐推荐",
-        icon: IconName::Sparkles,
+        label: "推荐音乐",
+        icon: IconName::Disc3,
         key: "music-recommend",
     },
     NavItem {
-        label: "搜索",
+        label: "搜索发现",
         icon: IconName::Search,
         key: "search",
-    },
-    NavItem {
-        label: "稍后再看",
-        icon: IconName::Clock,
-        key: "later",
-    },
-    NavItem {
-        label: "播放历史",
-        icon: IconName::RotateCcwClock,
-        key: "history",
     },
     NavItem {
         label: "我的关注",
@@ -61,9 +53,19 @@ const NAV_ITEMS: [NavItem; 9] = [
         key: "follow-list",
     },
     NavItem {
-        label: "动态",
+        label: "关注动态",
         icon: IconName::Rss,
         key: "dynamic-feed",
+    },
+    NavItem {
+        label: "稍后再看",
+        icon: IconName::Clock,
+        key: "later",
+    },
+    NavItem {
+        label: "历史记录",
+        icon: IconName::RotateCcwClock,
+        key: "history",
     },
     NavItem {
         label: "本地音乐",
@@ -71,7 +73,7 @@ const NAV_ITEMS: [NavItem; 9] = [
         key: "local-music",
     },
     NavItem {
-        label: "下载列表",
+        label: "下载记录",
         icon: IconName::Download,
         key: "download-list",
     },
@@ -165,14 +167,125 @@ pub fn escape_action(modal_open: bool, full_screen: bool, user_menu_open: bool) 
     }
 }
 
+// ---------------------------------------------------------------------------
+// Isolated TopLyricsView (subscribes to playback ticks independently)
+// ---------------------------------------------------------------------------
+
+struct TopLyricsView {
+    state: Entity<AppState>,
+    last_playback_ver: u64,
+    _observe: Subscription,
+}
+
+impl TopLyricsView {
+    fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let observe = cx.observe(&state, |this, state, cx| {
+            let s = state.read(cx);
+            if this.last_playback_ver != s.playback_version {
+                this.last_playback_ver = s.playback_version;
+                cx.notify();
+            }
+        });
+        let ver = state.read(cx).playback_version;
+        Self {
+            state,
+            last_playback_ver: ver,
+            _observe: observe,
+        }
+    }
+}
+
+impl Render for TopLyricsView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let s = self.state.read(cx);
+        let p = s.palette(window);
+        let playing = is_playing(s.snapshot.state);
+        let ticker = if s.settings.show_top_lyrics && playing && !s.is_full_screen {
+            active_line_index(&s.lyrics.lines, s.snapshot.position_secs)
+                .and_then(|i| s.lyrics.lines.get(i))
+                .filter(|l| !l.text.trim().is_empty())
+                .map(|l| {
+                    let tr = if s.settings.show_top_lyrics_translation {
+                        l.translation.clone().filter(|t| !t.trim().is_empty())
+                    } else {
+                        None
+                    };
+                    (l.text.clone(), tr)
+                })
+        } else {
+            None
+        };
+
+        div()
+            .id("header-drag")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(MouseButton::Left, |ev, window, _| {
+                if ev.click_count >= 2 {
+                    window.titlebar_double_click();
+                } else {
+                    window.start_window_move();
+                }
+            })
+            .when_some(ticker, |d, (text, tr)| {
+                d.child(
+                    div()
+                        .id("top-lyrics")
+                        .occlude()
+                        .max_w(px(460.0))
+                        .px_3()
+                        .py_1()
+                        .rounded_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(p.surface_hover))
+                        .on_click(on_state(&self.state, |s, cx| s.toggle_full_screen(cx)))
+                        .child(
+                            div()
+                                .max_w_full()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(p.accent)
+                                .truncate()
+                                .child(text),
+                        )
+                        .when_some(tr, |d, t| {
+                            d.child(
+                                div()
+                                    .max_w_full()
+                                    .text_size(px(11.0))
+                                    .text_color(p.text_dim)
+                                    .truncate()
+                                    .child(t),
+                            )
+                        }),
+                )
+            })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MainShell (ignores 100ms playback ticks completely!)
+// ---------------------------------------------------------------------------
+
 pub struct MainShell {
     pub state: Entity<AppState>,
     pub pages: Entity<PagesHost>,
     pub modals: Entity<ModalsHost>,
+    player_bar: Entity<PlayerBarView>,
+    top_lyrics: Entity<TopLyricsView>,
     full_screen: Entity<FullScreenPlayer>,
     search: Entity<InputState>,
     focus: FocusHandle,
     user_menu_open: bool,
+    last_ui_ver: u64,
+    last_avatar_loaded: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -180,14 +293,30 @@ impl MainShell {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let pages = cx.new(|cx| PagesHost::new(state.clone(), window, cx));
         let modals = cx.new(|cx| ModalsHost::new(state.clone(), window, cx));
+        let player_bar = cx.new(|cx| PlayerBarView::new(state.clone(), cx));
+        let top_lyrics = cx.new(|cx| TopLyricsView::new(state.clone(), cx));
         let full_screen = cx.new(|cx| FullScreenPlayer::new(state.clone(), window, cx));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索歌曲、视频、UP 主"));
         let focus = cx.focus_handle();
 
         let mut subs = Vec::new();
-        subs.push(cx.observe_in(&state, window, |this, _, window, cx| {
-            this.sync_component_theme(window, cx);
-            cx.notify();
+        subs.push(cx.observe_in(&state, window, |this, state, window, cx| {
+            let s = state.read(cx);
+            let avatar_loaded = s
+                .user
+                .as_ref()
+                .filter(|u| !u.face.is_empty())
+                .is_some_and(|u| {
+                    s.covers
+                        .get(&CoverKey::thumb(u.face.clone(), ThumbSize::Tiny))
+                        .is_some()
+                });
+            if this.last_ui_ver != s.ui_version || this.last_avatar_loaded != avatar_loaded {
+                this.last_ui_ver = s.ui_version;
+                this.last_avatar_loaded = avatar_loaded;
+                this.sync_component_theme(window, cx);
+                cx.notify();
+            }
         }));
         subs.push(cx.observe_window_appearance(window, |this, window, cx| {
             this.sync_component_theme(window, cx);
@@ -205,8 +334,6 @@ impl MainShell {
             }),
         );
 
-        // Close-to-tray: let the window (and its GPU surface) be destroyed while
-        // the app and AudioEngine keep running in the background.
         let st = state.clone();
         window.on_window_should_close(cx, move |window, cx| {
             if system::is_quitting() {
@@ -232,7 +359,7 @@ impl MainShell {
                     s.is_full_screen = false;
                     s.services.audio.set_waveform_enabled(false);
                 }
-                cx.notify();
+                s.notify_ui(cx);
             });
             if option != "hide" {
                 cx.defer(system::request_quit);
@@ -242,21 +369,25 @@ impl MainShell {
 
         window.focus(&focus, cx);
 
+        let initial_ver = state.read(cx).ui_version;
         let mut this = Self {
             state,
             pages,
             modals,
+            player_bar,
+            top_lyrics,
             full_screen,
             search,
             focus,
             user_menu_open: false,
+            last_ui_ver: initial_ver,
+            last_avatar_loaded: false,
             _subscriptions: subs,
         };
         this.sync_component_theme(window, cx);
         this
     }
 
-    /// Keep gpui-component widgets (inputs, popovers) in step with Biu's theme.
     fn sync_component_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dark = self.state.read(cx).palette(window).dark;
         let current = cx.try_global::<Theme>().map(|t| t.is_dark());
@@ -276,7 +407,6 @@ impl MainShell {
     fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
         let mods = &ev.keystroke.modifiers;
-        // Anything other than the shell root holding focus is treated as a text field.
         let text_focused = window.focused(cx).is_some_and(|f| f != self.focus);
 
         if key == "escape" {
@@ -318,7 +448,6 @@ impl MainShell {
                     cx.defer(move |cx| open_or_toggle_mini_player(st, cx));
                     true
                 }
-                // Arrow chords are text-navigation inside inputs; leave them alone there.
                 "left" if !text_focused => {
                     self.state.update(cx, |s, cx| s.prev_track(cx));
                     true
@@ -362,24 +491,21 @@ impl MainShell {
                 })
                 .await;
             cx.update(|cx| {
-                state.update(cx, |s, cx| {
-                    match res {
-                        Ok(Ok(())) => {
-                            s.user = None;
-                            s.created_folders.clear();
-                            s.collected_folders.clear();
-                            if matches!(
-                                s.route,
-                                Route::UserProfile { .. } | Route::Collection { .. }
-                            ) {
-                                s.navigate(Route::MusicRecommend, cx);
-                            }
-                            s.show_toast("已退出登录", false, cx);
+                state.update(cx, |s, cx| match res {
+                    Ok(Ok(())) => {
+                        s.user = None;
+                        s.created_folders.clear();
+                        s.collected_folders.clear();
+                        if matches!(
+                            s.route,
+                            Route::UserProfile { .. } | Route::Collection { .. }
+                        ) {
+                            s.navigate(Route::MusicRecommend, cx);
                         }
-                        Ok(Err(e)) => s.show_toast(format!("退出登录失败: {e}"), true, cx),
-                        Err(e) => s.show_toast(format!("退出登录任务异常: {e}"), true, cx),
+                        s.show_toast("已退出登录", false, cx);
                     }
-                    cx.notify();
+                    Ok(Err(e)) => s.show_toast(format!("退出登录失败: {e}"), true, cx),
+                    Err(e) => s.show_toast(format!("退出登录任务异常: {e}"), true, cx),
                 })
             });
         })
@@ -387,10 +513,11 @@ impl MainShell {
         cx.notify();
     }
 
-    // -- Sidebar -----------------------------------------------------------
+    // -- Full-height branded sidebar (matches screenshots/home.png) --------
 
     fn render_sidebar(&self, p: BiuPalette, cx: &mut Context<Self>) -> AnyElement {
         let s = self.state.read(cx);
+        let mac = cfg!(target_os = "macos");
         let collapsed = s.sidebar_collapsed;
         let route = s.route.clone();
         let logged_in = s.user.is_some();
@@ -409,56 +536,37 @@ impl MainShell {
         };
 
         let brand = div()
-            .h(px(44.0))
+            .id("sidebar-brand")
             .flex_shrink_0()
+            .pt(px(if mac { 38.0 } else { 14.0 }))
+            .pb_3()
             .flex()
             .items_center()
             .when(collapsed, |d| d.justify_center())
-            .when(!collapsed, |d| d.justify_between().px_3())
+            .when(!collapsed, |d| d.px_5().gap_2p5())
+            .on_mouse_down(MouseButton::Left, |ev, window, _| {
+                if ev.click_count >= 2 {
+                    window.titlebar_double_click();
+                } else {
+                    window.start_window_move();
+                }
+            })
+            .child(
+                svg()
+                    .path(BIU_LOGO_SVG)
+                    .size(px(30.0))
+                    .flex_shrink_0()
+                    .text_color(p.accent),
+            )
             .when(!collapsed, |d| {
                 d.child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .size(px(26.0))
-                                .rounded(px(8.0))
-                                .bg(p.accent)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(icon(IconName::Music, 15.0, p.accent_fg)),
-                        )
-                        .child(
-                            div()
-                                .text_lg()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(p.text)
-                                .child("Biu"),
-                        ),
+                        .text_2xl()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(p.accent)
+                        .child("Biu"),
                 )
-            })
-            .child(
-                icon_button(
-                    "sidebar-toggle",
-                    if collapsed {
-                        IconName::PanelLeftOpen
-                    } else {
-                        IconName::PanelLeftClose
-                    },
-                    16.0,
-                    p,
-                    false,
-                )
-                .tip(if collapsed {
-                    "展开侧边栏"
-                } else {
-                    "收起侧边栏"
-                })
-                .on_click(on_state(&self.state, |s, cx| s.toggle_sidebar(cx))),
-            );
+            });
 
         let nav = NAV_ITEMS
             .iter()
@@ -469,16 +577,16 @@ impl MainShell {
                 let label = item.label;
                 div()
                     .id(item.key)
-                    .h(px(36.0))
+                    .h(px(38.0))
                     .flex()
                     .items_center()
                     .gap_3()
-                    .rounded(px(8.0))
+                    .rounded_full()
                     .cursor_pointer()
                     .when(collapsed, |d| d.justify_center().tip(label))
-                    .when(!collapsed, |d| d.px_3())
-                    .when(active, |d| d.bg(p.surface_active))
-                    .when(!active, |d| d.hover(|s| s.bg(p.surface_hover)))
+                    .when(!collapsed, |d| d.px_3p5())
+                    .when(active, |d| d.bg(p.surface_elevated))
+                    .when(!active, |d| d.hover(move |s| s.bg(p.surface_hover)))
                     .child(icon(
                         item.icon,
                         17.0,
@@ -493,7 +601,7 @@ impl MainShell {
                                 } else {
                                     FontWeight::NORMAL
                                 })
-                                .text_color(if active { p.text } else { p.text_muted })
+                                .text_color(if active { p.accent } else { p.text })
                                 .child(label),
                         )
                     })
@@ -511,14 +619,15 @@ impl MainShell {
             let header = div()
                 .id(id)
                 .h(px(30.0))
-                .mt_3()
-                .px_3()
+                .mt_4()
+                .mb_1()
+                .px_3p5()
                 .flex()
                 .items_center()
                 .justify_between()
-                .rounded(px(6.0))
+                .rounded_full()
                 .cursor_pointer()
-                .hover(|s| s.bg(p.surface_hover))
+                .hover(move |s| s.bg(p.surface_hover))
                 .on_click(on_state(&self.state, move |s, cx| {
                     s.update_settings(
                         |st| {
@@ -535,7 +644,14 @@ impl MainShell {
                     div()
                         .flex()
                         .items_center()
-                        .gap_1()
+                        .gap_1p5()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(p.text_dim)
+                                .child(title),
+                        )
                         .child(icon(
                             if is_folded {
                                 IconName::ChevronRight
@@ -544,30 +660,24 @@ impl MainShell {
                             },
                             12.0,
                             p.text_dim,
-                        ))
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(p.text_dim)
-                                .child(title),
-                        ),
+                        )),
                 )
                 .when(with_add, |d| {
                     d.child(
                         div()
                             .id(("sec-add", 0usize))
-                            .size(px(20.0))
+                            .size(px(22.0))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(4.0))
-                            .hover(|s| s.bg(p.surface_active))
+                            .rounded_full()
+                            .hover(move |s| s.bg(p.surface_active))
+                            .tip("新建收藏夹")
                             .on_click(on_state(&self.state, |s, cx| {
                                 cx.stop_propagation();
                                 s.open_modal(ActiveModal::FavFolderEdit { folder: None }, cx)
                             }))
-                            .child(icon(IconName::Plus, 13.0, p.text_muted)),
+                            .child(icon(IconName::Plus, 14.0, p.text_muted)),
                     )
                 });
 
@@ -582,22 +692,22 @@ impl MainShell {
                         let active = route == r;
                         div()
                             .id((id, i))
-                            .h(px(32.0))
-                            .px_3()
+                            .h(px(34.0))
+                            .px_3p5()
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .rounded(px(8.0))
+                            .gap_2p5()
+                            .rounded_full()
                             .cursor_pointer()
-                            .when(active, |d| d.bg(p.surface_active))
-                            .when(!active, |d| d.hover(|s| s.bg(p.surface_hover)))
+                            .when(active, |d| d.bg(p.surface_elevated))
+                            .when(!active, |d| d.hover(move |s| s.bg(p.surface_hover)))
                             .child(icon(
                                 if with_add {
-                                    IconName::FolderHeart
+                                    IconName::Folder
                                 } else {
                                     IconName::Star
                                 },
-                                14.0,
+                                15.0,
                                 if active { p.accent } else { p.text_dim },
                             ))
                             .child(
@@ -606,7 +716,12 @@ impl MainShell {
                                     .min_w_0()
                                     .text_sm()
                                     .truncate()
-                                    .text_color(if active { p.text } else { p.text_muted })
+                                    .font_weight(if active {
+                                        FontWeight::SEMIBOLD
+                                    } else {
+                                        FontWeight::NORMAL
+                                    })
+                                    .text_color(if active { p.accent } else { p.text_muted })
                                     .child(f.title.clone()),
                             )
                             .child(
@@ -621,8 +736,35 @@ impl MainShell {
                     })
                     .collect::<Vec<_>>()
             };
-            div().flex().flex_col().child(header).children(rows)
+            div().flex().flex_col().gap_0p5().child(header).children(rows)
         };
+
+        let collapse_bar = div()
+            .id("sidebar-toggle")
+            .h(px(34.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .border_t_1()
+            .border_color(p.border)
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.surface_hover))
+            .tip(if collapsed {
+                "展开侧边栏"
+            } else {
+                "收起侧边栏"
+            })
+            .on_click(on_state(&self.state, |s, cx| s.toggle_sidebar(cx)))
+            .child(icon(
+                if collapsed {
+                    IconName::ChevronsRight
+                } else {
+                    IconName::ChevronsLeft
+                },
+                15.0,
+                p.text_dim,
+            ));
 
         div()
             .w(px(width))
@@ -640,33 +782,34 @@ impl MainShell {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px_2()
-                    .pb_3()
+                    .px_3()
+                    .pb_4()
                     .flex()
                     .flex_col()
-                    .gap_0p5()
+                    .gap_1()
                     .children(nav)
                     .when(logged_in && !collapsed, |d| {
                         d.child(folder_section(
                             "sec-created",
-                            "创建的收藏夹",
+                            "我创建的",
                             created,
                             folded.created,
                             true,
                         ))
                         .child(folder_section(
                             "sec-collected",
-                            "收藏的歌单",
+                            "我收藏的",
                             collected,
                             folded.collected,
                             false,
                         ))
                     }),
             )
+            .child(collapse_bar)
             .into_any_element()
     }
 
-    // -- Header ------------------------------------------------------------
+    // -- Right-pane top navbar (matches screenshots/home.png) --------------
 
     fn render_header(
         &self,
@@ -675,122 +818,84 @@ impl MainShell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let s = self.state.read(cx);
-        let mac = cfg!(target_os = "macos");
         let theme_mode = s.settings.theme_mode.clone();
         let lyrics_open = s.windows.desktop_lyrics.is_some();
         let mini_open = s.windows.mini_player.is_some();
         let user = s.user.clone();
-        let playing = is_playing(s.snapshot.state);
+        let can_back = s.can_go_back();
+        let can_forward = s.can_go_forward();
 
-        let ticker = if s.settings.show_top_lyrics && playing && !s.is_full_screen {
-            active_line_index(&s.lyrics.lines, s.snapshot.position_secs)
-                .and_then(|i| s.lyrics.lines.get(i))
-                .filter(|l| !l.text.trim().is_empty())
-                .map(|l| {
-                    let tr = if s.settings.show_top_lyrics_translation {
-                        l.translation.clone().filter(|t| !t.trim().is_empty())
-                    } else {
-                        None
-                    };
-                    (l.text.clone(), tr)
+        let nav_circle = |id: &'static str, name: IconName, enabled: bool| {
+            div()
+                .id(id)
+                .size(px(32.0))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(p.surface)
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(enabled, |d| {
+                    d.cursor_pointer()
+                        .hover(move |s| s.bg(p.surface_hover))
+                        .active(move |s| s.bg(p.surface_active))
                 })
-        } else {
-            None
-        };
-
-        let drag = |d: Stateful<Div>| {
-            d.on_mouse_down(MouseButton::Left, |ev, window, _| {
-                if ev.click_count >= 2 {
-                    window.titlebar_double_click();
-                } else {
-                    window.start_window_move();
-                }
-            })
+                .when(!enabled, |d| d.opacity(0.35))
+                .child(icon(name, 16.0, p.text))
         };
 
         let search = div()
             .occlude()
-            .w(px(280.0))
-            .h(px(32.0))
+            .w(px(290.0))
+            .h(px(36.0))
             .flex_shrink_0()
             .flex()
             .items_center()
             .gap_2()
-            .px_3()
+            .px_3p5()
             .rounded_full()
             .bg(p.surface)
-            .border_1()
-            .border_color(p.border)
-            .child(icon(IconName::Search, 14.0, p.text_dim))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .text_sm()
                     .child(Input::new(&self.search).appearance(false).cleanable(true)),
-            );
-
-        let center = drag(
-            div()
-                .id("header-drag")
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .flex()
-                .items_center()
-                .justify_center(),
-        )
-        .when_some(ticker, |d, (text, tr)| {
-            d.child(
-                div()
-                    .id("top-lyrics")
-                    .occlude()
-                    .max_w(px(520.0))
-                    .px_3()
-                    .py_1()
-                    .rounded(px(8.0))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(p.surface_hover))
-                    .on_click(on_state(&self.state, |s, cx| s.toggle_full_screen(cx)))
-                    .child(
-                        div()
-                            .max_w_full()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(p.accent)
-                            .truncate()
-                            .child(text),
-                    )
-                    .when_some(tr, |d, t| {
-                        d.child(
-                            div()
-                                .max_w_full()
-                                .text_xs()
-                                .text_color(p.text_dim)
-                                .truncate()
-                                .child(t),
-                        )
-                    }),
             )
-        });
+            .child(icon(IconName::Search, 15.0, p.text_dim));
+
+        let left = div()
+            .occlude()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                nav_circle("nav-back", IconName::ChevronLeft, can_back)
+                    .tip("返回")
+                    .on_click(on_state(&self.state, |s, cx| s.go_back(cx))),
+            )
+            .child(
+                nav_circle("nav-forward", IconName::ChevronRight, can_forward)
+                    .tip("前进")
+                    .on_click(on_state(&self.state, |s, cx| s.go_forward(cx))),
+            )
+            .child(search);
 
         let user_button = match &user {
             Some(u) => {
                 let name = u.name.clone();
                 div()
                     .id("user-button")
-                    .h(px(32.0))
+                    .h(px(34.0))
                     .pl_1()
-                    .pr_2()
+                    .pr_3()
                     .flex()
                     .items_center()
                     .gap_2()
                     .rounded_full()
+                    .bg(p.surface)
                     .cursor_pointer()
-                    .hover(|s| s.bg(p.surface_hover))
+                    .hover(move |s| s.bg(p.surface_hover))
                     .child(crate::widgets::cover_box(
                         avatar,
                         px(26.0),
@@ -800,8 +905,9 @@ impl MainShell {
                     ))
                     .child(
                         div()
-                            .max_w(px(96.0))
+                            .max_w(px(100.0))
                             .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(p.text)
                             .truncate()
                             .child(name),
@@ -814,7 +920,7 @@ impl MainShell {
             }
             None => div()
                 .id("login-button")
-                .h(px(30.0))
+                .h(px(34.0))
                 .px_4()
                 .flex()
                 .items_center()
@@ -825,7 +931,7 @@ impl MainShell {
                 .text_sm()
                 .font_weight(FontWeight::SEMIBOLD)
                 .cursor_pointer()
-                .hover(|s| s.opacity(0.88))
+                .hover(|s| s.opacity(0.90))
                 .child(icon(IconName::User, 14.0, p.accent_fg))
                 .child("登录")
                 .on_click(on_state(&self.state, |s, cx| {
@@ -879,23 +985,28 @@ impl MainShell {
                         }
                     }),
             )
-            .child(div().w(px(1.0)).h(px(18.0)).mx_1().bg(p.border))
+            .child(div().w(px(6.0)))
             .child(user_button);
 
-        drag(div().id("header"))
+        div()
+            .id("header")
             .h(px(HEADER_HEIGHT))
             .w_full()
             .flex_shrink_0()
             .flex()
             .items_center()
             .gap_3()
-            .pl(px(if mac { 84.0 } else { 16.0 }))
-            .pr_4()
+            .px_6()
             .bg(p.bg)
-            .border_b_1()
-            .border_color(p.border)
-            .child(search)
-            .child(center)
+            .on_mouse_down(MouseButton::Left, |ev, window, _| {
+                if ev.click_count >= 2 {
+                    window.titlebar_double_click();
+                } else {
+                    window.start_window_move();
+                }
+            })
+            .child(left)
+            .child(self.top_lyrics.clone())
             .child(right)
             .into_any_element()
     }
@@ -908,19 +1019,19 @@ impl MainShell {
         let item = |id: &'static str, name: IconName, label: &'static str, danger: bool| {
             div()
                 .id(id)
-                .h(px(34.0))
+                .h(px(36.0))
                 .px_3()
                 .flex()
                 .items_center()
-                .gap_2()
-                .rounded(px(6.0))
+                .gap_2p5()
+                .rounded(px(8.0))
                 .cursor_pointer()
                 .text_sm()
                 .text_color(if danger { p.danger } else { p.text })
-                .hover(|s| s.bg(p.surface_hover))
+                .hover(move |s| s.bg(p.surface_hover))
                 .child(icon(
                     name,
-                    14.0,
+                    15.0,
                     if danger { p.danger } else { p.text_muted },
                 ))
                 .child(label)
@@ -946,17 +1057,18 @@ impl MainShell {
                     div()
                         .absolute()
                         .top(px(HEADER_HEIGHT - 4.0))
-                        .right(px(14.0))
-                        .w(px(180.0))
-                        .p_1()
-                        .rounded(px(10.0))
-                        .bg(p.surface)
+                        .right(px(20.0))
+                        .w(px(184.0))
+                        .p_1p5()
+                        .rounded(px(12.0))
+                        .bg(p.surface_elevated)
                         .border_1()
-                        .border_color(p.border)
-                        .shadow_lg()
+                        .border_color(p.border_strong)
+                        .shadow_xl()
                         .occlude()
                         .flex()
                         .flex_col()
+                        .gap_0p5()
                         .child(
                             item("menu-profile", IconName::UserRound, "个人主页", false).on_click(
                                 cx.listener(move |this, _, _, cx| {
@@ -980,14 +1092,14 @@ impl MainShell {
     fn render_toast(&self, p: BiuPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let toast = self.state.read(cx).toast.clone()?;
         let (fg, ring) = if toast.is_error {
-            (p.danger, p.danger.opacity(0.35))
+            (p.danger, p.danger.opacity(0.4))
         } else {
-            (p.accent, p.accent.opacity(0.35))
+            (p.accent, p.accent.opacity(0.4))
         };
         Some(
             div()
                 .absolute()
-                .top(px(HEADER_HEIGHT + 12.0))
+                .top(px(HEADER_HEIGHT + 8.0))
                 .left_0()
                 .right_0()
                 .flex()
@@ -1002,16 +1114,16 @@ impl MainShell {
                         .items_center()
                         .gap_2()
                         .rounded_full()
-                        .bg(p.surface)
+                        .bg(p.surface_elevated)
                         .border_1()
                         .border_color(ring)
-                        .shadow_lg()
+                        .shadow_xl()
                         .text_sm()
                         .text_color(p.text)
                         .cursor_pointer()
                         .on_click(on_state(&self.state, |s, cx| {
                             s.toast = None;
-                            cx.notify();
+                            s.notify_ui(cx);
                         }))
                         .child(icon(
                             if toast.is_error {
@@ -1031,30 +1143,40 @@ impl MainShell {
 
 impl Render for MainShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let face = self
-            .state
-            .read(cx)
-            .user
-            .as_ref()
-            .map(|u| u.face.clone())
-            .unwrap_or_default();
-        let avatar = if face.is_empty() {
-            None
-        } else {
-            self.state.update(cx, |s, cx| {
-                s.ensure_cover(&face, ThumbSize::Tiny, false, cx)
-            })
-        };
-
-        let p = self.state.read(cx).palette(window);
-        let (full_screen, modal_open) = {
+        let (p, avatar, missing_avatar, full_screen, modal_open) = {
             let s = self.state.read(cx);
-            (s.is_full_screen, !matches!(s.modal, ActiveModal::None))
+            let mut missing = None;
+            let avatar = s
+                .user
+                .as_ref()
+                .filter(|u| !u.face.is_empty())
+                .and_then(|u| {
+                    let key = CoverKey::thumb(u.face.clone(), ThumbSize::Tiny);
+                    let img = s.covers.get(&key);
+                    if img.is_none() && s.covers.should_fetch(&key) {
+                        missing = Some(u.face.clone());
+                    }
+                    img
+                });
+            (
+                s.palette(window),
+                avatar,
+                missing,
+                s.is_full_screen,
+                !matches!(s.modal, ActiveModal::None),
+            )
         };
+        if let Some(url) = missing_avatar {
+            let st = self.state.clone();
+            window.defer(cx, move |_, cx| {
+                st.update(cx, |s, cx| {
+                    s.ensure_cover(&url, ThumbSize::Tiny, false, cx);
+                });
+            });
+        }
 
         let sidebar = self.render_sidebar(p, cx);
         let header = self.render_header(p, avatar, cx);
-        let player_bar = render_player_bar(&self.state, p, window, cx);
         let user_menu = self.render_user_menu(p, cx);
         let toast = self.render_toast(p, cx);
 
@@ -1069,18 +1191,32 @@ impl Render for MainShell {
             .flex_col()
             .bg(p.bg)
             .text_color(p.text)
-            .child(header)
             .child(
-                div().flex_1().min_h_0().flex().child(sidebar).child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .overflow_hidden()
-                        .child(self.pages.clone()),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(sidebar)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .bg(p.bg)
+                            .child(header)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .min_h_0()
+                                    .overflow_hidden()
+                                    .child(self.pages.clone()),
+                            ),
+                    ),
             )
-            .child(player_bar)
+            .child(self.player_bar.clone())
             .when_some(user_menu, |d, m| d.child(m))
             .when(full_screen, |d| d.child(self.full_screen.clone()))
             .when(modal_open, |d| {

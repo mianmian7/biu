@@ -2,6 +2,7 @@
 //! live 64-bar spectrum and auto-centering synchronized lyrics.
 
 use crate::desktop_lyrics::open_or_toggle_desktop_lyrics;
+use crate::image_loader::CoverKey;
 use crate::player_bar::{
     TooltipExt, effective_duration, icon, icon_button, is_playing, play_button, play_mode_icon,
     play_mode_short_label, queue_button, rate_chip, seek_slider, time_label, volume_slider_with,
@@ -109,15 +110,22 @@ pub struct FullScreenPlayer {
     lyrics_scroll: ScrollHandle,
     last_active: Option<usize>,
     user_scroll_at: Option<Instant>,
+    _observe: Subscription,
 }
 
 impl FullScreenPlayer {
-    pub fn new(state: Entity<AppState>, _window: &mut Window, _cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let observe = cx.observe(&state, |_, state, cx| {
+            if state.read(cx).is_full_screen {
+                cx.notify();
+            }
+        });
         Self {
             state,
             lyrics_scroll: ScrollHandle::new(),
             last_active: None,
             user_scroll_at: None,
+            _observe: observe,
         }
     }
 
@@ -363,22 +371,38 @@ fn waveform(spectrum: &[f32; SPECTRUM_BARS], p: BiuPalette, height: f32) -> Div 
 
 impl Render for FullScreenPlayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let cover_url = self
-            .state
-            .read(cx)
-            .current_track()
-            .map(|t| t.cover.clone())
-            .unwrap_or_default();
-        let (cover, backdrop) = if cover_url.is_empty() {
-            (None, None)
-        } else {
-            self.state.update(cx, |s, cx| {
-                (
-                    s.ensure_cover(&cover_url, ThumbSize::Cover, false, cx),
-                    s.ensure_cover(&cover_url, ThumbSize::BlurBg, true, cx),
-                )
-            })
+        let (cover, backdrop, missing) = {
+            let s = self.state.read(cx);
+            let cover_url = s
+                .current_track()
+                .map(|t| t.cover.clone())
+                .unwrap_or_default();
+            if cover_url.is_empty() {
+                (None, None, None)
+            } else {
+                let k_cover = CoverKey::thumb(cover_url.clone(), ThumbSize::Cover);
+                let k_blur = CoverKey::blurred(cover_url.clone());
+                let c = s.covers.get(&k_cover);
+                let b = s.covers.get(&k_blur);
+                let need_c = c.is_none() && s.covers.should_fetch(&k_cover);
+                let need_b = b.is_none() && s.covers.should_fetch(&k_blur);
+                let miss = (need_c || need_b).then_some((cover_url, need_c, need_b));
+                (c, b, miss)
+            }
         };
+        if let Some((url, need_c, need_b)) = missing {
+            let st = self.state.clone();
+            window.defer(cx, move |_, cx| {
+                st.update(cx, |s, cx| {
+                    if need_c {
+                        s.ensure_cover(&url, ThumbSize::Cover, false, cx);
+                    }
+                    if need_b {
+                        s.ensure_cover(&url, ThumbSize::BlurBg, true, cx);
+                    }
+                });
+            });
+        }
 
         let lyrics_el = {
             let base = self.state.read(cx).palette(window);

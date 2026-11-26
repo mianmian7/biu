@@ -7,9 +7,12 @@ mod playlist_drawer;
 use crate::pages::{
     button, column, new_input, normalize_query, run_on, state_button, thumbnail, toolbar,
 };
+use crate::player_bar::{icon_button, TooltipExt};
 use crate::state::{ActiveModal, AppState, Services};
 use crate::theme::BiuPalette;
 use crate::widgets::empty_state;
+use biu_core::image_cache::ThumbSize;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -62,11 +65,31 @@ pub struct ModalsHost {
     task: Option<Task<()>>,
     submitting: bool,
     error: Option<String>,
+    last_ui_ver: u64,
+    last_covers_ver: u64,
 }
 
 impl ModalsHost {
     pub fn new(state: Entity<AppState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        cx.observe(&state, |_, _, cx| cx.notify()).detach();
+        let (init_ui, init_covers) = {
+            let s = state.read(cx);
+            (s.ui_version, s.covers_version())
+        };
+        cx.observe(&state, |this, state, cx| {
+            let s = state.read(cx);
+            let modal_open = !matches!(s.modal, ActiveModal::None) || this.key.is_some();
+            if !modal_open {
+                return;
+            }
+            let ui_ver = s.ui_version;
+            let covers_ver = s.covers_version();
+            if this.last_ui_ver != ui_ver || this.last_covers_ver != covers_ver {
+                this.last_ui_ver = ui_ver;
+                this.last_covers_ver = covers_ver;
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             state,
             key: None,
@@ -76,6 +99,8 @@ impl ModalsHost {
             task: None,
             submitting: false,
             error: None,
+            last_ui_ver: init_ui,
+            last_covers_ver: init_covers,
         }
     }
 
@@ -105,7 +130,22 @@ impl ModalsHost {
             ActiveModal::LyricsSearch => self.enter_lyrics(window, cx),
             ActiveModal::FavSelect { track } => self.enter_favorites(track, cx),
             ActiveModal::FavFolderEdit { folder } => self.enter_folder_edit(folder, window, cx),
-            ActiveModal::PlaylistDrawer => {}
+            ActiveModal::PlaylistDrawer => {
+                let covers: Vec<(String, ThumbSize)> = state
+                    .queue
+                    .items()
+                    .iter()
+                    .take(40)
+                    .filter(|t| !t.cover.is_empty())
+                    .map(|t| (t.cover.clone(), ThumbSize::Tiny))
+                    .collect();
+                if !covers.is_empty() {
+                    let st = self.state.clone();
+                    window.defer(cx, move |_, cx| {
+                        st.update(cx, |s, cx| s.prefetch_covers(covers, cx));
+                    });
+                }
+            }
         }
         self.focus.focus(window, cx);
     }
@@ -192,18 +232,18 @@ impl Render for ModalsHost {
         };
         let drawer = matches!(key, ModalKey::Queue);
         let (title, content) = match key {
-            ModalKey::Login => ("扫码登录", self.login_view(p, cx)),
-            ModalKey::Lyrics(_) => ("搜索歌词", self.lyrics_view(p, cx)),
-            ModalKey::Favorite(..) => ("收藏歌曲", self.favorites_view(p, cx)),
+            ModalKey::Login => ("扫码登录", self.login_view(p, cx).into_any_element()),
+            ModalKey::Lyrics(_) => ("搜索歌词", self.lyrics_view(p, cx).into_any_element()),
+            ModalKey::Favorite(..) => ("收藏歌曲", self.favorites_view(p, cx).into_any_element()),
             ModalKey::EditFolder(folder, _) => (
                 if folder.is_some() {
                     "编辑收藏夹"
                 } else {
                     "新建收藏夹"
                 },
-                self.folder_edit_view(p, cx),
+                self.folder_edit_view(p, cx).into_any_element(),
             ),
-            ModalKey::Queue => ("播放队列", self.queue_view(p, cx)),
+            ModalKey::Queue => ("播放列表", self.queue_view(p, cx).into_any_element()),
         };
 
         div().absolute().top_0().left_0().size_full().child(
@@ -230,41 +270,52 @@ impl Render for ModalsHost {
                             .top_0()
                             .left_0()
                             .size_full()
-                            .bg(rgba(0x00000080))
+                            .bg(rgba(0x00000099))
                             .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                     )
                     .child(
                         column()
                             .relative()
                             .occlude()
-                            .bg(p.surface)
+                            .bg(p.surface_elevated)
                             .text_color(p.text)
                             .border_1()
-                            .border_color(p.border)
-                            .shadow_lg()
-                            .p_4()
-                            .when(drawer, |panel| panel.w(px(360.)).h_full())
+                            .border_color(p.border_strong)
+                            .shadow_2xl()
+                            .p_5()
+                            .gap_3()
+                            .when(drawer, |panel| {
+                                panel
+                                    .w(px(380.0))
+                                    .h_full()
+                                    .rounded_l(px(16.0))
+                                    .border_r_0()
+                            })
                             .when(!drawer, |panel| {
                                 panel
-                                    .w(px(540.))
+                                    .w(px(520.0))
                                     .max_w(relative(0.92))
                                     .max_h(relative(0.86))
-                                    .rounded(p.radius)
+                                    .rounded(px(16.0))
                             })
                             .child(
-                                toolbar()
+                                div()
+                                    .flex()
+                                    .items_center()
                                     .justify_between()
                                     .child(
                                         div()
                                             .text_lg()
-                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .font_weight(FontWeight::BOLD)
                                             .child(title),
                                     )
                                     .when(!self.submitting, |bar| {
                                         bar.child(
-                                            button("close", "关闭", p).on_click(
-                                                cx.listener(|this, _, _, cx| this.close(cx)),
-                                            ),
+                                            icon_button("close", IconName::X, 16.0, p, false)
+                                                .tip("关闭")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.close(cx)
+                                                })),
                                         )
                                     }),
                             )
@@ -276,14 +327,22 @@ impl Render for ModalsHost {
                                     div().text_sm().text_color(p.text_muted).child("正在保存…"),
                                 )
                             })
-                            .child(
+                            .child(if drawer {
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(content)
+                                    .into_any_element()
+                            } else {
                                 div()
                                     .id("modal-content")
                                     .min_h_0()
                                     .overflow_y_scroll()
-                                    .when(drawer, |content| content.flex_1())
-                                    .child(content),
-                            ),
+                                    .child(content)
+                                    .into_any_element()
+                            }),
                     ),
             )
             .with_priority(10),

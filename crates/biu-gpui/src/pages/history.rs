@@ -17,7 +17,7 @@ impl PagesHost {
             return;
         }
         self.data.history.input =
-            Some(self.filter_input("搜索播放历史", window, cx, Self::filter_history));
+            Some(self.filter_input("搜索播放历史…", window, cx, Self::filter_history));
         self.reset_history(cx);
     }
 
@@ -48,7 +48,7 @@ impl PagesHost {
         let keyword = history.keyword.clone();
         let requested = history.cursor.clone();
         let prior = history.prior.clone();
-        self.load(
+        self.load_with(
             |h| &mut h.data.history.results,
             move |s| async move {
                 let mut response = if keyword.is_empty() {
@@ -74,103 +74,148 @@ impl PagesHost {
                 response.items = items;
                 Ok(response)
             },
+            |this, page_data, cx| {
+                let covers = page_data
+                    .items
+                    .iter()
+                    .take(48)
+                    .filter_map(|item| item.track.as_ref())
+                    .filter(|t| !t.cover.is_empty())
+                    .map(|t| (t.cover.clone(), ThumbSize::Tiny))
+                    .collect();
+                this.prefetch_covers(covers, cx);
+            },
             cx,
         );
     }
 
     pub(super) fn history_view(&self, p: BiuPalette, cx: &Context<Self>) -> Div {
-        let mut root = page("播放历史");
         let history = &self.data.history;
         let Some(input) = &history.input else {
-            return root.child(self.login_hint(p));
+            return page("历史记录").child(self.login_hint(p));
         };
-        root = root.child(filter_bar(input, "搜索", p, cx, Self::filter_history));
-        if !self.mutating {
-            root =
-                if history.confirm_clear {
-                    root.child(
-                        toolbar()
-                            .child("清空哔哩哔哩账号的全部历史记录？")
-                            .child(
-                                button("confirm-clear", "确认清空", p)
-                                    .text_color(p.danger)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.data.history.confirm_clear = false;
+
+        let clear_control = if !self.mutating {
+            if history.confirm_clear {
+                toolbar()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(p.danger)
+                            .child("确认清空全部历史？"),
+                    )
+                    .child(
+                        button("confirm-clear", "确认清空", p)
+                            .text_color(p.danger)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.data.history.confirm_clear = false;
+                                this.mutate(
+                                    |s| async move { s.bili.clear_history().await },
+                                    "已清空历史",
+                                    Self::reset_history,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(button("cancel-clear", "取消", p).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.data.history.confirm_clear = false;
+                            cx.notify();
+                        },
+                    )))
+            } else {
+                toolbar().child(
+                    icon_pill_button("clear", IconName::Trash, "清空历史", p).on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.data.history.confirm_clear = true;
+                            cx.notify();
+                        }),
+                    ),
+                )
+            }
+        } else {
+            toolbar()
+        };
+
+        let header = div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(
+                div()
+                    .text_2xl()
+                    .font_weight(FontWeight::BOLD)
+                    .child("历史记录"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(filter_bar(input, "搜索", p, cx, Self::filter_history))
+                    .child(clear_control),
+            );
+
+        page("").child(header).child(history.results.content(
+            p,
+            button("retry", "重试", p)
+                .on_click(cx.listener(|this, _, _, cx| this.load_history(cx))),
+            |result| {
+                if result.items.is_empty() {
+                    return empty_state("没有历史记录", "", p);
+                }
+                column()
+                    .gap(px(2.0))
+                    .child(track_list_header(p))
+                    .children(result.items.iter().enumerate().map(|(i, item)| {
+                        let row = if let Some(track) = &item.track {
+                            track_row(&self.state, i, track, p, cx)
+                        } else {
+                            div()
+                                .id(("hist-plain", i))
+                                .h(px(52.0))
+                                .px_3()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .rounded(px(10.0))
+                                .hover(move |s| s.bg(p.surface_hover))
+                                .child(div().text_sm().truncate().child(item.title.clone()))
+                        };
+                        let kid = item.kid.clone();
+                        row.when(!kid.is_empty() && !self.mutating, |row| {
+                            row.child(
+                                compact_icon_btn(("del-hist", i), IconName::Trash, "删除记录", p)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        let kid = kid.clone();
                                         this.mutate(
-                                            |s| async move { s.bili.clear_history().await },
-                                            "已清空历史",
+                                            move |s| async move {
+                                                s.bili.delete_history(&kid).await
+                                            },
+                                            "已删除历史记录",
                                             Self::reset_history,
                                             cx,
                                         );
                                     })),
                             )
-                            .child(button("cancel-clear", "取消", p).on_click(cx.listener(
-                                |this, _, _, cx| {
-                                    this.data.history.confirm_clear = false;
-                                    cx.notify();
-                                },
-                            ))),
-                    )
-                } else {
-                    root.child(toolbar().child(button("clear", "清空历史", p).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.data.history.confirm_clear = true;
-                            cx.notify();
-                        }),
-                    )))
-                };
-        }
-        root.child(
-            history.results.content(
-                p,
-                button("retry", "重试", p)
-                    .on_click(cx.listener(|this, _, _, cx| this.load_history(cx))),
-                |result| {
-                    column()
-                        .when(result.items.is_empty(), |c| {
-                            c.child(empty_state("没有历史记录", "", p))
                         })
-                        .children(result.items.iter().enumerate().map(|(i, item)| {
-                            let row = if let Some(track) = &item.track {
-                                track_row(&self.state, i, track, p, cx)
-                            } else {
-                                div()
-                                    .id(i)
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .p_2()
-                                    .bg(p.surface)
-                                    .rounded(p.radius)
-                                    .child(item.title.clone())
-                            };
-                            let kid = item.kid.clone();
-                            row.when(!kid.is_empty() && !self.mutating, |row| {
-                                row.child(button("delete", "删除", p).on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        let kid = kid.clone();
-                                        this.mutate(
-                                                move |s| async move {
-                                                    s.bili.delete_history(&kid).await
-                                                },
-                                                "已删除历史记录",
-                                                Self::reset_history,
-                                                cx,
-                                            );
-                                    },
-                                )))
-                            })
-                        }))
-                        .when(result.next_offset.is_some(), |c| {
-                            c.child(toolbar().child(
-                                button("more", "加载更多", p).on_click(
-                                    cx.listener(|this, _, _, cx| this.append_history(cx)),
-                                ),
-                            ))
-                        })
-                },
-            ),
-        )
+                    }))
+                    .when(result.next_offset.is_some(), |c| {
+                        c.child(
+                            div().w_full().pt_4().flex().justify_center().child(
+                                icon_pill_button("more", IconName::Plus, "加载更多", p)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.append_history(cx)
+                                    })),
+                            ),
+                        )
+                    })
+            },
+        ))
     }
 }
 

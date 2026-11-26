@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 /// Hard caps on decoded GPU-ready RenderImage instances kept in memory/atlas.
-pub const MAX_RENDER_IMAGES: usize = 48;
-pub const MAX_COVER_BYTES: usize = 12 * 1024 * 1024;
+pub const MAX_RENDER_IMAGES: usize = 128;
+pub const MAX_COVER_BYTES: usize = 24 * 1024 * 1024;
 pub const MAX_LARGE_COVERS: usize = 2;
 pub const MAX_BLUR_BGS: usize = 2;
 
@@ -123,10 +123,12 @@ struct StoredCover {
 pub struct CoverStore {
     entries: HashMap<CoverKey, StoredCover>,
     order: VecDeque<CoverKey>,
+    pinned: HashSet<CoverKey>,
     in_flight: HashSet<CoverKey>,
     failed: HashSet<CoverKey>,
     total_bytes: usize,
     clear_epoch: u64,
+    version: u64,
 }
 
 impl CoverStore {
@@ -134,8 +136,28 @@ impl CoverStore {
         self.clear_epoch
     }
 
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
     pub fn get(&self, key: &CoverKey) -> Option<Arc<RenderImage>> {
         self.entries.get(key).map(|entry| entry.image.clone())
+    }
+
+    /// Promote `key` to most-recently-used so active covers aren't evicted during scrolling.
+    pub fn touch(&mut self, key: &CoverKey) {
+        if self.entries.contains_key(key) && self.order.back() != Some(key) {
+            self.order.retain(|k| k != key);
+            self.order.push_back(key.clone());
+        }
+    }
+
+    /// Replace pinned keys (e.g. current track cover & user avatar) so scrolling never evicts them.
+    pub fn set_pinned(&mut self, keys: impl IntoIterator<Item = CoverKey>) {
+        self.pinned.clear();
+        for key in keys {
+            self.pinned.insert(key);
+        }
     }
 
     pub fn should_fetch(&self, key: &CoverKey) -> bool {
@@ -163,6 +185,7 @@ impl CoverStore {
             return vec![image];
         }
         self.failed.remove(&key);
+        self.version = self.version.wrapping_add(1);
         let mut evicted = Vec::new();
         let bytes = estimate_image_bytes(&image);
 
@@ -183,15 +206,22 @@ impl CoverStore {
             self.evict_matching(MAX_BLUR_BGS, |k| k.blurred, &mut evicted);
         }
 
-        // Enforce global entry count and byte budget.
+        // Enforce global entry count and byte budget, preferring non-pinned oldest entries.
         while self.order.len() > MAX_RENDER_IMAGES
             || (self.total_bytes > MAX_COVER_BYTES && self.order.len() > 1)
         {
-            if let Some(old_key) = self.order.pop_front()
+            let pos = self
+                .order
+                .iter()
+                .position(|k| !self.pinned.contains(k) && k != &key)
+                .unwrap_or(0);
+            if let Some(old_key) = self.order.remove(pos)
                 && let Some(old) = self.entries.remove(&old_key)
             {
                 self.total_bytes = self.total_bytes.saturating_sub(old.bytes);
                 evicted.push(old.image);
+            } else {
+                break;
             }
         }
         evicted
@@ -299,5 +329,20 @@ mod tests {
         let dropped = store.insert(e0, stale_key.clone(), dummy_render_image(16, 16));
         assert_eq!(dropped.len(), 1);
         assert!(store.get(&stale_key).is_none());
+    }
+
+    #[test]
+    fn pinned_covers_survive_scrolling_eviction() {
+        let mut store = CoverStore::default();
+        let epoch = store.clear_epoch();
+        let pinned = CoverKey::thumb("https://i0.hdslb.com/avatar.jpg", ThumbSize::Tiny);
+        store.set_pinned([pinned.clone()]);
+        store.insert(epoch, pinned.clone(), dummy_render_image(32, 32));
+        for i in 0..(MAX_RENDER_IMAGES + 10) {
+            let key = CoverKey::thumb(format!("https://i0.hdslb.com/item-{i}.jpg"), ThumbSize::Card);
+            store.insert(epoch, key, dummy_render_image(32, 32));
+        }
+        assert!(store.get(&pinned).is_some());
+        assert!(store.entries.len() <= MAX_RENDER_IMAGES);
     }
 }

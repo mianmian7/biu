@@ -134,8 +134,16 @@ impl BiliClient {
     }
 
     pub async fn get_region_feed_rcmd(&self, display_id: u64) -> Result<Vec<TrackItem>> {
+        self.get_region_feed_rcmd_for(1003, display_id).await
+    }
+
+    pub async fn get_region_feed_rcmd_for(
+        &self,
+        from_region: u64,
+        display_id: u64,
+    ) -> Result<Vec<TrackItem>> {
         let data = self.get(API, "/x/web-interface/region/feed/rcmd", json!({
-            "display_id": display_id, "request_cnt": 15, "from_region": 1003, "device": "web",
+            "display_id": display_id, "request_cnt": 15, "from_region": from_region, "device": "web",
             "plat": 30, "web_location": "333.40138"
         }), true).await?;
         Ok(tracks(&data["archives"]))

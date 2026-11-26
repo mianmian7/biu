@@ -142,7 +142,7 @@ impl Default for AppSettings {
             background_color: String::new(),
             audio_quality: AudioQuality::Auto,
             hidden_menu_keys: Vec::new(),
-            display_mode: "list".into(),
+            display_mode: "card".into(),
             ffmpeg_path: String::new(),
             theme_mode: "system".into(),
             page_transition: "none".into(),
