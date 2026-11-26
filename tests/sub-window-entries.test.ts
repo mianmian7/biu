@@ -85,11 +85,44 @@ describe("main entry", () => {
     expect(graph.packages).not.toContain("moment-duration-format");
   });
 
-  test("sub-windows open dedicated lightweight HTML entries and index.html retains hash fallback", () => {
+  test("sub-windows open dedicated lightweight HTML entries and index.html retains safe hash fallback", async () => {
     const html = readFileSync(path.join(ROOT, "src/index.html"), "utf8");
-    expect(html).toContain('"desktop-lyrics"');
-    expect(html).toContain('"mini-player"');
+    expect(html).toContain("desktop-lyrics");
+    expect(html).toContain("mini-player");
     expect(html).toContain("location.replace");
+
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const runRedirect = (hash: string) => {
+      let replaced = "";
+      const fakeWindow = {
+        location: {
+          hash,
+          replace: (url: string) => {
+            replaced = url;
+          },
+        },
+      };
+      new Function("window", scriptMatch![1])(fakeWindow);
+      return replaced;
+    };
+    expect(runRedirect("#desktop-lyrics")).toBe("./desktop-lyrics.html#desktop-lyrics");
+    expect(runRedirect("#/desktop-lyrics")).toBe("./desktop-lyrics.html#/desktop-lyrics");
+    expect(runRedirect("#mini-player")).toBe("./mini-player.html#mini-player");
+    expect(runRedirect("#/settings?tab=desktop-lyrics")).toBe("");
+    expect(runRedirect("#/settings?tab=mini-player")).toBe("");
+    expect(runRedirect("#/")).toBe("");
+
+    const { isSubWindow } = await import("@/common/utils/window-role");
+    const prevHref = window.location.href;
+    window.history.replaceState(null, "", "/index.html#/settings?tab=desktop-lyrics");
+    expect(isSubWindow()).toBe(false);
+    window.history.replaceState(null, "", "/index.html#desktop-lyrics");
+    expect(isSubWindow()).toBe(true);
+    window.history.replaceState(null, "", "/desktop-lyrics.html");
+    expect(isSubWindow()).toBe(true);
+    window.history.replaceState(null, "", prevHref);
+
     const rust = readFileSync(path.join(ROOT, "src-tauri/src/desktop_lyrics.rs"), "utf8");
     expect(rust).toContain('"desktop-lyrics.html"');
     expect(rust).toContain('"mini-player.html"');

@@ -135,7 +135,7 @@ const FullScreenPlayer = () => {
 
   const coverSrc = formatUrlProtocol(playItem?.pageCover || playItem?.cover);
   const bgCoverSrc = resizeBiliCover(coverSrc);
-  const foregroundCoverSrc = resizeBiliCover(coverSrc, "640w_480h_1c.webp");
+  const foregroundCoverSrc = resizeBiliCover(coverSrc, "960w_720h_1c.webp");
   const { effectsProfile, bgLayer, previousBgLayer, cssVars } = useGlassmorphism(bgCoverSrc, primaryColor, isOpen);
 
   useEffect(() => {

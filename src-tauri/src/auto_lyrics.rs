@@ -19,7 +19,9 @@ use tauri_plugin_store::StoreExt;
 use url::Url;
 
 pub const SAMPLE_RATE: u32 = 22050;
-const MAX_CACHED_AUDIO_BUFFERS: usize = 2;
+// Keep enough slots for 1 live + up to 3 concurrent reference fetches across rapid track switches;
+// buffers are removed immediately on decode (`take_audio_buffer`) or abort (`auto_lyrics_release_audio`).
+const MAX_CACHED_AUDIO_BUFFERS: usize = 8;
 
 const NETEASE_SEARCH_URL: &str = "https://interface.music.163.com/api/search/get";
 const NETEASE_LYRIC_URL: &str = "https://interface.music.163.com/api/song/lyric";
@@ -785,14 +787,16 @@ pub async fn auto_lyrics_decode_audio<R: Runtime>(
     let decoded = async move {
         let user_ffmpeg = user_ffmpeg_setting(&app);
         let ffmpeg_bin = resolve_ffmpeg_path(user_ffmpeg.as_deref())?;
-        tokio::task::spawn_blocking(move || decode_audio_to_s16le(&ffmpeg_bin, audio_bytes))
-            .await
-            .map_err(|e| e.to_string())?
+        tokio::task::spawn_blocking(move || {
+            let result = decode_audio_to_s16le(&ffmpeg_bin, audio_bytes);
+            #[cfg(target_os = "linux")]
+            crate::window_visibility::trim_heap();
+            result
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
     .await;
-
-    #[cfg(target_os = "linux")]
-    crate::window_visibility::trim_heap();
 
     decoded.map(Response::new)
 }
@@ -852,15 +856,16 @@ mod tests {
     }
 
     #[test]
-    fn audio_cache_retains_two_most_recent_buffers() {
+    fn audio_cache_retains_most_recent_buffers_up_to_limit() {
         let state = audio_state();
-        let oldest = state.store_audio_buffer(vec![1]);
-        let second = state.store_audio_buffer(vec![2]);
-        let newest = state.store_audio_buffer(vec![3]);
+        let tokens: Vec<String> = (0..=MAX_CACHED_AUDIO_BUFFERS)
+            .map(|i| state.store_audio_buffer(vec![i as u8]))
+            .collect();
 
-        assert_eq!(state.take_audio_buffer(&oldest), None);
-        assert_eq!(state.take_audio_buffer(&second), Some(vec![2]));
-        assert_eq!(state.take_audio_buffer(&newest), Some(vec![3]));
+        assert_eq!(state.take_audio_buffer(&tokens[0]), None);
+        for (i, token) in tokens.iter().enumerate().skip(1) {
+            assert_eq!(state.take_audio_buffer(token), Some(vec![i as u8]));
+        }
     }
 
     #[test]

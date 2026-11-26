@@ -136,10 +136,13 @@ fn bili_state_for_startup(
 }
 
 fn main() {
+    let worker_threads = std::thread::available_parallelism()
+        .map(|n| n.get().clamp(2, 4))
+        .unwrap_or(2);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(2)
-        .max_blocking_threads(8)
+        .worker_threads(worker_threads)
+        .max_blocking_threads(32)
         .build()
         .expect("failed to initialize Biu's Tokio runtime");
     tauri::async_runtime::set(runtime.handle().clone());

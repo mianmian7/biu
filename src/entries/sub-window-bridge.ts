@@ -82,10 +82,14 @@ export const toggleMiniMode = () => invoke<void>("toggle_mini_player").catch(() 
 
 // ---------- 桌面歌词 ----------
 
-/** 锁定（鼠标穿透）时主进程轮询光标，转发为 mousemove / mouseleave，与 platform 的实现一致 */
+/** 锁定（鼠标穿透）时主进程轮询光标，转发给歌词根节点；派发 mouseout 让 React onMouseLeave 立即生效 */
 const dispatchToLyricsRoot = (type: "mousemove" | "mouseleave") => {
   const target = document.querySelector("#root > div");
-  target?.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+  if (!target) return;
+  if (type === "mouseleave") {
+    target.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+  }
+  target.dispatchEvent(new MouseEvent(type, { bubbles: true }));
 };
 
 export const onDesktopLyricsContent = (cb: (payload: DesktopLyricsPayload) => void): VoidFunction => {

@@ -47,18 +47,25 @@ const CoverView = memo(() => {
   const cover = usePlayState(s => s.cover);
   const resized = getMiniCoverSrc(cover);
   const original = formatUrlProtocol(cover);
-  const [failed, setFailed] = useState<{ src?: string; level: 0 | 1 | 2 }>({ level: 0 });
+  const webpFallback = resized?.endsWith(".avif") ? resized.replace(/\.avif$/, ".webp") : undefined;
+  const candidates = useMemo(() => {
+    const list: string[] = [];
+    for (const u of [resized, webpFallback, original]) {
+      if (u && !list.includes(u)) list.push(u);
+    }
+    return list;
+  }, [resized, webpFallback, original]);
+  const [failed, setFailed] = useState<{ src?: string; idx: number }>({ idx: 0 });
   // 封面变化时重置失败状态
-  const level = failed.src === cover ? failed.level : 0;
+  const idx = failed.src === cover ? failed.idx : 0;
 
   if (!cover) return null;
 
-  // 先用缩略图；失败回退原图；再失败显示占位
-  const src = level === 0 ? resized : original;
+  const src = candidates[idx];
 
   return (
     <div className="relative h-full w-[100px] flex-shrink-0">
-      {level < 2 && src ? (
+      {src ? (
         <img
           src={src}
           alt=""
@@ -73,7 +80,7 @@ const CoverView = memo(() => {
             willChange: "transform",
             contain: "paint",
           }}
-          onError={() => setFailed({ src: cover, level: level === 0 && resized !== original ? 1 : 2 })}
+          onError={() => setFailed({ src: cover, idx: idx + 1 })}
         />
       ) : (
         <div className="border-content2 flex h-full items-center justify-center rounded-md border">
@@ -140,6 +147,7 @@ const MiniPlayer = () => {
   }, []);
 
   const handleSeek = (v: number) => {
+    setCurrentTime(v);
     postMessage("seek", { currentTime: v });
   };
 

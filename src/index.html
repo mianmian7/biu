@@ -11,7 +11,8 @@
       // 在加载主包之前跳到对应的轻量入口（保留 hash，子窗口判断仍然成立）
       (function () {
         var hash = window.location.hash;
-        var page = hash.indexOf("desktop-lyrics") >= 0 ? "desktop-lyrics" : hash.indexOf("mini-player") >= 0 ? "mini-player" : "";
+        var match = /^#\/?(desktop-lyrics|mini-player)(?:[/?#]|$)/.exec(hash);
+        var page = match ? match[1] : "";
         if (page) {
           window.__BIU_SUB_WINDOW_REDIRECT__ = true;
           window.location.replace("./" + page + ".html" + hash);

@@ -4,6 +4,7 @@ import type { WebPlayerParams } from "@/service/web-player";
 import type { AutoLyricsResult } from "@shared/auto-lyrics/service-types";
 
 import { getLyricsByBili } from "@/components/lyrics/get-lyrics";
+import { isMainWindowUiVisible, subscribeMainWindowUiVisible } from "@/layout/window-visibility";
 import { isJapaneseLyrics, needsRomaji } from "@shared/lyrics/romaji";
 import { resolveDesktopLyricsStyle } from "@shared/settings/desktop-lyrics";
 import { StoreNameMap } from "@shared/store";
@@ -340,7 +341,9 @@ function needsVisibleRomaji() {
   const { showDesktopLyrics, desktopLyricsStyle } = useSettings.getState();
   return (
     (showDesktopLyrics && resolveDesktopLyricsStyle(desktopLyricsStyle).showRomaji) ||
-    (useModalStore.getState().isFullScreenPlayerOpen && useFullScreenPlayerSettings.getState().showLyrics)
+    (isMainWindowUiVisible() &&
+      useModalStore.getState().isFullScreenPlayerOpen &&
+      useFullScreenPlayerSettings.getState().showLyrics)
   );
 }
 
@@ -364,6 +367,7 @@ function syncRomajiVisibility() {
 useSettings.subscribe(syncRomajiVisibility);
 useModalStore.subscribe(syncRomajiVisibility);
 useFullScreenPlayerSettings.subscribe(syncRomajiVisibility);
+subscribeMainWindowUiVisible(syncRomajiVisibility);
 useLyricsStore.subscribe((state, prevState) => {
   if (state.lyrics !== prevState.lyrics) complementVisibleRomaji();
 });

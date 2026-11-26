@@ -13,13 +13,30 @@ interface AudioWaveformProps {
 let audioContext: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let source: MediaElementAudioSourceNode | null = null;
+let suspendTimer: ReturnType<typeof setTimeout> | null = null;
+
+const PAUSE_SUSPEND_DELAY_MS = 8000;
+
+function clearSuspendTimer() {
+  if (suspendTimer !== null) {
+    clearTimeout(suspendTimer);
+    suspendTimer = null;
+  }
+}
 
 function resumeAudioContext() {
+  clearSuspendTimer();
   if (audioContext) void audioContext.resume().catch(() => {});
 }
 
-function suspendAudioContext() {
-  if (audioContext) void audioContext.suspend().catch(() => {});
+function scheduleSuspendAudioContext() {
+  clearSuspendTimer();
+  suspendTimer = setTimeout(() => {
+    suspendTimer = null;
+    if (audioElement.paused && audioContext) {
+      void audioContext.suspend().catch(() => {});
+    }
+  }, PAUSE_SUSPEND_DELAY_MS);
 }
 
 function initAudioContext() {
@@ -41,9 +58,10 @@ function initAudioContext() {
   analyser = node;
 
   // The media element stays routed through this context after the canvas unmounts.
+  // Never suspend immediately on `ended`: auto-next track playback starts right after `ended`,
+  // and suspending mid-transition can clip the opening audio or fail silently while hidden.
   audioElement.addEventListener("play", resumeAudioContext);
-  audioElement.addEventListener("pause", suspendAudioContext);
-  audioElement.addEventListener("ended", suspendAudioContext);
+  audioElement.addEventListener("pause", scheduleSuspendAudioContext);
 }
 
 /**
@@ -137,7 +155,7 @@ const AudioWaveform = ({ width = 56, height = 56, barCount = 40, barColor = "cur
     // Initialize state
     if (audioElement.paused) {
       draw();
-      suspendAudioContext();
+      scheduleSuspendAudioContext();
     } else {
       resumeAudioContext();
       render();
@@ -145,11 +163,15 @@ const AudioWaveform = ({ width = 56, height = 56, barCount = 40, barColor = "cur
 
     return () => {
       handlePause();
-      waveformSource.disconnect(waveformAnalyser);
-      if (audioElement.paused) suspendAudioContext();
       audioElement.removeEventListener("play", handlePlay);
       audioElement.removeEventListener("pause", handlePause);
       audioElement.removeEventListener("ended", handlePause);
+      try {
+        waveformSource.disconnect(waveformAnalyser);
+      } catch {
+        // Already disconnected
+      }
+      if (audioElement.paused) scheduleSuspendAudioContext();
     };
   }, [width, height, barCount, barColor]);
 

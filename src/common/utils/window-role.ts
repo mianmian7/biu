@@ -1,8 +1,11 @@
+const SUB_WINDOW_HASH_RE = /^#\/?(mini-player|desktop-lyrics)(?:[/?#]|$)/;
+const SUB_WINDOW_PATH_RE = /(?:^|\/)(mini-player|desktop-lyrics)\.html$/;
+
 /**
- * 子窗口（迷你播放器、桌面歌词）加载同一套前端，但播放只能发生在主窗口。
- * Tauri 事件会广播到所有窗口，子窗口必须忽略播放相关的事件。
+ * 子窗口（迷你播放器、桌面歌词）的判断必须按精确入口或路由段匹配，
+ * 不能用 `hash.includes("desktop-lyrics")`，否则主窗口打开 `#/settings?tab=desktop-lyrics` 会被误判为子窗口。
  */
 export function isSubWindow() {
-  const hash = window.location.hash;
-  return hash.includes("mini-player") || hash.includes("desktop-lyrics");
+  const { pathname, hash } = window.location;
+  return SUB_WINDOW_PATH_RE.test(pathname) || SUB_WINDOW_HASH_RE.test(hash);
 }

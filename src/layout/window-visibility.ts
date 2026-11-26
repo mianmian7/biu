@@ -17,6 +17,26 @@ type Subscribe = (cb: (payload: WindowVisibilityPayload) => void) => VoidFunctio
 const subscribeWindowVisibility: Subscribe = cb =>
   listenTauriEvent<WindowVisibilityPayload>(WINDOW_VISIBILITY_EVENT, cb);
 
+let mainWindowUiVisible = true;
+const visibilityListeners = new Set<(visible: boolean) => void>();
+
+export function isMainWindowUiVisible() {
+  return mainWindowUiVisible;
+}
+
+export function subscribeMainWindowUiVisible(cb: (visible: boolean) => void): VoidFunction {
+  visibilityListeners.add(cb);
+  return () => {
+    visibilityListeners.delete(cb);
+  };
+}
+
+function setMainWindowUiVisible(next: boolean) {
+  if (mainWindowUiVisible === next) return;
+  mainWindowUiVisible = next;
+  visibilityListeners.forEach(cb => cb(next));
+}
+
 /**
  * 主窗口可视 UI 是否应该挂载。
  *
@@ -31,6 +51,7 @@ export function useWindowUiVisible(
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
+    setMainWindowUiVisible(true);
     let timer: ReturnType<typeof setTimeout> | null = null;
     const clear = () => {
       if (timer !== null) {
@@ -44,10 +65,12 @@ export function useWindowUiVisible(
       clear();
       if (payload.visible) {
         setVisible(true);
+        setMainWindowUiVisible(true);
       } else {
         timer = setTimeout(() => {
           timer = null;
           setVisible(false);
+          setMainWindowUiVisible(false);
         }, delayMs);
       }
     });
@@ -55,6 +78,7 @@ export function useWindowUiVisible(
     return () => {
       clear();
       off();
+      setMainWindowUiVisible(true);
     };
   }, [subscribe, delayMs]);
 
