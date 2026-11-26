@@ -38,9 +38,9 @@ fn main() {
             ..Default::default()
         };
 
-        let _ = gpui_kit::open_window(opts, cx, |_, cx| {
+        let _ = gpui_kit::open_window(opts, cx, |window, cx| {
             let state_clone = state.clone();
-            cx.new(move |_| MainShell::new(state_clone))
+            cx.new(move |cx| MainShell::new(state_clone, window, cx))
         });
     });
 }
