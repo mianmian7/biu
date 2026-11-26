@@ -47,7 +47,7 @@ fn thumb_tag(size: ThumbSize) -> u8 {
 pub fn rgba_to_render_image(img: &RgbaImage) -> Arc<RenderImage> {
     let (w, h) = img.dimensions();
     let mut bgra = img.as_raw().clone();
-    for px in bgra.chunks_exact_mut(4) {
+    for px in bgra.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     let buf = RgbaImage::from_raw(w, h, bgra).expect("valid BGRA buffer dimensions");
@@ -59,7 +59,7 @@ pub fn rgba_bytes_to_render_image(width: u32, height: u32, mut bytes: Vec<u8>) -
     if bytes.len() != (width as usize) * (height as usize) * 4 {
         return None;
     }
-    for px in bytes.chunks_exact_mut(4) {
+    for px in bytes.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     let buf = RgbaImage::from_raw(width, height, bytes)?;
@@ -148,10 +148,6 @@ impl CoverStore {
         self.entries.clear();
         self.order.clear();
         self.in_flight.clear();
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
     }
 }
 

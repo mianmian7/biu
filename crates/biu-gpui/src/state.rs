@@ -103,11 +103,10 @@ impl Services {
         let downloads = DownloadManager::open(store.clone(), bili.clone())?;
         let audio = AudioEngine::new();
 
-        if let Ok(settings) = store.app_settings() {
-            if !settings.ffmpeg_path.trim().is_empty() {
+        if let Ok(settings) = store.app_settings()
+            && !settings.ffmpeg_path.trim().is_empty() {
                 audio.set_ffmpeg_path(Some(PathBuf::from(settings.ffmpeg_path.trim())));
             }
-        }
 
         let (media_controls, media_control_rx) =
             MediaControlsBridge::new(MediaControlsConfig::default());
@@ -181,19 +180,17 @@ impl AppState {
 
         let mut queue = PlayQueue::default();
         if let Ok(val) = services.store.read("play-queue") {
-            if let Some(items_val) = val.get("items") {
-                if let Ok(items) = serde_json::from_value::<Vec<TrackItem>>(items_val.clone()) {
+            if let Some(items_val) = val.get("items")
+                && let Ok(items) = serde_json::from_value::<Vec<TrackItem>>(items_val.clone()) {
                     let start = val.get("currentIndex").and_then(|v| v.as_u64()).map(|v| v as usize);
                     if !items.is_empty() {
                         queue.set_queue(items, start.unwrap_or(0));
                     }
                 }
-            }
-            if let Some(mode_val) = val.get("mode") {
-                if let Ok(mode) = serde_json::from_value::<PlayMode>(mode_val.clone()) {
+            if let Some(mode_val) = val.get("mode")
+                && let Ok(mode) = serde_json::from_value::<PlayMode>(mode_val.clone()) {
                     queue.set_mode(mode);
                 }
-            }
         }
 
         let state = Self {
@@ -276,14 +273,12 @@ impl AppState {
     pub fn toggle_full_screen(&mut self, cx: &mut Context<Self>) {
         self.is_full_screen = !self.is_full_screen;
         self.services.audio.set_waveform_enabled(self.is_full_screen);
-        if self.is_full_screen {
-            if let Some(track) = self.current_track().cloned() {
-                if !track.cover.is_empty() {
+        if self.is_full_screen
+            && let Some(track) = self.current_track().cloned()
+                && !track.cover.is_empty() {
                     self.ensure_cover(&track.cover, ThumbSize::Cover, false, cx);
                     self.ensure_cover(&track.cover, ThumbSize::BlurBg, true, cx);
                 }
-            }
-        }
         cx.notify();
     }
 
@@ -378,11 +373,10 @@ impl AppState {
 
             if let Ok((nav, created, collected)) = handle.await {
                 let _ = this.update(cx, |state, cx| {
-                    if let Some(ref u) = nav {
-                        if u.is_login && !u.face.is_empty() {
+                    if let Some(ref u) = nav
+                        && u.is_login && !u.face.is_empty() {
                             state.ensure_cover(&u.face, ThumbSize::Tiny, false, cx);
                         }
-                    }
                     state.user = nav.filter(|u| u.is_login);
                     state.created_folders = created;
                     state.collected_folders = collected;
@@ -503,12 +497,11 @@ impl AppState {
     }
 
     pub fn toggle_play(&mut self, cx: &mut Context<Self>) {
-        if self.snapshot.state == PlaybackState::Idle {
-            if let Some(track) = self.queue.current().cloned() {
+        if self.snapshot.state == PlaybackState::Idle
+            && let Some(track) = self.queue.current().cloned() {
                 self.start_playback_for_track(track, cx);
                 return;
             }
-        }
         self.services.audio.toggle_play();
         self.snapshot = self.services.audio.snapshot();
         cx.notify();
@@ -672,9 +665,9 @@ impl AppState {
                             .search_netease(&query, 5)
                             .await
                             .unwrap_or_default();
-                        if let Some(first) = candidates.first() {
-                            if let Ok(data) = services.lyrics.fetch(first).await {
-                                if !data.lines.is_empty() {
+                        if let Some(first) = candidates.first()
+                            && let Ok(data) = services.lyrics.fetch(first).await
+                                && !data.lines.is_empty() {
                                     let cached = lyrics_data_to_cached(&data, 0.0);
                                     let _ = save_cached_lyrics(
                                         &services.store,
@@ -684,16 +677,14 @@ impl AppState {
                                     );
                                     return Ok(data);
                                 }
-                            }
-                        }
                         let lrclib = services
                             .lyrics
                             .search_lrclib(&query)
                             .await
                             .unwrap_or_default();
-                        if let Some(first) = lrclib.first() {
-                            if let Ok(data) = services.lyrics.fetch(first).await {
-                                if !data.lines.is_empty() {
+                        if let Some(first) = lrclib.first()
+                            && let Ok(data) = services.lyrics.fetch(first).await
+                                && !data.lines.is_empty() {
                                     let cached = lyrics_data_to_cached(&data, 0.0);
                                     let _ = save_cached_lyrics(
                                         &services.store,
@@ -703,8 +694,6 @@ impl AppState {
                                     );
                                     return Ok(data);
                                 }
-                            }
-                        }
                         Ok(LyricsData::default())
                     }
                 })
@@ -898,18 +887,16 @@ impl AppState {
                         state.last_mc_playing = Some(playing);
                     }
 
-                    if let Some(ref toast) = state.toast {
-                        if Instant::now() >= toast.expires_at {
+                    if let Some(ref toast) = state.toast
+                        && Instant::now() >= toast.expires_at {
                             state.toast = None;
                             cx.notify();
                         }
-                    }
 
-                    if let Some(ended_generation) = ended_gen {
-                        if ended_generation == state.active_generation {
+                    if let Some(ended_generation) = ended_gen
+                        && ended_generation == state.active_generation {
                             state.next_track(true, cx);
                         }
-                    }
                     if let Some(msg) = err_msg {
                         state.show_toast(format!("播放出错: {msg}"), true, cx);
                     }
@@ -997,7 +984,7 @@ async fn resolve_audio_source(
                     .pages
                     .first()
                     .map(|p| p.cid)
-                    .or_else(|| match view.track.source {
+                    .or(match view.track.source {
                         TrackSource::BiliVideo { cid, .. } => Some(cid),
                         _ => None,
                     })
