@@ -2,7 +2,8 @@ import { useState } from "react";
 
 import { DateRangePicker as HeroDateRangePicker, Tab, Tabs, type DateValue, type RangeValue } from "@heroui/react";
 import { getLocalTimeZone } from "@internationalized/date";
-import moment from "moment";
+
+import { daysAgoStartMs, endOfDayMs, startOfDayMs } from "@/common/utils/time";
 
 interface Props {
   onDateRangeChange?: (range: { start?: number; end?: number } | null) => void;
@@ -25,16 +26,16 @@ const DateRangePicker = ({ onDateRangeChange }: Props) => {
         end = undefined;
         break;
       case "today":
-        start = moment().startOf("day").valueOf();
-        end = moment().endOf("day").valueOf();
+        start = startOfDayMs();
+        end = endOfDayMs();
         break;
       case "yesterday":
-        start = moment().subtract(1, "days").startOf("day").valueOf();
-        end = moment().subtract(1, "days").endOf("day").valueOf();
+        start = daysAgoStartMs(1);
+        end = endOfDayMs(start);
         break;
       case "week":
-        start = moment().subtract(7, "days").startOf("day").valueOf();
-        end = moment().endOf("day").valueOf();
+        start = daysAgoStartMs(7);
+        end = endOfDayMs();
         break;
     }
 

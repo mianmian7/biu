@@ -6,6 +6,18 @@
     <meta name="description" content="windows music application" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Biu</title>
+    <script>
+      // 主进程以 index.html#mini-player / index.html#desktop-lyrics 打开子窗口：
+      // 在加载主包之前跳到对应的轻量入口（保留 hash，子窗口判断仍然成立）
+      (function () {
+        var hash = window.location.hash;
+        var page = hash.indexOf("desktop-lyrics") >= 0 ? "desktop-lyrics" : hash.indexOf("mini-player") >= 0 ? "mini-player" : "";
+        if (page) {
+          window.__BIU_SUB_WINDOW_REDIRECT__ = true;
+          window.location.replace("./" + page + ".html" + hash);
+        }
+      })();
+    </script>
   </head>
   <body class="bg-background text-foreground">
     <div id="root"></div>

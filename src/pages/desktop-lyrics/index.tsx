@@ -16,6 +16,15 @@ import clsx from "classnames";
 
 import { anchorNow, getDesktopLyricsLineProgress, resolveDisplayedLine } from "@/common/utils/playback-anchor";
 import DesktopLyricsView from "@/components/desktop-lyrics-view";
+import {
+  endDesktopLyricsDrag,
+  getDesktopLyricsContent,
+  onDesktopLyricsContent,
+  sendDesktopLyricsCommand,
+  setDesktopLyricsContentHeight,
+  setDesktopLyricsIgnoreMouse,
+  startDesktopLyricsDrag,
+} from "@/entries/sub-window-bridge";
 
 /** 顶部工具栏行高：始终预留，悬停显示工具栏时窗口高度不变 */
 const TOOLBAR_HEIGHT = 34;
@@ -74,7 +83,7 @@ const ToolButton = ({
 
 const Divider = () => <span className="mx-1 h-4 w-px bg-white/20" />;
 
-const send = (command: DesktopLyricsCommand) => window.electron.sendDesktopLyricsCommand(command);
+const send = (command: DesktopLyricsCommand) => sendDesktopLyricsCommand(command);
 
 /**
  * 桌面悬浮歌词窗口页面（独立 BrowserWindow，透明置顶）
@@ -96,14 +105,14 @@ const DesktopLyrics = () => {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const offContent = window.electron.onDesktopLyricsContent(nextPayload => {
+    const offContent = onDesktopLyricsContent(nextPayload => {
       if (!nextPayload) return;
       payloadRef.current = nextPayload;
       setPayload(nextPayload);
     });
 
     // 窗口重载可能错过主进程的首次推送，这里主动拉取一次
-    void window.electron.getDesktopLyricsContent().then(nextPayload => {
+    void getDesktopLyricsContent().then(nextPayload => {
       if (!nextPayload || payloadRef.current) return;
       payloadRef.current = nextPayload;
       setPayload(nextPayload);
@@ -164,7 +173,7 @@ const DesktopLyrics = () => {
       const height = Math.ceil(el.getBoundingClientRect().height) + TOOLBAR_HEIGHT + CONTENT_PADDING_Y * 2;
       if (height === lastHeight) return;
       lastHeight = height;
-      window.electron.setDesktopLyricsContentHeight(height);
+      setDesktopLyricsContentHeight(height);
     };
 
     report();
@@ -203,7 +212,7 @@ const DesktopLyrics = () => {
     if (!dragging) return;
     const stop = () => {
       setDragging(false);
-      window.electron.endDesktopLyricsDrag();
+      endDesktopLyricsDrag();
     };
     window.addEventListener("mouseup", stop);
     window.addEventListener("blur", stop);
@@ -223,7 +232,7 @@ const DesktopLyrics = () => {
     if ((event.target as HTMLElement).closest("[data-no-drag]")) return;
     event.preventDefault();
     setDragging(true);
-    window.electron.startDesktopLyricsDrag();
+    startDesktopLyricsDrag();
   };
 
   const style = payload?.style;
@@ -297,10 +306,10 @@ const DesktopLyrics = () => {
             title="解锁桌面歌词"
             aria-label="解锁桌面歌词"
             className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full bg-black/45 text-white/85 transition-colors hover:bg-black/65 hover:text-white"
-            onMouseEnter={() => window.electron.setDesktopLyricsIgnoreMouse(false)}
-            onMouseLeave={() => window.electron.setDesktopLyricsIgnoreMouse(true)}
+            onMouseEnter={() => setDesktopLyricsIgnoreMouse(false)}
+            onMouseLeave={() => setDesktopLyricsIgnoreMouse(true)}
             onClick={() => {
-              window.electron.setDesktopLyricsIgnoreMouse(true);
+              setDesktopLyricsIgnoreMouse(true);
               send("toggleLock");
             }}
           >

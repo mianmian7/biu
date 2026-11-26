@@ -22,6 +22,8 @@ document.addEventListener("contextmenu", event => {
 });
 
 async function boot() {
+  // index.html 已经跳转到子窗口的轻量入口，不再加载主应用
+  if ((window as { __BIU_SUB_WINDOW_REDIRECT__?: boolean }).__BIU_SUB_WINDOW_REDIRECT__) return;
   // Stores hydrate from localStorage when ./app is imported, so migrated entries go first.
   await applyMigratedLocalStorage();
   const { App } = await import("./app");

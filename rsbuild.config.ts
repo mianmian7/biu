@@ -2,7 +2,25 @@ import { defineConfig } from "@rsbuild/core";
 import { pluginReact } from "@rsbuild/plugin-react";
 import { pluginSvgr } from "@rsbuild/plugin-svgr";
 
+/**
+ * 多页面入口：主窗口 + 两个极轻量子窗口。
+ * 子窗口入口不能引入 @heroui/react、framer-motion、react-router、axios、kuromoji、moment、
+ * overlayscrollbars 或 store/play-list（会 new Audio()），tests/sub-window-entries.test.ts 会检查。
+ * 主进程仍加载 `index.html#mini-player` / `index.html#desktop-lyrics`，由 index.html 内联脚本跳转。
+ */
+const SUB_WINDOW_TITLES: Record<string, string> = {
+  "desktop-lyrics": "Biu Desktop Lyrics",
+  "mini-player": "Biu Mini Player",
+};
+
 export default defineConfig({
+  source: {
+    entry: {
+      index: "./src/index.tsx",
+      "desktop-lyrics": "./src/entries/desktop-lyrics.tsx",
+      "mini-player": "./src/entries/mini-player.tsx",
+    },
+  },
   output: {
     distPath: {
       root: "./dist/web",
@@ -15,7 +33,9 @@ export default defineConfig({
     removeMomentLocale: true,
   },
   html: {
-    template: "./src/index.html",
+    template: ({ entryName }) =>
+      entryName in SUB_WINDOW_TITLES ? "./src/entries/sub-window.html" : "./src/index.html",
+    title: ({ entryName }) => SUB_WINDOW_TITLES[entryName] ?? "Biu",
   },
   plugins: [
     pluginReact(),

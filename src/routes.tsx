@@ -1,21 +1,26 @@
+import { lazy, Suspense } from "react";
 import type { RouteObject } from "react-router";
 
 import Layout from "./layout";
-import DesktopLyrics from "./pages/desktop-lyrics";
-import DownloadList from "./pages/download-list";
-import DynamicFeed from "./pages/dynamic-feed";
-import EmptyPage from "./pages/empty";
-import FollowList from "./pages/follow-list";
-import History from "./pages/history";
-import Later from "./pages/later";
-import LocalMusicPage from "./pages/local-music";
-import MiniPlayer from "./pages/mini-player";
 import MusicRecommend from "./pages/music-recommend";
-import NotFound from "./pages/not-found";
-import Search from "./pages/search";
-import Settings from "./pages/settings";
-import UserProfile from "./pages/user-profile";
-import Folder from "./pages/video-collection";
+
+// 首页（Layout + 推荐页）同步加载保证首屏；其余页面按路由拆包，
+// Layout 里的 <Suspense> 包住 <Outlet />。
+const DesktopLyrics = lazy(() => import("./pages/desktop-lyrics"));
+const DownloadList = lazy(() => import("./pages/download-list"));
+const DynamicFeed = lazy(() => import("./pages/dynamic-feed"));
+const EmptyPage = lazy(() => import("./pages/empty"));
+const FollowList = lazy(() => import("./pages/follow-list"));
+const History = lazy(() => import("./pages/history"));
+const Later = lazy(() => import("./pages/later"));
+const LocalMusicPage = lazy(() => import("./pages/local-music"));
+// 子窗口正常走独立 HTML 入口（src/entries），这里只保留 hash 路由兜底
+const MiniPlayer = lazy(() => import("./pages/mini-player"));
+const NotFound = lazy(() => import("./pages/not-found"));
+const Search = lazy(() => import("./pages/search"));
+const Settings = lazy(() => import("./pages/settings"));
+const UserProfile = lazy(() => import("./pages/user-profile"));
+const Folder = lazy(() => import("./pages/video-collection"));
 
 const routes: RouteObject[] = [
   {
@@ -74,15 +79,27 @@ const routes: RouteObject[] = [
   },
   {
     path: "mini-player",
-    element: <MiniPlayer />,
+    element: (
+      <Suspense fallback={null}>
+        <MiniPlayer />
+      </Suspense>
+    ),
   },
   {
     path: "desktop-lyrics",
-    element: <DesktopLyrics />,
+    element: (
+      <Suspense fallback={null}>
+        <DesktopLyrics />
+      </Suspense>
+    ),
   },
   {
     path: "*",
-    element: <NotFound />,
+    element: (
+      <Suspense fallback={null}>
+        <NotFound />
+      </Suspense>
+    ),
   },
 ];
 

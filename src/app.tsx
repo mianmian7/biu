@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { useHref, useNavigate, useRoutes } from "react-router";
 
 import { addToast, Button, HeroUIProvider, ToastProvider } from "@heroui/react";
-import moment from "moment";
 
 import { getCookitFromBSite } from "./common/utils/cookie";
 import { startDesktopLyricsSync } from "./common/utils/desktop-lyrics";
@@ -16,12 +15,11 @@ import { usePlayList } from "./store/play-list";
 import { usePlayProgress } from "./store/play-progress";
 import { useShortcutSettings } from "./store/shortcuts";
 
-import "moment/locale/zh-cn";
-
 import "overlayscrollbars/overlayscrollbars.css";
 import "./app.css";
 
-moment.locale("zh-cn");
+/** 播放器只初始化一次，不随 Layout / PlayBar 的挂载卸载重复执行 */
+let playListInitialized = false;
 
 export function App() {
   const routeElement = useRoutes(routes);
@@ -30,6 +28,13 @@ export function App() {
 
   useEffect(() => {
     getCookitFromBSite();
+  }, []);
+
+  // 播放器初始化放在 App：主窗口隐藏到托盘后可视 UI 会卸载，播放必须继续
+  useEffect(() => {
+    if (isSubWindow() || playListInitialized) return;
+    playListInitialized = true;
+    void usePlayList.getState().init();
   }, []);
 
   // 主窗口 -> 桌面歌词窗口的状态同步（子窗口调用会自动跳过）

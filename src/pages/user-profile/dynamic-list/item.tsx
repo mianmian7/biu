@@ -12,11 +12,11 @@ import {
   User,
 } from "@heroui/react";
 import { RiExternalLinkLine, RiMoreLine, RiPlayFill, RiThumbUpFill, RiThumbUpLine } from "@remixicon/react";
-import moment from "moment";
 
 import type { WebDynamicItem } from "@/service/web-dynamic";
 
 import { formatNumber } from "@/common/utils/number";
+import { formatRelativeTimeZh } from "@/common/utils/time";
 import { openBiliVideoLink } from "@/common/utils/url";
 import IconButton from "@/components/icon-button";
 import Image from "@/components/image";
@@ -40,7 +40,7 @@ const DynamicItem = ({ item }: DynamicItemProps) => {
   const play = usePlayList(s => s.play);
 
   // Format time
-  const timeDisplay = author?.pub_time || moment(author?.pub_ts * 1000).fromNow();
+  const timeDisplay = author?.pub_time || formatRelativeTimeZh(author?.pub_ts * 1000);
 
   // Get text content
   const textContent = dynamic?.desc?.text || opus?.summary?.text || "";

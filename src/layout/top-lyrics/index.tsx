@@ -1,7 +1,6 @@
 import { useEffect, useMemo } from "react";
 
 import { RiCloseLine, RiMusic2Line } from "@remixicon/react";
-import { motion } from "framer-motion";
 import { useShallow } from "zustand/react/shallow";
 
 import IconButton from "@/components/icon-button";
@@ -10,6 +9,22 @@ import { useModalStore } from "@/store/modal";
 import { usePlayList } from "@/store/play-list";
 import { usePlayProgress } from "@/store/play-progress";
 import { useSettings } from "@/store/settings";
+
+/**
+ * 换句时 key 变化会重建节点，挂载时用 Web Animations 做一次淡入上移（替代 framer-motion，无需额外 CSS）。
+ * 只动 opacity / transform，由合成器完成。
+ */
+const animateLineIn = (el: HTMLDivElement | null) => {
+  if (!el || typeof el.animate !== "function") return;
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  el.animate(
+    [
+      { opacity: 0, transform: "translateY(6px)" },
+      { opacity: 1, transform: "translateY(0)" },
+    ],
+    { duration: 180, easing: "ease-out" },
+  );
+};
 
 /**
  * 主窗口顶部的常驻歌词栏
@@ -61,7 +76,7 @@ const TopLyrics = () => {
   const contentKey = line ? `${playId}-${index}` : isPending ? "loading" : "empty";
 
   return (
-    <div className="border-divider/30 bg-background/80 flex h-12 w-full flex-none items-center border-b pr-2 pl-4 backdrop-blur-md select-none">
+    <div className="border-divider/30 bg-background/95 flex h-12 w-full flex-none items-center border-b pr-2 pl-4 select-none">
       <RiMusic2Line size={16} className="text-primary mr-3 shrink-0" />
       <div
         role="button"
@@ -78,13 +93,7 @@ const TopLyrics = () => {
           }
         }}
       >
-        <motion.div
-          key={contentKey}
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.18, ease: "easeOut" }}
-          className="flex h-full min-w-0 flex-col items-center justify-center"
-        >
+        <div key={contentKey} ref={animateLineIn} className="flex h-full min-w-0 flex-col items-center justify-center">
           {line ? (
             <>
               <span className="text-foreground max-w-full truncate text-sm leading-tight font-medium">{line.text}</span>
@@ -97,7 +106,7 @@ const TopLyrics = () => {
           ) : (
             <span className="text-foreground-500 text-xs">{isPending ? "歌词加载中..." : "暂无歌词"}</span>
           )}
-        </motion.div>
+        </div>
       </div>
       <div className="ml-2 flex shrink-0 items-center">
         <IconButton

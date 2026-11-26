@@ -1,7 +1,6 @@
 import React, { useCallback } from "react";
 
-import moment from "moment";
-
+import { formatDateTime } from "@/common/utils/time";
 import VirtualPageList from "@/components/virtual-page-list";
 import { type HistoryListItem as HistoryListItemType } from "@/service/web-interface-history-search";
 import { usePlayList } from "@/store/play-list";
@@ -67,7 +66,7 @@ const HistoryList: React.FC<HistoryListProps> = ({
               upMid={item.author_mid}
               progress={item.progress}
               duration={item.duration}
-              viewAt={moment.unix(item.view_at).format("YYYY-MM-DD HH:mm")}
+              viewAt={formatDateTime(item.view_at)}
               onPress={item.history.business === "pgc" ? undefined : () => handlePress(item)}
               menus={getContextMenus({
                 business: item.history.business,

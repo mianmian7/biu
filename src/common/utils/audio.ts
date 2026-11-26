@@ -1,6 +1,3 @@
-import log from "./logger";
-import moment from "moment";
-
 import { toMediaUrl, unwrapMediaUrl } from "@/platform";
 import { getAudioWebStreamUrl } from "@/service/audio-web-url";
 import { getPlayerPlayurl, type DashAudio } from "@/service/player-playurl";
@@ -8,6 +5,7 @@ import { useUser } from "@/store/user";
 
 import { audioQualitySort } from "../constants/audio";
 import { VideoFnval } from "../constants/video";
+import log from "./logger";
 import { getUrlParams } from "./url";
 
 function canBrowserPlayMime(mimeTypes: string[]): boolean {
@@ -156,5 +154,7 @@ export const getAudioUrl = async (sid: number | string) => {
 /** URL是否有效 */
 export const isUrlValid = (url?: string): url is string => {
   const raw = unwrapMediaUrl(url);
-  return Boolean(raw) && moment().isBefore(moment.unix(Number(getUrlParams(raw as string).deadline)));
+  if (!raw) return false;
+  const deadline = Number(getUrlParams(raw).deadline);
+  return Number.isFinite(deadline) && Date.now() < deadline * 1000;
 };

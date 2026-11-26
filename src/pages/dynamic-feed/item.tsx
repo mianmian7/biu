@@ -3,12 +3,12 @@ import { useNavigate } from "react-router";
 
 import { Button, Card, CardHeader, CardBody, addToast, User } from "@heroui/react";
 import { RiPlayFill, RiThumbUpFill, RiThumbUpLine } from "@remixicon/react";
-import moment from "moment";
 import { twMerge } from "tailwind-merge";
 
 import type { WebDynamicItem } from "@/service/web-dynamic";
 
 import { formatNumber } from "@/common/utils/number";
+import { formatRelativeTimeZh } from "@/common/utils/time";
 import Image from "@/components/image";
 import { postDynamicFeedThumb } from "@/service/web-dynamic-feed-thumb";
 import { useMusicFavStore } from "@/store/music-fav";
@@ -32,7 +32,7 @@ const DynamicItem: React.FC<DynamicItemProps> = ({ item, className }) => {
   const [isLike, setIsLike] = useState(() => stat?.like?.status === true);
   const [likeCount, setLikeCount] = useState(() => stat?.like?.count || 0);
 
-  const timeDisplay = author.pub_time || moment(author.pub_ts * 1000).fromNow();
+  const timeDisplay = author.pub_time || formatRelativeTimeZh(author.pub_ts * 1000);
 
   const textContent = dynamic.desc?.text || dynamic.major?.opus?.summary?.text || "";
 

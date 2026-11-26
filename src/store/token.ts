@@ -1,6 +1,7 @@
-import moment from "moment";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+
+import { nowUnix } from "@/common/utils/time";
 
 interface TokenState {
   /** 刷新 cookie 使用 */
@@ -20,7 +21,7 @@ export const useToken = create<TokenState & Action>()(
   persist(
     set => ({
       tokenData: {},
-      nextCheckRefreshTime: moment().unix(),
+      nextCheckRefreshTime: nowUnix(),
       updateToken: async (info: Partial<TokenState>) => {
         set(state => ({ ...state, ...info }));
       },

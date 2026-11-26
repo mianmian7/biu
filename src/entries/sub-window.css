@@ -1,0 +1,56 @@
+/*
+ * 子窗口（桌面歌词 / 迷你播放器）专用样式：
+ * 只扫描子窗口用到的源文件，不引入 @heroui/theme 的全部组件类和 overlayscrollbars 样式。
+ * HeroUI 插件仍然提供 --heroui-* 主题变量与 bg-background / text-primary 等语义色。
+ */
+@import "tailwindcss" source(none);
+
+@plugin "../hero.ts";
+
+@source "./";
+@source "../pages/mini-player";
+@source "../pages/desktop-lyrics";
+@source "../components/desktop-lyrics-view";
+@source "../common/constants/audio.tsx";
+
+@custom-variant dark (&:is(.dark *));
+
+@utility window-drag {
+  app-region: drag;
+}
+
+@utility window-no-drag {
+  app-region: no-drag;
+}
+
+:root {
+  text-autospace: normal;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+html,
+body {
+  background: transparent;
+  margin: 0;
+}
+
+/* 桌面歌词换行淡入：与 app.css 保持一致 */
+@keyframes desktop-lyrics-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.desktop-lyrics-fade {
+  animation: desktop-lyrics-fade-in 180ms ease-out both;
+}
