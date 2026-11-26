@@ -35,7 +35,8 @@ impl PagesHost {
     }
 
     pub(super) fn recommend_view(&self, p: BiuPalette, cx: &Context<Self>) -> Div {
-        let grid = self.state.read(cx).settings.display_mode == "grid";
+        let mode = self.state.read(cx).settings.display_mode.as_str();
+        let grid = mode == "grid" || mode == "card";
         let retry = || {
             button("retry", "重试", p)
                 .on_click(cx.listener(|this, _, _, cx| this.load_recommend(cx)))

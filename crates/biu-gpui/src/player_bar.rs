@@ -330,6 +330,13 @@ impl RenderOnce for Slider {
                             if phase != DispatchPhase::Bubble || !drag_move.read(cx).dragging {
                                 return;
                             }
+                            if ev.pressed_button != Some(MouseButton::Left) {
+                                drag_move.update(cx, |d, cx| {
+                                    d.dragging = false;
+                                    cx.notify();
+                                });
+                                return;
+                            }
                             let r = ratio_from_position(f32::from(ev.position.x), left, width);
                             drag_move.update(cx, |d, cx| {
                                 d.preview = r;
@@ -343,7 +350,10 @@ impl RenderOnce for Slider {
                         let drag_up = drag.clone();
                         let cb_up = on_change;
                         window.on_mouse_event(move |ev: &MouseUpEvent, phase, window, cx| {
-                            if phase != DispatchPhase::Bubble || !drag_up.read(cx).dragging {
+                            if phase != DispatchPhase::Bubble
+                                || ev.button != MouseButton::Left
+                                || !drag_up.read(cx).dragging
+                            {
                                 return;
                             }
                             let r = ratio_from_position(f32::from(ev.position.x), left, width);

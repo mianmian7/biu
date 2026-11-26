@@ -160,11 +160,12 @@ pub struct AppState {
     pub lyrics: LyricsData,
     pub lyrics_loading: bool,
     pub auto_lyrics_running: bool,
-    pub active_generation: u64,
+    pub resolve_request_id: u64,
+    pub audio_generation: u64,
     pub active_prepared: Option<PreparedAudio>,
     pub current_track_audio_path: Option<PathBuf>,
     last_reported_heartbeat_track: Option<String>,
-    last_mc_playing: Option<bool>,
+    last_mc_state: Option<PlaybackState>,
     last_mc_track_id: Option<String>,
 
     // Bounded cover image cache
@@ -212,11 +213,12 @@ impl AppState {
             lyrics: LyricsData::default(),
             lyrics_loading: false,
             auto_lyrics_running: false,
-            active_generation: 0,
+            resolve_request_id: 0,
+            audio_generation: 0,
             active_prepared: None,
             current_track_audio_path: None,
             last_reported_heartbeat_track: None,
-            last_mc_playing: None,
+            last_mc_state: None,
             last_mc_track_id: None,
             covers: CoverStore::default(),
         };
@@ -250,7 +252,10 @@ impl AppState {
             }
         }
         self.route = route;
-        self.is_full_screen = false;
+        if self.is_full_screen {
+            self.is_full_screen = false;
+            self.services.audio.set_waveform_enabled(false);
+        }
         cx.notify();
     }
 
@@ -387,6 +392,14 @@ impl AppState {
         .detach();
     }
 
+    /// Clear all cached cover textures and explicitly release them from GPUI's GPU sprite atlas.
+    pub fn clear_covers(&mut self, cx: &mut Context<Self>) {
+        let dropped = self.covers.clear();
+        for img in dropped {
+            cx.drop_image(img, None);
+        }
+    }
+
     /// Ensure a cover image is loaded into the bounded GPU `CoverStore`.
     pub fn ensure_cover(
         &mut self,
@@ -410,6 +423,7 @@ impl AppState {
             return None;
         }
         self.covers.mark_in_flight(key.clone());
+        let epoch = self.covers.clear_epoch();
         let services = self.services.clone();
         let url_owned = url.to_string();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -422,8 +436,13 @@ impl AppState {
                 .await;
             let _ = this.update(cx, |state, cx| {
                 match res {
-                    Ok(Ok(img)) => state.covers.insert(key, img),
-                    _ => state.covers.mark_failed(&key),
+                    Ok(Ok(img)) => {
+                        let evicted = state.covers.insert(epoch, key, img);
+                        for old in evicted {
+                            cx.drop_image(old, None);
+                        }
+                    }
+                    _ => state.covers.mark_failed(epoch, &key),
                 }
                 cx.notify();
             });
@@ -481,8 +500,7 @@ impl AppState {
             if let Some(next) = self.queue.current().cloned() {
                 self.start_playback_for_track(next, cx);
             } else {
-                self.services.audio.stop();
-                self.lyrics = LyricsData::default();
+                self.invalidate_active_playback();
             }
         }
         cx.notify();
@@ -490,10 +508,23 @@ impl AppState {
 
     pub fn clear_queue(&mut self, cx: &mut Context<Self>) {
         self.queue.clear();
-        self.services.audio.stop();
-        self.lyrics = LyricsData::default();
+        self.invalidate_active_playback();
         self.persist_queue();
         cx.notify();
+    }
+
+    fn invalidate_active_playback(&mut self) {
+        self.resolve_request_id = self.resolve_request_id.wrapping_add(1);
+        self.audio_generation = 0;
+        if let Some(prev) = self.active_prepared.take() {
+            prev.abort();
+        }
+        self.current_track_audio_path = None;
+        self.services.audio.stop();
+        self.services.media_controls.set_stopped();
+        self.last_mc_state = Some(PlaybackState::Stopped);
+        self.lyrics = LyricsData::default();
+        self.lyrics_loading = false;
     }
 
     pub fn toggle_play(&mut self, cx: &mut Context<Self>) {
@@ -525,8 +556,11 @@ impl AppState {
     }
 
     pub fn seek(&mut self, secs: f64, cx: &mut Context<Self>) {
-        self.services.audio.seek(secs.max(0.0));
+        let target = secs.max(0.0);
+        self.services.audio.seek(target);
         self.snapshot = self.services.audio.snapshot();
+        let playing = self.snapshot.state == PlaybackState::Playing;
+        self.services.media_controls.set_playback(playing, target);
         cx.notify();
     }
 
@@ -576,8 +610,8 @@ impl AppState {
         if let Some(prev) = self.active_prepared.take() {
             prev.abort();
         }
-        self.active_generation = self.active_generation.wrapping_add(1);
-        let generation = self.active_generation;
+        self.resolve_request_id = self.resolve_request_id.wrapping_add(1);
+        let req_id = self.resolve_request_id;
         self.current_track_audio_path = None;
         self.last_reported_heartbeat_track = None;
         self.lyrics = LyricsData::default();
@@ -591,7 +625,7 @@ impl AppState {
             }
         }
 
-        self.load_lyrics_for_track(&track, generation, cx);
+        self.load_lyrics_for_track(&track, req_id, cx);
 
         let services = self.services.clone();
         let quality = self.settings.audio_quality;
@@ -608,7 +642,7 @@ impl AppState {
                 .await;
 
             let _ = this.update(cx, |state, cx| {
-                if state.active_generation != generation {
+                if state.resolve_request_id != req_id {
                     if let Ok(Ok((_, Some(prep), _))) = resolve_res {
                         prep.abort();
                     }
@@ -619,7 +653,7 @@ impl AppState {
                         state.active_prepared = prepared;
                         state.current_track_audio_path = file_path;
                         let audio_gen = state.services.audio.play(source, 0.0);
-                        state.active_generation = audio_gen;
+                        state.audio_generation = audio_gen;
                         state.snapshot = state.services.audio.snapshot();
                         state.update_os_media_metadata(&track);
                     }
@@ -640,24 +674,28 @@ impl AppState {
     fn load_lyrics_for_track(
         &mut self,
         track: &TrackItem,
-        generation: u64,
+        req_id: u64,
         cx: &mut Context<Self>,
     ) {
         let services = self.services.clone();
-        let track_key = track.id.clone();
+        let track_id = track.id.clone();
+        let (primary_key, legacy_key) = lyrics_cache_keys(track);
         let query = clean_lyrics_query(&track.title, &track.artist);
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let track_key_bg = track_key.clone();
             let res = services
                 .rt
                 .spawn({
                     let services = services.clone();
                     async move {
-                        if let Ok(Some(cached)) = load_cached_lyrics(&services.store, &track_key_bg) {
-                            let data = cached.data();
-                            if !data.lines.is_empty() {
-                                return Ok::<LyricsData, anyhow::Error>(data);
+                        for key in std::iter::once(primary_key.as_str())
+                            .chain(legacy_key.as_deref())
+                        {
+                            if let Ok(Some(cached)) = load_cached_lyrics(&services.store, key) {
+                                let data = cached.data();
+                                if !data.lines.is_empty() {
+                                    return Ok::<LyricsData, anyhow::Error>(data);
+                                }
                             }
                         }
                         let candidates = services
@@ -667,16 +705,17 @@ impl AppState {
                             .unwrap_or_default();
                         if let Some(first) = candidates.first()
                             && let Ok(data) = services.lyrics.fetch(first).await
-                                && !data.lines.is_empty() {
-                                    let cached = lyrics_data_to_cached(&data, 0.0);
-                                    let _ = save_cached_lyrics(
-                                        &services.store,
-                                        &track_key_bg,
-                                        &cached,
-                                        false,
-                                    );
-                                    return Ok(data);
-                                }
+                            && !data.lines.is_empty()
+                        {
+                            let cached = lyrics_data_to_cached(&data, 0.0);
+                            let _ = save_cached_lyrics(
+                                &services.store,
+                                &primary_key,
+                                &cached,
+                                false,
+                            );
+                            return Ok(data);
+                        }
                         let lrclib = services
                             .lyrics
                             .search_lrclib(&query)
@@ -684,16 +723,17 @@ impl AppState {
                             .unwrap_or_default();
                         if let Some(first) = lrclib.first()
                             && let Ok(data) = services.lyrics.fetch(first).await
-                                && !data.lines.is_empty() {
-                                    let cached = lyrics_data_to_cached(&data, 0.0);
-                                    let _ = save_cached_lyrics(
-                                        &services.store,
-                                        &track_key_bg,
-                                        &cached,
-                                        false,
-                                    );
-                                    return Ok(data);
-                                }
+                            && !data.lines.is_empty()
+                        {
+                            let cached = lyrics_data_to_cached(&data, 0.0);
+                            let _ = save_cached_lyrics(
+                                &services.store,
+                                &primary_key,
+                                &cached,
+                                false,
+                            );
+                            return Ok(data);
+                        }
                         Ok(LyricsData::default())
                     }
                 })
@@ -702,9 +742,8 @@ impl AppState {
             let _ = this.update(cx, |state, cx| {
                 let matches_current = state
                     .current_track()
-                    .map(|t| t.id == track_key)
-                    .unwrap_or(false);
-                if matches_current || state.active_generation == generation {
+                    .is_some_and(|t| t.id == track_id);
+                if matches_current && state.resolve_request_id == req_id {
                     state.lyrics_loading = false;
                     if let Ok(Ok(data)) = res {
                         state.lyrics = data;
@@ -721,6 +760,8 @@ impl AppState {
             return;
         };
         let services = self.services.clone();
+        let expected_track_id = track.id.clone();
+        let (primary_key, _) = lyrics_cache_keys(&track);
         self.lyrics_loading = true;
         cx.notify();
 
@@ -729,21 +770,28 @@ impl AppState {
                 .rt
                 .spawn({
                     let services = services.clone();
-                    let track_id = track.id.clone();
                     async move {
                         let data = services.lyrics.fetch(&candidate).await?;
                         let cached = lyrics_data_to_cached(&data, 0.0);
-                        let _ = save_cached_lyrics(&services.store, &track_id, &cached, true);
+                        let _ = save_cached_lyrics(&services.store, &primary_key, &cached, true);
                         Ok::<LyricsData, anyhow::Error>(data)
                     }
                 })
                 .await;
             let _ = this.update(cx, |state, cx| {
+                let still_current = state
+                    .current_track()
+                    .is_some_and(|t| t.id == expected_track_id);
+                if !still_current {
+                    return;
+                }
                 state.lyrics_loading = false;
                 match res {
                     Ok(Ok(data)) => {
                         state.lyrics = data;
-                        state.close_modal(cx);
+                        if matches!(state.modal, ActiveModal::LyricsSearch) {
+                            state.close_modal(cx);
+                        }
                         state.show_toast("已应用新歌词", false, cx);
                     }
                     Ok(Err(e)) => state.show_toast(format!("歌词加载失败: {e}"), true, cx),
@@ -759,9 +807,12 @@ impl AppState {
         let Some(track) = self.current_track().cloned() else {
             return;
         };
-        let Some(audio_path) = self.current_track_audio_path.clone() else {
-            self.show_toast("请等待当前音频缓冲完成后再自动对齐", true, cx);
-            return;
+        let audio_path = match self.resolved_complete_audio_path() {
+            Ok(path) => path,
+            Err(msg) => {
+                self.show_toast(msg, true, cx);
+                return;
+            }
         };
         if self.auto_lyrics_running {
             return;
@@ -769,6 +820,8 @@ impl AppState {
         self.auto_lyrics_running = true;
         self.show_toast("正在执行声纹自动对齐歌词…", false, cx);
         let services = self.services.clone();
+        let expected_track_id = track.id.clone();
+        let (primary_key, _) = lyrics_cache_keys(&track);
         let ffmpeg_path = (!self.settings.ffmpeg_path.trim().is_empty())
             .then(|| PathBuf::from(self.settings.ffmpeg_path.trim()));
 
@@ -777,7 +830,7 @@ impl AppState {
                 .rt
                 .spawn(run_auto_lyrics_task(
                     services.clone(),
-                    track.id.clone(),
+                    primary_key,
                     audio_path,
                     track.title.clone(),
                     track.artist.clone(),
@@ -787,6 +840,13 @@ impl AppState {
 
             let _ = this.update(cx, |state, cx| {
                 state.auto_lyrics_running = false;
+                let still_current = state
+                    .current_track()
+                    .is_some_and(|t| t.id == expected_track_id);
+                if !still_current {
+                    cx.notify();
+                    return;
+                }
                 match res {
                     Ok(Ok(aligned)) => {
                         state.lyrics = aligned.lyrics;
@@ -809,6 +869,37 @@ impl AppState {
         .detach();
     }
 
+    fn resolved_complete_audio_path(&self) -> Result<PathBuf, &'static str> {
+        if let Some(ref prepared) = self.active_prepared {
+            match prepared {
+                PreparedAudio::Ready { path, .. } if path.exists() => return Ok(path.clone()),
+                PreparedAudio::Streaming { path, done, .. } => {
+                    if !done.load(std::sync::atomic::Ordering::Acquire) {
+                        return Err("请等待当前音频缓冲完成后再自动对齐");
+                    }
+                    let committed = path.with_extension("audio");
+                    if committed.exists() {
+                        return Ok(committed);
+                    }
+                    if path.exists() {
+                        return Ok(path.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(ref p) = self.current_track_audio_path {
+            if p.exists() {
+                return Ok(p.clone());
+            }
+            let committed = p.with_extension("audio");
+            if committed.exists() {
+                return Ok(committed);
+            }
+        }
+        Err("请等待当前音频缓冲完成后再自动对齐")
+    }
+
     fn update_os_media_metadata(&mut self, track: &TrackItem) {
         let dur = if track.duration_secs > 0.0 {
             Some(track.duration_secs)
@@ -822,24 +913,40 @@ impl AppState {
     }
 
     fn start_background_loops(&self, cx: &mut Context<Self>) {
-        // 1. Playback snapshot / spectrum / toast / media-controls ticker (100ms)
+        // Adaptive ticker: 100ms while playing or visible; 500ms while paused & hidden in tray.
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut audio_events = this
                 .read_with(cx, |s, _| s.services.audio.subscribe_events())
                 .ok();
             loop {
+                let tick_ms = this
+                    .read_with(cx, |s, _| {
+                        let any_window = s.windows.main.is_some()
+                            || s.windows.mini_player.is_some()
+                            || s.windows.desktop_lyrics.is_some();
+                        let playing = s.snapshot.state == PlaybackState::Playing;
+                        if playing || any_window || s.toast.is_some() {
+                            100
+                        } else {
+                            500
+                        }
+                    })
+                    .unwrap_or(500);
                 cx.background_executor()
-                    .timer(Duration::from_millis(100))
+                    .timer(Duration::from_millis(tick_ms))
                     .await;
 
                 // Drain audio events non-blockingly
                 let mut ended_gen: Option<u64> = None;
-                let mut err_msg: Option<String> = None;
+                let mut err_msg: Option<(u64, String)> = None;
                 if let Some(ref mut rx) = audio_events {
                     while let Ok(ev) = rx.try_recv() {
                         match ev {
                             AudioEvent::TrackEnded { generation } => ended_gen = Some(generation),
-                            AudioEvent::Error { message, .. } => err_msg = Some(message),
+                            AudioEvent::Error {
+                                generation,
+                                message,
+                            } => err_msg = Some((generation, message)),
                             AudioEvent::StateChanged(_) => {}
                         }
                     }
@@ -879,25 +986,42 @@ impl AppState {
                             MediaControlAction::Raise | MediaControlAction::Quit => {}
                         }
                     }
-                    if state.last_mc_playing != Some(playing) {
-                        state
-                            .services
-                            .media_controls
-                            .set_playback(playing, state.snapshot.position_secs);
-                        state.last_mc_playing = Some(playing);
+
+                    if state.last_mc_state != Some(state.snapshot.state) {
+                        match state.snapshot.state {
+                            PlaybackState::Playing => state
+                                .services
+                                .media_controls
+                                .set_playback(true, state.snapshot.position_secs),
+                            PlaybackState::Paused => state
+                                .services
+                                .media_controls
+                                .set_playback(false, state.snapshot.position_secs),
+                            PlaybackState::Idle | PlaybackState::Stopped => {
+                                state.services.media_controls.set_stopped()
+                            }
+                            PlaybackState::Loading | PlaybackState::Ended | PlaybackState::Error => {
+                            }
+                        }
+                        state.last_mc_state = Some(state.snapshot.state);
                     }
 
                     if let Some(ref toast) = state.toast
-                        && Instant::now() >= toast.expires_at {
-                            state.toast = None;
-                            cx.notify();
-                        }
+                        && Instant::now() >= toast.expires_at
+                    {
+                        state.toast = None;
+                        cx.notify();
+                    }
 
                     if let Some(ended_generation) = ended_gen
-                        && ended_generation == state.active_generation {
-                            state.next_track(true, cx);
-                        }
-                    if let Some(msg) = err_msg {
+                        && state.audio_generation > 0
+                        && ended_generation == state.audio_generation
+                    {
+                        state.next_track(true, cx);
+                    }
+                    if let Some((err_gen, msg)) = err_msg
+                        && (state.audio_generation == 0 || err_gen == state.audio_generation)
+                    {
                         state.show_toast(format!("播放出错: {msg}"), true, cx);
                     }
 
@@ -918,9 +1042,19 @@ impl AppState {
     }
 }
 
+fn lyrics_cache_keys(track: &TrackItem) -> (String, Option<String>) {
+    match &track.source {
+        TrackSource::BiliVideo { bvid, cid, .. } if *cid > 0 => (
+            format!("{bvid}-{cid}"),
+            Some(track.id.clone()),
+        ),
+        _ => (track.id.clone(), None),
+    }
+}
+
 async fn run_auto_lyrics_task(
     services: Arc<Services>,
-    track_id: String,
+    track_key: String,
     audio_path: PathBuf,
     title: String,
     artist: String,
@@ -934,7 +1068,7 @@ async fn run_auto_lyrics_task(
     };
     let aligned = run_auto_lyrics(&auto_client, &audio_path, &title, &artist).await?;
     let cached = lyrics_data_to_cached(&aligned.lyrics, 0.0);
-    let _ = save_cached_lyrics(&services.store, &track_id, &cached, true);
+    let _ = save_cached_lyrics(&services.store, &track_key, &cached, false);
     Ok(aligned)
 }
 
@@ -1006,7 +1140,16 @@ async fn resolve_audio_source(
             }
             let info = services.bili.get_playurl(bvid, resolved_cid, quality).await?;
             let mut last_err = None;
-            for url in &info.urls {
+            let all_urls = info
+                .streams
+                .iter()
+                .flat_map(|s| s.urls.iter())
+                .chain(info.urls.iter());
+            let mut tried = std::collections::HashSet::new();
+            for url in all_urls {
+                if !tried.insert(url.as_str().to_string()) {
+                    continue;
+                }
                 match prepare_stream_from_url(services, url).await {
                     Ok(ok) => return Ok(ok),
                     Err(e) => last_err = Some(e),

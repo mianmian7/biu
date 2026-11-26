@@ -212,14 +212,22 @@ impl MainShell {
             if system::is_quitting() {
                 return true;
             }
-            let option = st.read(cx).settings.close_window_option.clone();
-            if option == "minimize" {
+            let (option, has_mini) = {
+                let s = st.read(cx);
+                (
+                    s.settings.close_window_option.clone(),
+                    s.windows.mini_player.is_some(),
+                )
+            };
+            if option == "minimize"
+                || (option == "hide" && !system::can_restore_from_background(has_mini))
+            {
                 window.minimize_window();
                 return false;
             }
             st.update(cx, |s, cx| {
                 s.windows.main = None;
-                s.covers.clear();
+                s.clear_covers(cx);
                 if s.is_full_screen {
                     s.is_full_screen = false;
                     s.services.audio.set_waveform_enabled(false);

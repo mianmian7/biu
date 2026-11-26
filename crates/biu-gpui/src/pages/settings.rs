@@ -177,8 +177,12 @@ impl PagesHost {
             .child(options(
                 entity,
                 "内容布局",
-                s.display_mode.as_str(),
-                &[("list", "列表"), ("grid", "网格")],
+                if s.display_mode == "grid" {
+                    "card"
+                } else {
+                    s.display_mode.as_str()
+                },
+                &[("list", "列表"), ("card", "网格")],
                 p,
                 |s, value| s.display_mode = value.into(),
             ));
@@ -202,8 +206,12 @@ impl PagesHost {
             .child(options(
                 entity,
                 "关闭窗口",
-                s.close_window_option.as_str(),
-                &[("hide", "最小化到托盘"), ("quit", "直接退出")],
+                if s.close_window_option == "quit" {
+                    "exit"
+                } else {
+                    s.close_window_option.as_str()
+                },
+                &[("hide", "最小化到托盘"), ("exit", "直接退出")],
                 p,
                 |s, value| s.close_window_option = value.into(),
             ))

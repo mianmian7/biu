@@ -84,7 +84,11 @@ impl PagesHost {
         let format = file
             .and_then(|path| path.extension())
             .and_then(|ext| ext.to_str())
-            .or_else(|| task.extra["requestedFormat"].as_str())
+            .or_else(|| {
+                task.extra
+                    .get("requestedFormat")
+                    .and_then(serde_json::Value::as_str)
+            })
             .unwrap_or(&task.output_file_type)
             .to_ascii_uppercase();
         let progress = task.progress();

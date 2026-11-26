@@ -405,6 +405,15 @@ fn register_hotkeys() -> anyhow::Result<(global_hotkey::GlobalHotKeyManager, Vec
     Ok((manager, bindings))
 }
 
+static TRAY_AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Returns true when the user has a reliable way to reopen the main window if it is destroyed.
+pub fn can_restore_from_background(has_mini_player: bool) -> bool {
+    cfg!(target_os = "macos")
+        || TRAY_AVAILABLE.load(std::sync::atomic::Ordering::Acquire)
+        || has_mini_player
+}
+
 /// Create the tray icon + global hotkeys and start a 100 ms poller that keeps
 /// working while the main window is closed to the tray.
 pub fn init_tray_and_hotkeys(state: Entity<AppState>, cx: &mut App) {
@@ -426,6 +435,7 @@ pub fn init_tray_and_hotkeys(state: Entity<AppState>, cx: &mut App) {
             }
         }
     };
+    TRAY_AVAILABLE.store(tray.is_some(), std::sync::atomic::Ordering::Release);
 
     let hotkeys = match std::panic::catch_unwind(register_hotkeys) {
         Ok(Ok(h)) => Some(h),
