@@ -50,19 +50,29 @@ export function rankReferences(
  * A small flicker on an already-flat bed is not an onset. Accompaniment can still pass.
  * A cold open (声なき魚 sings at 0.42 s) has no bed to rise from; there the reference only has to be audible.
  */
-export function checkVocalOnset(pcm: Float32Array, sampleRate: number, firstLineSec: number): boolean {
+export interface PcmSampleReader {
+  length: number;
+  sampleAt(index: number): number;
+}
+
+export function checkVocalOnset(
+  pcm: Float32Array | PcmSampleReader,
+  sampleRate: number,
+  firstLineSec: number,
+): boolean {
   if (!Number.isFinite(sampleRate) || sampleRate <= 0 || !Number.isFinite(firstLineSec) || firstLineSec < 0) {
     return false;
   }
-  if (firstLineSec < 1.5) return audible(pcm, sampleRate, firstLineSec + 1.5);
+  const samples = pcm instanceof Float32Array ? { length: pcm.length, sampleAt: (index: number) => pcm[index] } : pcm;
+  if (firstLineSec < 1.5) return audible(samples, sampleRate, firstLineSec + 1.5);
   return (
-    hasEnergyRise(pcm, sampleRate, firstLineSec, 0.1, 1.6, 0.01) ||
-    hasEnergyRise(pcm, sampleRate, firstLineSec, 0.5, 1.6, 0.002)
+    hasEnergyRise(samples, sampleRate, firstLineSec, 0.1, 1.6, 0.01) ||
+    hasEnergyRise(samples, sampleRate, firstLineSec, 0.5, 1.6, 0.002)
   );
 }
 
 function hasEnergyRise(
-  pcm: Float32Array,
+  pcm: PcmSampleReader,
   sampleRate: number,
   firstLineSec: number,
   windowSec: number,
@@ -74,7 +84,10 @@ function hasEnergyRise(
   const end = Math.min(pcm.length - window, Math.ceil((firstLineSec + 1.5) * sampleRate));
   const energy = (from: number) => {
     let sum = 0;
-    for (let i = from; i < from + window; i++) sum += pcm[i] * pcm[i];
+    for (let i = from; i < from + window; i++) {
+      const sample = pcm.sampleAt(i);
+      sum += sample * sample;
+    }
     return sum / window;
   };
   for (let center = start; center <= end; center += Math.max(1, Math.floor(window / 2))) {
@@ -85,9 +98,12 @@ function hasEnergyRise(
   return false;
 }
 
-function audible(pcm: Float32Array, sampleRate: number, untilSec: number): boolean {
+function audible(pcm: PcmSampleReader, sampleRate: number, untilSec: number): boolean {
   const end = Math.min(pcm.length, Math.ceil(untilSec * sampleRate));
   let sum = 0;
-  for (let i = 0; i < end; i++) sum += pcm[i] * pcm[i];
+  for (let i = 0; i < end; i++) {
+    const sample = pcm.sampleAt(i);
+    sum += sample * sample;
+  }
   return end > 0 && sum / end >= 1e-4;
 }

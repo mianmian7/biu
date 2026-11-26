@@ -34,7 +34,7 @@ const MusicCard = memo(
         <ContextMenu items={menus} onAction={onMenuAction} className="grow">
           <div className="group flex h-full grow flex-col">
             <div className="rounded-medium relative overflow-hidden">
-              <Image radius="md" removeWrapper src={cover} width="100%" height={140} params="672w_378h_1c.avif" />
+              <Image radius="md" removeWrapper src={cover} width="100%" height={140} params="320w_180h_1c.webp" />
               {(playCount ?? 0) > 0 || durationText ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex items-center justify-between bg-linear-to-t from-black/90 via-black/60 to-transparent p-2 text-xs text-white">
                   {(playCount ?? 0) > 0 && (

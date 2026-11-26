@@ -9,9 +9,18 @@ export type GlassEffectsProfile = {
 };
 
 export type GlassBackgroundLayer = {
+  key: string;
   coverSrc?: string;
   gradientBackground: string;
 };
+
+export function resizeBiliCover(src: string | undefined, params = "240w_135h_1c.webp") {
+  if (!src) return src;
+  const suffixStart = src.search(/[?#]/);
+  const path = suffixStart === -1 ? src : src.slice(0, suffixStart);
+  const suffix = src.slice(path.length);
+  return path.includes("/bfs/") && !path.includes("@") ? `${path}@${params}${suffix}` : src;
+}
 
 function clamp01(n: number) {
   return Math.min(1, Math.max(0, n));
@@ -118,7 +127,7 @@ async function extractDominantColorFromImage(src: string): Promise<Rgb> {
       resolve({ r: Math.round(r / count), g: Math.round(g / count), b: Math.round(b / count) });
     };
     img.onerror = () => reject(new Error("Image load failed"));
-    img.src = src;
+    img.src = resizeBiliCover(src) ?? src;
   });
 }
 
@@ -193,28 +202,28 @@ export function useGlassmorphism(coverSrc: string | undefined, fallbackHex: stri
 
   const gradientBackground = useMemo(() => buildGradientBackground(glowRgb, overlayAlpha), [glowRgb, overlayAlpha]);
 
-  const bgKey = useMemo(() => {
-    return `${coverSrc || ""}:${glowRgb.r},${glowRgb.g},${glowRgb.b}:${overlayAlpha.toFixed(2)}`;
-  }, [coverSrc, glowRgb.b, glowRgb.g, glowRgb.r, overlayAlpha]);
-
-  const [bgLayerA, setBgLayerA] = useState<GlassBackgroundLayer>(() => ({ coverSrc, gradientBackground }));
-  const [bgLayerB, setBgLayerB] = useState<GlassBackgroundLayer>(() => ({ coverSrc, gradientBackground }));
-  const [activeBgLayer, setActiveBgLayer] = useState<"a" | "b">("a");
-  const lastBgKeyRef = useRef(bgKey);
+  const bgLayer = useMemo(
+    () => ({ key: JSON.stringify([coverSrc, gradientBackground]), coverSrc, gradientBackground }),
+    [coverSrc, gradientBackground],
+  );
+  const lastLayer = useRef(bgLayer);
+  const [background, setBackground] = useState<{ current: GlassBackgroundLayer; previous?: GlassBackgroundLayer }>(
+    () => ({ current: bgLayer }),
+  );
 
   useEffect(() => {
-    if (lastBgKeyRef.current === bgKey) return;
-    lastBgKeyRef.current = bgKey;
-
-    const next = { coverSrc, gradientBackground };
-    if (activeBgLayer === "a") {
-      setBgLayerB(next);
-      setActiveBgLayer("b");
-    } else {
-      setBgLayerA(next);
-      setActiveBgLayer("a");
+    const previous = lastLayer.current;
+    lastLayer.current = bgLayer;
+    if (!enabled || !effectsProfile.transitionMs) {
+      setBackground({ current: bgLayer });
+      return;
     }
-  }, [activeBgLayer, bgKey, coverSrc, gradientBackground]);
+    if (previous.key === bgLayer.key) return;
+
+    setBackground({ current: bgLayer, previous });
+    const timer = window.setTimeout(() => setBackground({ current: bgLayer }), effectsProfile.transitionMs + 50);
+    return () => window.clearTimeout(timer);
+  }, [bgLayer, effectsProfile.transitionMs, enabled]);
 
   const cssVars = useMemo(() => {
     return {
@@ -229,9 +238,8 @@ export function useGlassmorphism(coverSrc: string | undefined, fallbackHex: stri
     glassAlpha,
     overlayAlpha,
     gradientBackground,
-    bgLayerA,
-    bgLayerB,
-    activeBgLayer,
+    bgLayer: background.current,
+    previousBgLayer: background.previous,
     cssVars,
   };
 }

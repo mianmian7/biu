@@ -5,7 +5,9 @@ import type { AutoLyricsProgress, AutoLyricsResult } from "@shared/auto-lyrics/s
 
 import { startDesktopLyricsSync } from "@/common/utils/desktop-lyrics";
 import { getLyricsByBili } from "@/components/lyrics/get-lyrics";
+import { useFullScreenPlayerSettings } from "@/store/full-screen-player-settings";
 import { getActiveLyricIndex, parseLrc, useLyricsStore } from "@/store/lyrics";
+import { useModalStore } from "@/store/modal";
 import { usePlayList } from "@/store/play-list";
 import { useSettings } from "@/store/settings";
 
@@ -43,8 +45,6 @@ const deferred = <T>() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useLyricsStore.getState().reset();
-  setPlayItem(undefined);
   autoStart.mockResolvedValue({ key: "BV1xx-100", status: "unidentified", timings: {} });
   autoProgress.mockReturnValue(unsubscribe);
   (window as any).electron = {
@@ -56,6 +56,14 @@ beforeEach(() => {
     onDesktopLyricsLockToggleRequested: vi.fn().mockReturnValue(() => {}),
     onDesktopLyricsCommand: vi.fn().mockReturnValue(() => {}),
   };
+  useLyricsStore.getState().reset();
+  useSettings.setState({
+    showDesktopLyrics: false,
+    desktopLyricsStyle: useSettings.getInitialState().desktopLyricsStyle,
+  });
+  useModalStore.setState({ isFullScreenPlayerOpen: false });
+  useFullScreenPlayerSettings.getState().reset();
+  setPlayItem(undefined);
 });
 
 describe("parseLrc", () => {
@@ -409,6 +417,7 @@ describe("useLyricsStore", () => {
   });
 
   test("complements missing romaji for Japanese lyrics and keeps source romaji", async () => {
+    useSettings.setState({ showDesktopLyrics: true });
     const romanizeLyrics = vi.fn().mockResolvedValue(["kaze ni", "machi no akari", null]);
     (window as any).electron.romanizeLyrics = romanizeLyrics;
 
@@ -538,5 +547,56 @@ describe("useLyricsStore", () => {
 
     expect(useLyricsStore.getState().offset).toBe(2500);
     expect(useLyricsStore.getState().lyrics).toEqual([{ time: 1000, text: "cached" }]);
+  });
+});
+
+describe("romaji visibility", () => {
+  const lrc = "[00:01.00]風に\n[00:02.00]街の灯り";
+
+  test("generates romaji when desktop lyrics and its romaji option are both enabled", async () => {
+    const romanize = vi.fn().mockResolvedValue(["ka ze ni", "ma chi no a ka ri"]);
+    window.electron.romanizeLyrics = romanize;
+    const desktopLyricsStyle = { ...useSettings.getState().desktopLyricsStyle, showRomaji: false };
+    useSettings.setState({ desktopLyricsStyle });
+    useLyricsStore.getState().applyLyrics(lrc);
+
+    expect(romanize).not.toHaveBeenCalled();
+    useSettings.setState({ showDesktopLyrics: true });
+    expect(romanize).not.toHaveBeenCalled();
+    useSettings.setState({ desktopLyricsStyle: { ...desktopLyricsStyle, showRomaji: true } });
+    expect(romanize).toHaveBeenCalledExactlyOnceWith(["風に", "街の灯り"]);
+    await flushPromises();
+    expect(useLyricsStore.getState().romajiLyrics).toHaveLength(2);
+  });
+
+  test("opening the full-screen player generates romaji once for the current lyrics", async () => {
+    const pending = deferred<(string | null)[]>();
+    const romanize = vi.fn().mockReturnValue(pending.promise);
+    window.electron.romanizeLyrics = romanize;
+    useLyricsStore.getState().applyLyrics(lrc);
+
+    expect(romanize).not.toHaveBeenCalled();
+    useModalStore.setState({ isFullScreenPlayerOpen: true });
+    expect(romanize).toHaveBeenCalledExactlyOnceWith(["風に", "街の灯り"]);
+    useModalStore.setState({ isFullScreenPlayerOpen: false });
+    useModalStore.setState({ isFullScreenPlayerOpen: true });
+    expect(romanize).toHaveBeenCalledTimes(1);
+    pending.resolve(["ka ze ni", "ma chi no a ka ri"]);
+    await flushPromises();
+    expect(useLyricsStore.getState().romajiLyrics).toHaveLength(2);
+  });
+
+  test("enabling lyrics in an already-open full-screen player generates romaji", async () => {
+    const romanize = vi.fn().mockResolvedValue(["ka ze ni", "ma chi no a ka ri"]);
+    window.electron.romanizeLyrics = romanize;
+    useFullScreenPlayerSettings.getState().update({ showLyrics: false });
+    useModalStore.setState({ isFullScreenPlayerOpen: true });
+    useLyricsStore.getState().applyLyrics(lrc);
+
+    expect(romanize).not.toHaveBeenCalled();
+    useFullScreenPlayerSettings.getState().update({ showLyrics: true });
+    expect(romanize).toHaveBeenCalledExactlyOnceWith(["風に", "街の灯り"]);
+    await flushPromises();
+    expect(useLyricsStore.getState().romajiLyrics).toHaveLength(2);
   });
 });

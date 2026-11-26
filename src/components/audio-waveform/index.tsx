@@ -14,13 +14,44 @@ let audioContext: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let source: MediaElementAudioSourceNode | null = null;
 
+function resumeAudioContext() {
+  if (audioContext) void audioContext.resume().catch(() => {});
+}
+
+function suspendAudioContext() {
+  if (audioContext) void audioContext.suspend().catch(() => {});
+}
+
+function initAudioContext() {
+  if (audioContext) return;
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioContextClass) return;
+  const context: AudioContext = new AudioContextClass();
+  const node = context.createAnalyser();
+  node.fftSize = 512;
+  try {
+    source = context.createMediaElementSource(audioElement);
+    source.connect(context.destination);
+  } catch (error) {
+    void context.close().catch(() => {});
+    console.warn("MediaElementSourceNode creation failed:", error);
+    return;
+  }
+  audioContext = context;
+  analyser = node;
+
+  // The media element stays routed through this context after the canvas unmounts.
+  audioElement.addEventListener("play", resumeAudioContext);
+  audioElement.addEventListener("pause", suspendAudioContext);
+  audioElement.addEventListener("ended", suspendAudioContext);
+}
+
 /**
  * 音频波形可视化组件
  * 使用 Web Audio API 实现动态频谱效果
  */
 const AudioWaveform = ({ width = 56, height = 56, barCount = 40, barColor = "currentColor" }: AudioWaveformProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animationIdRef = useRef<number>(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -29,53 +60,26 @@ const AudioWaveform = ({ width = 56, height = 56, barCount = 40, barColor = "cur
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Initialize AudioContext and Analyser if not already done
-    const initAudio = () => {
-      if (!audioContext) {
-        audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        analyser = audioContext.createAnalyser();
-        analyser.fftSize = 512; // Increased for better resolution
+    initAudioContext();
+    const waveformAnalyser = analyser;
+    const waveformSource = source;
+    if (!waveformAnalyser || !waveformSource) return;
+    waveformSource.connect(waveformAnalyser);
+    const bufferLength = waveformAnalyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    let animationId = 0;
 
-        try {
-          // Connect the global audio element to the analyser
-          source = audioContext.createMediaElementSource(audioElement);
-          source.connect(analyser);
-          analyser.connect(audioContext.destination);
-        } catch (error) {
-          console.warn("MediaElementSourceNode already connected or creation failed:", error);
-        }
-      }
-      if (audioContext?.state === "suspended") {
-        audioContext.resume();
-      }
-    };
-
-    // Initialize on mount
-    initAudio();
-
-    // Ensure context resumes on play
     const handlePlay = () => {
-      if (audioContext?.state === "suspended") {
-        audioContext.resume();
-      }
-      if (!animationIdRef.current) {
-        render();
-      }
+      if (!animationId) render();
     };
 
     const handlePause = () => {
-      if (animationIdRef.current) {
-        cancelAnimationFrame(animationIdRef.current);
-        animationIdRef.current = 0;
-      }
+      cancelAnimationFrame(animationId);
+      animationId = 0;
     };
 
     const draw = () => {
-      if (!analyser || !ctx) return;
-
-      const bufferLength = analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-      analyser.getByteFrequencyData(dataArray);
+      waveformAnalyser.getByteFrequencyData(dataArray);
 
       ctx.clearRect(0, 0, width, height);
 
@@ -123,25 +127,29 @@ const AudioWaveform = ({ width = 56, height = 56, barCount = 40, barColor = "cur
 
     const render = () => {
       draw();
-      animationIdRef.current = requestAnimationFrame(render);
+      animationId = requestAnimationFrame(render);
     };
 
     audioElement.addEventListener("play", handlePlay);
     audioElement.addEventListener("pause", handlePause);
+    audioElement.addEventListener("ended", handlePause);
 
     // Initialize state
-    if (!audioElement.paused) {
-      render();
-    } else {
+    if (audioElement.paused) {
       draw();
+      suspendAudioContext();
+    } else {
+      resumeAudioContext();
+      render();
     }
 
     return () => {
-      if (animationIdRef.current) {
-        cancelAnimationFrame(animationIdRef.current);
-      }
+      handlePause();
+      waveformSource.disconnect(waveformAnalyser);
+      if (audioElement.paused) suspendAudioContext();
       audioElement.removeEventListener("play", handlePlay);
       audioElement.removeEventListener("pause", handlePause);
+      audioElement.removeEventListener("ended", handlePause);
     };
   }, [width, height, barCount, barColor]);
 

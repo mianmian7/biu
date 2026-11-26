@@ -24,7 +24,7 @@ import MusicPlayMode from "../music-play-mode";
 import MusicPlayProgress from "../music-play-progress";
 import OpenPlaylistDrawerButton from "../open-playlist-drawer-button";
 import WindowAction from "../window-action";
-import { useGlassmorphism } from "./glassmorphism";
+import { resizeBiliCover, useGlassmorphism } from "./glassmorphism";
 import PageList from "./page-list";
 import FullScreenPlayerSettingsPanel from "./settings-panel";
 
@@ -134,11 +134,9 @@ const FullScreenPlayer = () => {
   };
 
   const coverSrc = formatUrlProtocol(playItem?.pageCover || playItem?.cover);
-  const { effectsProfile, bgLayerA, bgLayerB, activeBgLayer, cssVars } = useGlassmorphism(
-    coverSrc,
-    primaryColor,
-    isOpen,
-  );
+  const bgCoverSrc = resizeBiliCover(coverSrc);
+  const foregroundCoverSrc = resizeBiliCover(coverSrc, "640w_480h_1c.webp");
+  const { effectsProfile, bgLayer, previousBgLayer, cssVars } = useGlassmorphism(bgCoverSrc, primaryColor, isOpen);
 
   useEffect(() => {
     const updateHeight = () => {
@@ -230,62 +228,33 @@ const FullScreenPlayer = () => {
               )}
               {showBlurredBackground && (
                 <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      opacity: activeBgLayer === "a" ? 1 : 0,
-                      transition: `opacity ${effectsProfile.transitionMs}ms ease`,
-                      willChange: "opacity",
-                    }}
-                  >
-                    {bgLayerA.coverSrc && (
+                  {[bgLayer, previousBgLayer].map(layer => {
+                    if (!layer) return null;
+                    const fadingOut = layer === previousBgLayer;
+                    return (
                       <div
-                        className="absolute inset-0 scale-[1.15] bg-cover bg-center"
+                        key={layer.key}
+                        className="absolute inset-0"
                         style={{
-                          backgroundImage: `url(${bgLayerA.coverSrc})`,
-                          filter: `blur(${effectsProfile.blurPx}px)`,
-                          opacity: 0.92,
-                          willChange: "transform, filter, opacity",
-                          transition: `filter ${effectsProfile.transitionMs}ms ease, opacity ${effectsProfile.transitionMs}ms ease`,
+                          opacity: fadingOut ? 0 : 1,
+                          transition: fadingOut ? `opacity ${effectsProfile.transitionMs}ms ease` : undefined,
+                          willChange: fadingOut ? "opacity" : undefined,
                         }}
-                      />
-                    )}
-                    <div
-                      className="absolute inset-0"
-                      style={{
-                        background: bgLayerA.gradientBackground,
-                        willChange: "opacity",
-                      }}
-                    />
-                  </div>
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      opacity: activeBgLayer === "b" ? 1 : 0,
-                      transition: `opacity ${effectsProfile.transitionMs}ms ease`,
-                      willChange: "opacity",
-                    }}
-                  >
-                    {bgLayerB.coverSrc && (
-                      <div
-                        className="absolute inset-0 scale-[1.15] bg-cover bg-center"
-                        style={{
-                          backgroundImage: `url(${bgLayerB.coverSrc})`,
-                          filter: `blur(${effectsProfile.blurPx}px)`,
-                          opacity: 0.92,
-                          willChange: "transform, filter, opacity",
-                          transition: `filter ${effectsProfile.transitionMs}ms ease, opacity ${effectsProfile.transitionMs}ms ease`,
-                        }}
-                      />
-                    )}
-                    <div
-                      className="absolute inset-0"
-                      style={{
-                        background: bgLayerB.gradientBackground,
-                        willChange: "opacity",
-                      }}
-                    />
-                  </div>
+                      >
+                        {layer.coverSrc && (
+                          <div
+                            className="absolute inset-0 scale-[1.15] bg-cover bg-center"
+                            style={{
+                              backgroundImage: `url(${layer.coverSrc})`,
+                              filter: `blur(${effectsProfile.blurPx}px)`,
+                              opacity: 0.92,
+                            }}
+                          />
+                        )}
+                        <div className="absolute inset-0" style={{ background: layer.gradientBackground }} />
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               <div
@@ -334,7 +303,7 @@ const FullScreenPlayer = () => {
                     )}
                   >
                     <Image
-                      src={coverSrc}
+                      src={foregroundCoverSrc}
                       radius="lg"
                       className="transition-shadow ease-out"
                       classNames={{

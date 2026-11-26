@@ -96,7 +96,7 @@ const MusicListItem = ({
                   width="100%"
                   height="100%"
                   className="m-0"
-                  params="672w_378h_1c.avif"
+                  params="160w_90h_1c.webp"
                 />
                 {!isPlay && typeof onPress === "function" && (
                   <div className="absolute inset-0 z-20 flex items-center justify-center rounded-md bg-[rgba(0,0,0,0.35)] opacity-0 group-hover:opacity-100">

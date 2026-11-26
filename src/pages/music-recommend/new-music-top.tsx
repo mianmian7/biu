@@ -228,7 +228,7 @@ const NewMusicTop = ({ onLayoutChange }: NewMusicTopProps) => {
                       src={item.cover || ""}
                       width="100%"
                       height="100%"
-                      params="672w_378h_1c.avif"
+                      params="320w_180h_1c.webp"
                       emptyPlaceholder={<RiMusic2Line />}
                       removeWrapper
                       className="rounded-medium shadow-md"

@@ -1,29 +1,29 @@
 import type { Identification, IdentifyInput, SongCandidate } from "./identify";
-import type { ReferenceCandidate } from "./reference";
+import type { PcmSampleReader, ReferenceCandidate } from "./reference";
 import type { AutoLyricsParams, AutoLyricsProgress, AutoLyricsResult } from "./service-types";
 import type { AlignLine, AlignResult, GlobalOffset } from "./types";
 
 import { selectReference, verifyScore } from "./align";
+import { isDecodeUnavailable } from "./ffmpeg-resolve";
 import { identifyBySearch, LIVE, normalize, unmentionedNote } from "./identify";
 import { generateLrc, mapCompanionLrc, parseLrc } from "./lrc";
 import { checkVocalOnset, rankReferences } from "./reference";
-import { isDecodeUnavailable } from "./ffmpeg-resolve";
 
 // Alignment quality gate, not proof of song identity. Different releases of the right song may also fail.
 const VERIFY_MIN_SINGLE = 0.5;
 
 export const AUTO_LYRICS_ALGO_VERSION = "p1-gap-dtw-6";
 
-export interface AutoLyricsDependencies {
+export interface AutoLyricsDependencies<Audio extends Float32Array | PcmSampleReader = Float32Array> {
   sources: {
     search(query: string, signal: AbortSignal): Promise<SongCandidate[]>;
     lyric(songId: number, signal: AbortSignal): Promise<{ lrc: string; tlyric?: string; romalrc?: string }>;
     references(song: SongCandidate, signal: AbortSignal): Promise<ReferenceCandidate[]>;
     audio(bvid: string, cid: number | undefined, signal: AbortSignal): Promise<Uint8Array>;
   };
-  decode(data: Uint8Array, signal: AbortSignal): Promise<Float32Array>;
+  decode(data: Uint8Array, signal: AbortSignal): Promise<Audio>;
   align(
-    input: { studios: Float32Array[]; live: Float32Array; lines: AlignLine[] },
+    input: { studios: Audio[]; live: Audio; lines: AlignLine[] },
     signal: AbortSignal,
     onCoarse: (coarse: GlobalOffset) => void,
   ): Promise<
@@ -88,13 +88,13 @@ function waitUnlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise
   });
 }
 
-export class AutoLyricsService {
+export class AutoLyricsService<Audio extends Float32Array | PcmSampleReader = Float32Array> {
   private tasks = new Map<string, Task>();
   private foreground?: Task;
   private referenceCache = new Map<number, ReferenceCandidate>();
   private listeners = new Set<(event: AutoLyricsProgress) => void>();
 
-  constructor(private dependencies: AutoLyricsDependencies) {}
+  constructor(private dependencies: AutoLyricsDependencies<Audio>) {}
 
   onProgress(listener: (event: AutoLyricsProgress) => void): () => void {
     this.listeners.add(listener);
@@ -174,7 +174,7 @@ export class AutoLyricsService {
   /** Lyrics, a version-checked reference and alignment for one candidate song against the shared Live audio. */
   private async attempt(
     song: SongCandidate,
-    livePromise: Promise<Float32Array>,
+    livePromise: Promise<Audio>,
     signal: AbortSignal,
     stamp: (stage: string) => void,
     onCoarse?: (event: { coarse: GlobalOffset; lyrics: MusicLyrics }) => void,
@@ -304,7 +304,7 @@ export class AutoLyricsService {
   private async fallback(
     identified: Extract<Identification, { status: "matched" }>,
     params: AutoLyricsParams,
-    livePromise: Promise<Float32Array>,
+    livePromise: Promise<Audio>,
     signal: AbortSignal,
     stamp: (stage: string) => void,
     allowSelfReference: boolean,

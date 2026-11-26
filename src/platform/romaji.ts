@@ -1,111 +1,124 @@
-import DynamicDictionaries from "kuromoji/src/dict/DynamicDictionaries";
-import Tokenizer from "kuromoji/src/Tokenizer";
+import { isJapaneseLyrics } from "@shared/lyrics/romaji";
 
-import { isJapaneseLyrics, needsRomaji, type RomajiToken, tokensToRomaji } from "@shared/lyrics/romaji";
+import type { RomajiRequest, RomajiResponse, loadTokenizer } from "./romaji-worker";
 
 import { ensureMediaBase, invokeTauri } from "./index";
 
-const IDLE_RELEASE_MS = 5 * 60 * 1000;
+const IDLE_RELEASE_MS = 8_000;
+const CACHE_MAX_ENTRIES = 64;
+const CACHE_MAX_BYTES = 200 * 1024;
 
-interface KuromojiTokenizer {
-  tokenize: (text: string) => RomajiToken[];
+type Result = (string | null)[];
+
+const cache = new Map<string, { result: Result; bytes: number }>();
+let cacheBytes = 0;
+const inFlight = new Map<string, Promise<Result>>();
+const pending = new Map<number, { resolve: (result: Result) => void; reject: (error: unknown) => void }>();
+let requestId = 0;
+let worker: Worker | undefined;
+let inlineTokenizer: ReturnType<typeof loadTokenizer> | undefined;
+let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+
+function getWorker() {
+  if (worker) return worker;
+  const instance = new Worker(new URL("./romaji-worker.ts", import.meta.url), { type: "module" });
+  const fail = (error: Error) => {
+    instance.terminate();
+    if (worker !== instance) return;
+    worker = undefined;
+    for (const request of pending.values()) request.reject(error);
+    pending.clear();
+  };
+  instance.onerror = event => fail(new Error(event.message || "Romaji Web Worker error"));
+  instance.onmessageerror = () => fail(new Error("Invalid Romaji Web Worker response"));
+  instance.onmessage = (event: MessageEvent<RomajiResponse>) => {
+    const response = event.data;
+    const request = pending.get(response.id);
+    if (!request) return;
+    pending.delete(response.id);
+    if ("error" in response) request.reject(new Error(response.error));
+    else request.resolve(response.result);
+  };
+  worker = instance;
+  return instance;
 }
 
-let tokenizerPromise: Promise<KuromojiTokenizer> | null = null;
-let releaseTimer: ReturnType<typeof setTimeout> | null = null;
-
-async function fetchDecompressedDict(base: string, filename: string): Promise<ArrayBuffer> {
-  const resp = await fetch(`${base}kuromoji?name=${encodeURIComponent(filename)}`);
-  if (!resp.ok || !resp.body) {
-    throw new Error(`Failed to fetch kuromoji dictionary ${filename}: HTTP ${resp.status}`);
-  }
-  const stream = resp.body.pipeThrough(new DecompressionStream("gzip"));
-  return new Response(stream).arrayBuffer();
-}
-
-async function buildTokenizer(): Promise<KuromojiTokenizer> {
+async function romanize(lines: string[]): Promise<Result> {
   await invokeTauri<void>("kuromoji_ensure_dict");
   const base = await ensureMediaBase();
-
-  const [
-    baseBuf,
-    checkBuf,
-    tidBuf,
-    tidPosBuf,
-    tidMapBuf,
-    ccBuf,
-    unkBuf,
-    unkPosBuf,
-    unkMapBuf,
-    unkCharBuf,
-    unkCompatBuf,
-    unkInvokeBuf,
-  ] = await Promise.all([
-    fetchDecompressedDict(base, "base.dat.gz"),
-    fetchDecompressedDict(base, "check.dat.gz"),
-    fetchDecompressedDict(base, "tid.dat.gz"),
-    fetchDecompressedDict(base, "tid_pos.dat.gz"),
-    fetchDecompressedDict(base, "tid_map.dat.gz"),
-    fetchDecompressedDict(base, "cc.dat.gz"),
-    fetchDecompressedDict(base, "unk.dat.gz"),
-    fetchDecompressedDict(base, "unk_pos.dat.gz"),
-    fetchDecompressedDict(base, "unk_map.dat.gz"),
-    fetchDecompressedDict(base, "unk_char.dat.gz"),
-    fetchDecompressedDict(base, "unk_compat.dat.gz"),
-    fetchDecompressedDict(base, "unk_invoke.dat.gz"),
-  ]);
-
-  const dic = new DynamicDictionaries();
-  dic.loadTrie(new Int32Array(baseBuf), new Int32Array(checkBuf));
-  dic.loadTokenInfoDictionaries(new Uint8Array(tidBuf), new Uint8Array(tidPosBuf), new Uint8Array(tidMapBuf));
-  dic.loadConnectionCosts(new Int16Array(ccBuf));
-  dic.loadUnknownDictionaries(
-    new Uint8Array(unkBuf),
-    new Uint8Array(unkPosBuf),
-    new Uint8Array(unkMapBuf),
-    new Uint8Array(unkCharBuf),
-    new Uint32Array(unkCompatBuf),
-    new Uint8Array(unkInvokeBuf),
-  );
-
-  return new Tokenizer(dic) as KuromojiTokenizer;
-}
-
-function getTokenizer(): Promise<KuromojiTokenizer> {
-  if (!tokenizerPromise) {
-    tokenizerPromise = buildTokenizer().catch(err => {
-      tokenizerPromise = null;
-      throw err;
+  if (typeof Worker === "undefined") {
+    const { loadTokenizer, romanizeWithTokenizer } = await import("./romaji-worker");
+    inlineTokenizer ??= loadTokenizer(base).catch(error => {
+      inlineTokenizer = undefined;
+      throw error;
     });
+    return romanizeWithTokenizer(await inlineTokenizer, lines);
   }
 
-  if (releaseTimer) {
+  const instance = getWorker();
+  return new Promise((resolve, reject) => {
+    const id = ++requestId;
+    pending.set(id, { resolve, reject });
+    try {
+      instance.postMessage({ id, base, lines } satisfies RomajiRequest);
+    } catch (error) {
+      pending.delete(id);
+      reject(error);
+    }
+  });
+}
+
+function cacheResult(key: string, result: Result) {
+  const bytes = 2 * (key.length + result.reduce((length, line) => length + (line?.length ?? 0), 0));
+  if (bytes > CACHE_MAX_BYTES) return;
+  cache.set(key, { result, bytes });
+  cacheBytes += bytes;
+  for (const [oldKey, old] of cache) {
+    if (cache.size <= CACHE_MAX_ENTRIES && cacheBytes <= CACHE_MAX_BYTES) break;
+    cache.delete(oldKey);
+    cacheBytes -= old.bytes;
+  }
+}
+
+export async function romanizeLyricLines(lines: readonly string[]): Promise<Result> {
+  if (!Array.isArray(lines)) return [];
+  const normalized = lines.map(line => (typeof line === "string" ? line.trim() : ""));
+  if (!isJapaneseLyrics(normalized)) return normalized.map(() => null);
+
+  const key = JSON.stringify(normalized);
+  const cached = cache.get(key);
+  if (cached) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached.result.slice();
+  }
+
+  let task = inFlight.get(key);
+  if (!task) {
     clearTimeout(releaseTimer);
+    task = romanize(normalized)
+      .then(result => {
+        cacheResult(key, result);
+        return result;
+      })
+      .catch(error => {
+        void invokeTauri("frontend_log", {
+          level: "warn",
+          message: `[lyrics-romaji] romanize failed: ${error instanceof Error ? error.message : String(error)}`,
+        }).catch(() => {});
+        return normalized.map(() => null);
+      })
+      .finally(() => {
+        inFlight.delete(key);
+        if (inFlight.size === 0) {
+          releaseTimer = setTimeout(() => {
+            worker?.terminate();
+            worker = undefined;
+            inlineTokenizer = undefined;
+          }, IDLE_RELEASE_MS);
+        }
+      });
+    inFlight.set(key, task);
   }
-  releaseTimer = setTimeout(() => {
-    releaseTimer = null;
-    tokenizerPromise = null;
-  }, IDLE_RELEASE_MS);
-
-  return tokenizerPromise;
-}
-
-export async function romanizeLyricLines(lines: readonly string[]): Promise<(string | null)[]> {
-  if (!Array.isArray(lines) || !lines.length || !isJapaneseLyrics(lines)) {
-    return Array.isArray(lines) ? lines.map(() => null) : [];
-  }
-
-  try {
-    const tokenizer = await getTokenizer();
-    return lines.map(line => {
-      if (typeof line !== "string" || !needsRomaji(line)) return null;
-      return tokensToRomaji(tokenizer.tokenize(line)) || null;
-    });
-  } catch (err) {
-    void invokeTauri("frontend_log", {
-      level: "warn",
-      message: `[lyrics-romaji] romanize failed: ${err instanceof Error ? err.message : String(err)}`,
-    }).catch(() => {});
-    return lines.map(() => null);
-  }
+  return (await task).slice();
 }

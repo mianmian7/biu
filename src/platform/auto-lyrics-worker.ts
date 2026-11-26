@@ -1,27 +1,20 @@
 import type { SongCandidate } from "../../shared/auto-lyrics/identify";
 import type { ReferenceCandidate } from "../../shared/auto-lyrics/reference";
-import type {
-  AutoLyricsParams,
-  AutoLyricsProgress,
-  AutoLyricsResult,
-} from "../../shared/auto-lyrics/service-types";
-import type { AlignLine, AlignResult, GlobalOffset } from "../../shared/auto-lyrics/types";
+import type { AutoLyricsParams, AutoLyricsProgress, AutoLyricsResult } from "../../shared/auto-lyrics/service-types";
+import type { AlignLine, AlignResult, AudioFeatureSet, GlobalOffset } from "../../shared/auto-lyrics/types";
 
-import { DecodeUnavailableError } from "../../shared/auto-lyrics/ffmpeg-resolve";
-import { AutoLyricsService } from "../../shared/auto-lyrics/service";
-import {
-  alignLinesGapDTW,
-  estimateGlobalOffset,
-  lyricAnchors,
-  selectReference,
-} from "../../shared/auto-lyrics/align";
+import { alignLinesGapDTW, estimateGlobalOffset, lyricAnchors, selectReference } from "../../shared/auto-lyrics/align";
 import { AudioFeatures } from "../../shared/auto-lyrics/features";
+import { DecodeUnavailableError } from "../../shared/auto-lyrics/ffmpeg-resolve";
 import { withoutTrailingNote } from "../../shared/auto-lyrics/identify";
 import { rankReferences } from "../../shared/auto-lyrics/reference";
+import { AutoLyricsService } from "../../shared/auto-lyrics/service";
+
+type Pcm = Float32Array | Uint8Array;
 
 export type AlignRequest = {
-  studios: Float32Array[];
-  live: Float32Array;
+  studios: Pcm[];
+  live: Pcm | AudioFeatureSet;
   lines: AlignLine[];
 };
 
@@ -29,6 +22,7 @@ export type AlignWorkerOutput = {
   coarse: GlobalOffset;
   lines: AlignResult[];
   memoryPeakKB: number;
+  liveFeatures?: AudioFeatureSet;
 } & ReturnType<typeof selectReference>;
 
 type AlignResponse =
@@ -42,6 +36,7 @@ type AlignResponse =
       kind: "fine";
       coarse: GlobalOffset;
       lines: AlignResult[];
+      liveFeatures?: AudioFeatureSet;
       elapsedMs: number;
       memoryPeakKB: number;
     } & ReturnType<typeof selectReference>)
@@ -50,30 +45,28 @@ type AlignResponse =
       error: string;
     };
 
+function isPcm(value: unknown): value is Pcm {
+  return (
+    (value instanceof Float32Array && value.length > 0) ||
+    (value instanceof Uint8Array && value.length > 0 && value.length % 2 === 0)
+  );
+}
+
 function parseAlignRequest(input: unknown): AlignRequest {
   if (!input || typeof input !== "object") {
     throw new Error("Invalid alignment request");
   }
-  const req = input as Record<string, unknown>;
-  if (!Array.isArray(req.studios) || req.studios.length === 0 || req.studios.length > 3) {
-    throw new Error("Invalid studios array in alignment request");
+  const req = input as AlignRequest;
+  if (!Array.isArray(req.studios) || req.studios.length === 0 || req.studios.length > 3 || !req.studios.every(isPcm)) {
+    throw new Error("Invalid studio PCM in alignment request");
   }
-  for (const s of req.studios) {
-    if (!(s instanceof Float32Array) || s.length === 0) {
-      throw new Error("Invalid studio Float32Array in alignment request");
-    }
-  }
-  if (!(req.live instanceof Float32Array) || req.live.length === 0) {
-    throw new Error("Invalid live Float32Array in alignment request");
+  if (!isPcm(req.live) && (!req.live || !Array.isArray(req.live.cens))) {
+    throw new Error("Invalid live audio in alignment request");
   }
   if (!Array.isArray(req.lines)) {
     throw new Error("Invalid lines array in alignment request");
   }
-  return {
-    studios: req.studios as Float32Array[],
-    live: req.live as Float32Array,
-    lines: req.lines as AlignLine[],
-  };
+  return req;
 }
 
 function parseAlignResponse(input: unknown): AlignResponse {
@@ -87,74 +80,85 @@ function parseAlignResponse(input: unknown): AlignResponse {
   return input as AlignResponse;
 }
 
-export function runAlignmentSync(
-  input: AlignRequest,
-  onCoarse?: (coarse: GlobalOffset) => void,
+function runAlignment(
+  request: AlignRequest,
+  studios: AudioFeatureSet[],
+  live: AudioFeatureSet,
+  onCoarse: (coarse: GlobalOffset, selection: ReturnType<typeof selectReference>) => void,
 ): AlignWorkerOutput {
-  const started = performance.now();
-  const request = parseAlignRequest(input);
-  const extractor = new AudioFeatures({ sampleRate: 22050 });
-  const studios = request.studios.map(pcm => extractor.extract(pcm));
   const selection = selectReference(studios);
   const studio = studios[selection.referenceIndex];
-  const live = extractor.extract(request.live);
   const coarse = estimateGlobalOffset(studio, live, null, lyricAnchors(request.lines));
-  onCoarse?.(coarse);
-  const lines = alignLinesGapDTW(request.lines, studio, live);
+  onCoarse(coarse, selection);
   return {
     ...selection,
     coarse,
-    lines,
-    memoryPeakKB: Math.round((performance.now() - started) * 0),
+    lines: alignLinesGapDTW(request.lines, studio, live),
+    memoryPeakKB: 0,
+  };
+}
+
+function extractPcm(extractor: AudioFeatures, pcm: Pcm) {
+  return extractor.extract(pcm instanceof Uint8Array ? pcmS16leToFloat32(pcm) : pcm);
+}
+
+export function runAlignmentSync(
+  input: AlignRequest,
+  onCoarse: (coarse: GlobalOffset) => void = () => {},
+): AlignWorkerOutput {
+  const request = parseAlignRequest(input);
+  const extractor = new AudioFeatures({ sampleRate: 22050 });
+  const studios = request.studios.map(pcm => extractPcm(extractor, pcm));
+  const live = isPcm(request.live) ? extractPcm(extractor, request.live) : request.live;
+  return {
+    ...runAlignment(request, studios, live, onCoarse),
+    liveFeatures: request.live instanceof Uint8Array ? live : undefined,
   };
 }
 
 // Web Worker entry point when loaded via `new Worker(new URL("./auto-lyrics-worker.ts", import.meta.url))`
 const isDedicatedWorker =
-  typeof self !== "undefined" &&
-  typeof window === "undefined" &&
-  typeof (self as unknown as { postMessage?: unknown }).postMessage === "function";
+  typeof self !== "undefined" && typeof window === "undefined" && typeof self.postMessage === "function";
 
 if (isDedicatedWorker) {
-  const workerSelf = self as unknown as {
-    onmessage: ((event: MessageEvent<unknown>) => void) | null;
-    postMessage: (message: unknown) => void;
-  };
-  workerSelf.onmessage = (event: MessageEvent<unknown>) => {
+  self.addEventListener("message", (event: MessageEvent<unknown>) => {
     const started = performance.now();
     try {
       const request = parseAlignRequest(event.data);
       const extractor = new AudioFeatures({ sampleRate: 22050 });
-      const studios = request.studios.map(pcm => extractor.extract(pcm));
-      const selection = selectReference(studios);
-      const studio = studios[selection.referenceIndex];
-      const live = extractor.extract(request.live);
-      const coarse = estimateGlobalOffset(studio, live, null, lyricAnchors(request.lines));
-      workerSelf.postMessage({
-        kind: "coarse",
-        ...selection,
-        coarse,
-        elapsedMs: performance.now() - started,
-        memoryPeakKB: 0,
+      const studios: AudioFeatureSet[] = [];
+      // Drop each PCM view as it is converted into features.
+      while (request.studios.length) {
+        studios.push(extractPcm(extractor, request.studios.shift()!));
+      }
+      const returnLiveFeatures = request.live instanceof Uint8Array;
+      const live = isPcm(request.live) ? extractPcm(extractor, request.live) : request.live;
+      request.live = live;
+      const output = runAlignment(request, studios, live, (coarse, selection) => {
+        self.postMessage({
+          kind: "coarse",
+          ...selection,
+          coarse,
+          elapsedMs: performance.now() - started,
+          memoryPeakKB: 0,
+        } satisfies AlignResponse);
       });
-      const lines = alignLinesGapDTW(request.lines, studio, live);
-      workerSelf.postMessage({
+      self.postMessage({
         kind: "fine",
-        ...selection,
-        coarse,
-        lines,
+        ...output,
+        liveFeatures: returnLiveFeatures ? live : undefined,
         elapsedMs: performance.now() - started,
-        memoryPeakKB: 0,
-      });
+      } satisfies AlignResponse);
     } catch (error) {
-      workerSelf.postMessage({
+      self.postMessage({
         kind: "error",
         error: error instanceof Error ? error.message : String(error),
-      });
+      } satisfies AlignResponse);
     }
-  };
+  });
 }
 
+/** The worker takes ownership of the PCM buffers in this request. */
 export function alignAudioInWorker(
   request: AlignRequest,
   signal: AbortSignal,
@@ -190,6 +194,7 @@ export function alignAudioInWorker(
       fail(new Error(event.message || "Alignment Web Worker error"));
     };
 
+    worker.onmessageerror = () => fail(new Error("Invalid alignment response"));
     worker.onmessage = (event: MessageEvent<unknown>) => {
       if (settled) return;
       let data: AlignResponse;
@@ -216,6 +221,7 @@ export function alignAudioInWorker(
           coarse: data.coarse,
           lines: data.lines,
           memoryPeakKB: data.memoryPeakKB,
+          liveFeatures: data.liveFeatures,
           referenceIndex: data.referenceIndex,
           referenceConsensus: data.referenceConsensus,
           referenceLags: data.referenceLags,
@@ -227,13 +233,21 @@ export function alignAudioInWorker(
       cancel();
       return;
     }
-    worker.postMessage(request);
+    const transfer = new Set<ArrayBuffer>();
+    const addBuffer = (pcm: Pcm) => {
+      if (pcm.buffer instanceof ArrayBuffer) transfer.add(pcm.buffer);
+    };
+    request.studios.forEach(addBuffer);
+    if (isPcm(request.live)) addBuffer(request.live);
+    try {
+      worker.postMessage(request, [...transfer]);
+    } catch (error) {
+      fail(error);
+    }
   });
 }
 
-function parseInputParams(
-  input: unknown,
-): AutoLyricsParams | { bvid: string; cid: number; bypassCache?: boolean } {
+function parseInputParams(input: unknown): AutoLyricsParams | { bvid: string; cid: number; bypassCache?: boolean } {
   if (!input || typeof input !== "object") {
     throw new Error("Invalid autoLyrics params");
   }
@@ -287,21 +301,29 @@ interface VideoViewResponse {
   pages: Array<{ cid: number; part: string; duration: number }>;
 }
 
+class S16leAudio {
+  readonly length: number;
+  private readonly view: DataView;
+  features?: AudioFeatureSet;
+
+  constructor(readonly bytes: Uint8Array) {
+    if (bytes.byteLength < 2 || bytes.byteLength % 2 !== 0) {
+      throw new Error("ffmpeg returned invalid PCM");
+    }
+    this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    this.length = bytes.byteLength / 2;
+  }
+
+  sampleAt(index: number) {
+    return this.view.getInt16(index * 2, true) / 32768;
+  }
+}
+
 export function pcmS16leToFloat32(raw: ArrayBuffer | Uint8Array): Float32Array {
-  const bytes =
-    raw instanceof Uint8Array
-      ? raw
-      : new Uint8Array(raw);
-  if (bytes.byteLength < 2 || bytes.byteLength % 2 !== 0) {
-    throw new Error("ffmpeg returned invalid PCM");
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const sampleCount = bytes.byteLength / 2;
-  const pcm = new Float32Array(sampleCount);
-  for (let i = 0; i < sampleCount; i++) {
-    pcm[i] = view.getInt16(i * 2, true) / 32768;
-  }
-  return pcm;
+  const pcm = new S16leAudio(raw instanceof Uint8Array ? raw : new Uint8Array(raw));
+  const samples = new Float32Array(pcm.length);
+  for (let i = 0; i < samples.length; i++) samples[i] = pcm.sampleAt(i);
+  return samples;
 }
 
 export function createTauriAutoLyricsController(
@@ -309,6 +331,7 @@ export function createTauriAutoLyricsController(
 ) {
   const lyricsCacheMem = new Map<string, MusicLyrics>();
   const referencesMem = new Map<string, ReferenceCandidate>();
+  const audioTokens = new WeakMap<Uint8Array, () => void>();
 
   const syncStateFromBackend = async () => {
     try {
@@ -354,7 +377,7 @@ export function createTauriAutoLyricsController(
     };
   };
 
-  const service = new AutoLyricsService({
+  const service = new AutoLyricsService<S16leAudio>({
     sources: {
       search: async (query: string, signal: AbortSignal): Promise<SongCandidate[]> => {
         signal.throwIfAborted();
@@ -362,10 +385,9 @@ export function createTauriAutoLyricsController(
       },
       lyric: async (songId: number, signal: AbortSignal) => {
         signal.throwIfAborted();
-        return invokeTauri<{ lrc: string; tlyric?: string; romalrc?: string }>(
-          "auto_lyrics_get_netease_lyric",
-          { songId },
-        );
+        return invokeTauri<{ lrc: string; tlyric?: string; romalrc?: string }>("auto_lyrics_get_netease_lyric", {
+          songId,
+        });
       },
       references: async (song: SongCandidate, signal: AbortSignal): Promise<ReferenceCandidate[]> => {
         signal.throwIfAborted();
@@ -376,32 +398,35 @@ export function createTauriAutoLyricsController(
         );
         return rankReferences(items, song);
       },
-      audio: async (
-        bvid: string,
-        cid: number | undefined,
-        signal: AbortSignal,
-      ): Promise<Uint8Array> => {
+      audio: async (bvid: string, cid: number | undefined, signal: AbortSignal): Promise<Uint8Array> => {
         signal.throwIfAborted();
         const token = await invokeTauri<string>("auto_lyrics_fetch_audio", {
           bvid,
           cid: cid ?? null,
         });
-        return new TextEncoder().encode(token);
+        const release = () => {
+          void invokeTauri("auto_lyrics_release_audio", { token }).catch(() => {});
+        };
+        if (signal.aborted) {
+          release();
+          signal.throwIfAborted();
+        }
+        const bytes = new TextEncoder().encode(token);
+        signal.addEventListener("abort", release, { once: true });
+        audioTokens.set(bytes, () => signal.removeEventListener("abort", release));
+        return bytes;
       },
     },
-    decode: async (data: Uint8Array, signal: AbortSignal): Promise<Float32Array> => {
+    decode: async (data: Uint8Array, signal: AbortSignal): Promise<S16leAudio> => {
       signal.throwIfAborted();
+      audioTokens.get(data)?.();
+      audioTokens.delete(data);
       const token = new TextDecoder().decode(data);
       try {
-        const raw = await invokeTauri<ArrayBuffer | Uint8Array | number[]>(
-          "auto_lyrics_decode_audio",
-          { token },
-        );
+        const raw = await invokeTauri<ArrayBuffer | Uint8Array | number[]>("auto_lyrics_decode_audio", { token });
         signal.throwIfAborted();
-        if (Array.isArray(raw)) {
-          return pcmS16leToFloat32(new Uint8Array(raw));
-        }
-        return pcmS16leToFloat32(raw);
+        const bytes = raw instanceof Uint8Array ? raw : Array.isArray(raw) ? Uint8Array.from(raw) : new Uint8Array(raw);
+        return new S16leAudio(bytes);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         if (msg.startsWith("decode-unavailable:")) {
@@ -410,7 +435,20 @@ export function createTauriAutoLyricsController(
         throw error;
       }
     },
-    align: alignAudioInWorker,
+    align: async ({ studios, live, lines }, signal, onCoarse) => {
+      const output = await alignAudioInWorker(
+        {
+          studios: studios.map(studio => studio.bytes),
+          // Keep the original s16le samples for the self-reference onset check.
+          live: live.features ?? new Uint8Array(live.bytes),
+          lines,
+        },
+        signal,
+        onCoarse,
+      );
+      live.features ??= output.liveFeatures;
+      return output;
+    },
     cache: {
       get: (key: string) => lyricsCacheMem.get(key),
       set: (key: string, value: MusicLyrics) => {

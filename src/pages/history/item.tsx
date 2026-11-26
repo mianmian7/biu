@@ -86,7 +86,7 @@ const HistoryListItem = ({
                   width="100%"
                   height="100%"
                   className="m-0"
-                  params="760w_428h_1c.avif"
+                  params="320w_180h_1c.webp"
                 />
               </div>
             )}

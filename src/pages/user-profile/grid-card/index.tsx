@@ -21,7 +21,7 @@ const GridCard = memo(({ title, cover, type, createTime, mediaCount, onPress }: 
           <Image
             radius="none"
             src={cover}
-            params="672w_378h_1c.avif"
+            params="320w_180h_1c.webp"
             alt={title}
             className="h-full w-full transition-transform duration-300 group-hover:scale-105"
             width="100%"

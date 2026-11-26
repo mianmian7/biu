@@ -36,7 +36,7 @@ const LeftControl = () => {
           classNames={{
             wrapper: "flex-none",
           }}
-          params="672w_378h_1c.avif"
+          params="160w_90h_1c.webp"
           emptyPlaceholder={<RiMusic2Line />}
         />
         <div className="text-primary absolute top-0 left-0 z-10 flex h-full w-full items-center justify-center overflow-hidden rounded-md bg-[rgba(0,0,0,0.5)] opacity-0 group-hover:opacity-100">

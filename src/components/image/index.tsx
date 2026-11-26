@@ -46,6 +46,8 @@ const Image = ({ params, width, height, src, className, emptyPlaceholder, ...res
         setIsError(true);
       }}
       className={twMerge("object-cover", className)}
+      loading="lazy"
+      decoding="async"
       {...rest}
     />
   );

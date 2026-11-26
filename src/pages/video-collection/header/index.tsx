@@ -60,7 +60,7 @@ const Header = memo(({ loading, type, attr, cover, title, desc, upMid, mediaCoun
             alt={title}
             width={200}
             height={168}
-            params="672w_378h_1c.avif"
+            params="320w_180h_1c.webp"
             className={clx({
               "border-content3 border": !cover,
             })}

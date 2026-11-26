@@ -5,9 +5,13 @@ import type { AutoLyricsResult } from "@shared/auto-lyrics/service-types";
 
 import { getLyricsByBili } from "@/components/lyrics/get-lyrics";
 import { isJapaneseLyrics, needsRomaji } from "@shared/lyrics/romaji";
+import { resolveDesktopLyricsStyle } from "@shared/settings/desktop-lyrics";
 import { StoreNameMap } from "@shared/store";
 
+import { useFullScreenPlayerSettings } from "./full-screen-player-settings";
+import { useModalStore } from "./modal";
 import { usePlayList } from "./play-list";
+import { useSettings } from "./settings";
 
 const timeTagPattern = /\[(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?\]/g;
 
@@ -300,7 +304,7 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
  * 来源自带的罗马音优先保留。生成结果只放在内存里，不写入歌词缓存。
  */
 async function complementRomaji(lyrics: LyricLine[]) {
-  const romanize = window.electron?.romanizeLyrics;
+  const romanize = globalThis.window?.electron?.romanizeLyrics;
   if (!romanize || !lyrics.length) return;
 
   const texts = lyrics.map(line => line.text);
@@ -332,6 +336,34 @@ async function complementRomaji(lyrics: LyricLine[]) {
   });
 }
 
+function needsVisibleRomaji() {
+  const { showDesktopLyrics, desktopLyricsStyle } = useSettings.getState();
+  return (
+    (showDesktopLyrics && resolveDesktopLyricsStyle(desktopLyricsStyle).showRomaji) ||
+    (useModalStore.getState().isFullScreenPlayerOpen && useFullScreenPlayerSettings.getState().showLyrics)
+  );
+}
+
+let romajiVisible = needsVisibleRomaji();
+const pendingRomaji = new WeakSet<LyricLine[]>();
+
+function complementVisibleRomaji() {
+  const { lyrics } = useLyricsStore.getState();
+  if (!romajiVisible || !lyrics.length || pendingRomaji.has(lyrics)) return;
+  pendingRomaji.add(lyrics);
+  void complementRomaji(lyrics).finally(() => pendingRomaji.delete(lyrics));
+}
+
+function syncRomajiVisibility() {
+  const visible = needsVisibleRomaji();
+  if (visible === romajiVisible) return;
+  romajiVisible = visible;
+  if (visible) complementVisibleRomaji();
+}
+
+useSettings.subscribe(syncRomajiVisibility);
+useModalStore.subscribe(syncRomajiVisibility);
+useFullScreenPlayerSettings.subscribe(syncRomajiVisibility);
 useLyricsStore.subscribe((state, prevState) => {
-  if (state.lyrics !== prevState.lyrics) void complementRomaji(state.lyrics);
+  if (state.lyrics !== prevState.lyrics) complementVisibleRomaji();
 });

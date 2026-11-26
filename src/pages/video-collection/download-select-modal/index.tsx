@@ -133,7 +133,7 @@ const DownloadSelectModal = ({ type, outputFileType, mediaCount, isOpen, onOpenC
                       src={item.cover}
                       alt={item.title}
                       className="h-12 w-12 flex-none"
-                      params="672w_378h_1c.avif"
+                      params="160w_90h_1c.webp"
                     />
                     <span className="ml-2 min-w-0 flex-1 truncate">{item.title}</span>
                   </div>
