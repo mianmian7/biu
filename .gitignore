@@ -101,7 +101,8 @@ dist
 # TernJS port file
 .tern-port
 
-# Tauri build output & staged sidecar binaries
+# Tauri & Cargo workspace build output & staged sidecar binaries
+/target
 src-tauri/target
 src-tauri/binaries
 api.example.json
