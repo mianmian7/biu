@@ -25,7 +25,6 @@ impl ModalsHost {
         let Some(mid) = state.user.as_ref().map(|user| user.mid) else {
             return;
         };
-        let folders = state.created_folders.clone();
         self.with_task(
             move |s| async move {
                 let resource = match (&track.source, playable_id(&track)) {
@@ -36,34 +35,17 @@ impl ModalsHost {
                     _ => None,
                 }
                 .ok_or_else(|| anyhow::anyhow!("无法识别这首歌曲的收藏 ID"))?;
+                let rows = s
+                    .bili
+                    .get_created_fav_folders_for_resource(mid, resource.0)
+                    .await?;
+                let mut folders = Vec::with_capacity(rows.len());
                 let mut initial = BTreeSet::new();
-                let folders = if folders.is_empty() {
-                    s.bili.get_created_fav_folders(mid).await?
-                } else {
-                    folders
-                };
-                // The core folder listing has no per-resource membership flag. Read the
-                // folder contents before allowing unchecked boxes to remove memberships.
-                for folder in &folders {
-                    let mut page = 1;
-                    loop {
-                        let result = s
-                            .bili
-                            .get_fav_folder_resources(folder.id, page, None)
-                            .await?;
-                        if result
-                            .items
-                            .iter()
-                            .any(|item| playable_id(item) == Some(resource))
-                        {
-                            initial.insert(folder.id);
-                            break;
-                        }
-                        if result.has_more != Some(true) {
-                            break;
-                        }
-                        page += 1;
+                for (folder, favored) in rows {
+                    if favored {
+                        initial.insert(folder.id);
                     }
+                    folders.push(folder);
                 }
                 Ok(Membership {
                     resource,

@@ -162,6 +162,26 @@ impl PagesHost {
                     );
                 },
             )));
+        } else if matches!(
+            task.status,
+            DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Cancelled
+        ) && !self.mutating
+        {
+            let retry_id = task.id.clone();
+            actions = actions.child(button("retry", "重试", p).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    let id = retry_id.clone();
+                    this.mutate(
+                        move |s| async move {
+                            anyhow::ensure!(s.downloads.retry(&id)?, "无法重试该任务");
+                            Ok(())
+                        },
+                        "已重新加入下载队列",
+                        Self::refresh_downloads,
+                        cx,
+                    );
+                },
+            )));
         }
         if !self.mutating && !is_active(&task.status) {
             actions = actions.child(button("delete", "删除记录", p).on_click(cx.listener(
