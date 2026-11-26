@@ -1,0 +1,19 @@
+[package]
+name = "biu-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+biu-core = { path = "../biu-core" }
+cpal.workspace = true
+log.workspace = true
+serde.workspace = true
+souvlaki.workspace = true
+symphonia.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
