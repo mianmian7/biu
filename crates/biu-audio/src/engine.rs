@@ -459,10 +459,19 @@ impl Renderer {
             0.0
         };
         let out = &mut self.scratch[..frames * 2];
-        let filled = if active || self.gain > 1e-4 {
-            s.ring.pop(out)
+        let max_pop_frames = if active {
+            frames
+        } else if self.gain > 1e-4 {
+            // Drain at most a short (~11 ms @ 48 kHz) click-free fade-out tail on pause
+            // instead of consuming an entire 4096-frame (85 ms) render chunk.
+            frames.min(512)
         } else {
             self.gain = 0.0;
+            0
+        };
+        let filled = if max_pop_frames > 0 {
+            s.ring.pop(&mut out[..max_pop_frames * 2])
+        } else {
             0
         };
         out[filled..].fill(0.0);
@@ -475,9 +484,11 @@ impl Renderer {
             f[0] *= self.gain;
             f[1] *= self.gain;
         }
-        if filled < out.len() {
-            // Underrun / paused: let the ramp settle toward the target silently.
-            self.gain = if active { self.gain } else { 0.0 };
+        if !active {
+            // Ensure the fade-out tail completes in a single pause window.
+            self.gain = 0.0;
+        } else if filled < out.len() {
+            // Underrun while active: preserve current gain.
         }
         &self.scratch[..frames * 2]
     }
@@ -867,8 +878,14 @@ impl Control {
     fn pause(&mut self) {
         match self.shared.state() {
             PlaybackState::Playing => {
+                if let Some(Output::Null(sink)) = &mut self.output {
+                    sink.pump();
+                }
                 self.want_playing = false;
                 self.shared.output_active.store(false, Ordering::Release);
+                if let Some(pos) = self.shared.ring.position() {
+                    store_f64(&self.shared.position_bits, pos.max(0.0));
+                }
                 self.shared.set_state(PlaybackState::Paused);
                 self.idle_since = Some(Instant::now());
             }
@@ -1359,7 +1376,11 @@ mod tests {
         });
         let paused_at = e.snapshot().position_secs;
         std::thread::sleep(Duration::from_millis(200));
-        assert!((e.snapshot().position_secs - paused_at).abs() < 0.02);
+        let after_pause = e.snapshot().position_secs;
+        assert!(
+            (after_pause - paused_at).abs() < 0.02,
+            "clock drifted while paused: before={paused_at}, after={after_pause}"
+        );
 
         e.seek(6.0);
         wait_for(&e, Duration::from_secs(2), |s| {
