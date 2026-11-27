@@ -623,10 +623,19 @@ impl PagesHost {
                             c.child(empty_state("没有找到 UP 主", "", p))
                         })
                         .children(items.items.iter().enumerate().map(|(i, user)| {
+                            let mid = user.mid;
                             let route = Route::UserProfile {
-                                mid: user.mid,
+                                mid,
                                 name: user.name.clone(),
                             };
+                            let fans = user
+                                .extra
+                                .get("fans")
+                                .and_then(serde_json::Value::as_u64);
+                            let level = user
+                                .extra
+                                .get("level")
+                                .and_then(serde_json::Value::as_u64);
                             let st = self.state.clone();
                             div()
                                 .id(("search-user", i))
@@ -638,7 +647,64 @@ impl PagesHost {
                                 .on_click(move |_, _, cx| {
                                     st.update(cx, |s, cx| s.navigate(route.clone(), cx))
                                 })
+                                .flex()
+                                .items_center()
+                                .gap_3()
                                 .child(user_row(&self.state, user, p, cx))
+                                .when_some(level.filter(|l| *l > 0), |row, lv| {
+                                    row.child(
+                                        div()
+                                            .px_1p5()
+                                            .py(px(1.0))
+                                            .rounded(px(4.0))
+                                            .bg(p.accent_soft)
+                                            .text_size(px(11.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(p.accent)
+                                            .child(format!("Lv{lv}")),
+                                    )
+                                })
+                                .when_some(fans, |row, count| {
+                                    let text = if count >= 10_000 {
+                                        format!("{:.1}万粉丝", count as f64 / 10_000.0)
+                                    } else {
+                                        format!("{count} 粉丝")
+                                    };
+                                    row.child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .text_xs()
+                                            .text_color(p.text_dim)
+                                            .child(text),
+                                    )
+                                })
+                                .when(self.account != Some(mid) && !self.mutating, |row| {
+                                    row.child(
+                                        icon_pill_button(
+                                            ("search-follow", i),
+                                            IconName::Plus,
+                                            "关注",
+                                            p,
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            if this.account.is_none() {
+                                                this.state.update(cx, |s, cx| {
+                                                    s.open_modal(ActiveModal::Login, cx)
+                                                });
+                                                return;
+                                            }
+                                            this.mutate(
+                                                move |s| async move {
+                                                    s.bili.modify_relation(mid, 1).await
+                                                },
+                                                "已关注",
+                                                |_, _| {},
+                                                cx,
+                                            );
+                                        })),
+                                    )
+                                })
                         }))
                         .child(pager(items, search.page, p, go)),
                 }

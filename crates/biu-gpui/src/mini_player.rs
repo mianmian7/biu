@@ -3,7 +3,8 @@
 use crate::desktop_lyrics::open_or_toggle_desktop_lyrics;
 use crate::image_loader::CoverKey;
 use crate::player_bar::{
-    effective_duration, icon_button, is_playing, play_button, seek_slider, time_label,
+    TooltipExt, effective_duration, icon_button, is_playing, play_button, play_mode_icon,
+    play_mode_short_label, seek_slider, time_label,
 };
 use crate::state::AppState;
 use crate::system::open_or_focus_main_window;
@@ -114,6 +115,7 @@ impl Render for MiniPlayerWindow {
         );
         let position = snap.position_secs;
         let playing = is_playing(snap.state);
+        let mode = s.queue.mode();
         let lyrics_open = s.windows.desktop_lyrics.is_some();
         let title = track
             .as_ref()
@@ -164,6 +166,20 @@ impl Render for MiniPlayerWindow {
             .flex()
             .items_center()
             .gap_1()
+            .child(
+                icon_button(
+                    "mini-mode",
+                    play_mode_icon(mode),
+                    13.0,
+                    palette,
+                    mode != biu_core::PlayMode::Order,
+                )
+                .tip(play_mode_short_label(mode))
+                .on_click({
+                    let st = st.clone();
+                    move |_, _, cx| st.update(cx, |s, cx| s.toggle_play_mode(cx))
+                }),
+            )
             .child(
                 icon_button("mini-prev", IconName::SkipBack, 15.0, palette, false).on_click({
                     let st = st.clone();

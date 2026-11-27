@@ -148,12 +148,12 @@ impl PagesHost {
             Route::MusicRecommend => self.enter_recommend(cx),
             Route::Search { query } => self.enter_search(&query, window, cx),
             Route::Collection { .. } => self.enter_collection(window, cx),
-            Route::Later => self.load_later(1, cx),
+            Route::Later => self.enter_later(window, cx),
             Route::History => self.enter_history(window, cx),
             Route::FollowList => self.enter_follows(window, cx),
-            Route::DynamicFeed => self.load_dynamics(false, cx),
+            Route::DynamicFeed => self.enter_dynamics(cx),
             Route::UserProfile { mid, .. } => self.enter_profile(mid, window, cx),
-            Route::LocalMusic => self.scan_local(cx),
+            Route::LocalMusic => self.enter_local(window, cx),
             Route::DownloadList => self.load_downloads(cx),
             Route::Settings => self.enter_settings(window, cx),
         }
@@ -375,7 +375,7 @@ impl Render for PagesHost {
             Route::Search { .. } => self.search_view(p, content_width, cx),
             Route::Collection { .. } => self.collection_view(p, content_width, cx),
             Route::Later => self.later_view(p, content_width, cx),
-            Route::History => self.history_view(p, cx),
+            Route::History => self.history_view(p, content_width, cx),
             Route::FollowList => self.follows_view(p, cx),
             Route::DynamicFeed => self.dynamics_view(p, content_width, cx),
             Route::UserProfile { .. } => self.profile_view(p, content_width, cx),
@@ -757,11 +757,13 @@ fn quick_track_icons(
     let append = track.clone();
     let fav = track.clone();
     let download = track.clone();
+    let open_bili = track.clone();
     let is_local = matches!(&track.source, TrackSource::LocalFile { .. });
     let st_next = state.clone();
     let st_add = state.clone();
     let st_fav = state.clone();
     let st_dl = state.clone();
+    let st_open = state.clone();
 
     div()
         .flex()
@@ -809,6 +811,18 @@ fn quick_track_icons(
                             s.queue_download(download.clone(), DownloadFormat::Native, cx);
                         });
                     }),
+            )
+            .child(
+                compact_icon_btn(
+                    (id_prefix, idx * 5 + 4),
+                    IconName::ExternalLink,
+                    "在 B 站打开",
+                    p,
+                )
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    st_open.update(cx, |s, cx| s.open_track_in_bilibili(&open_bili, cx));
+                }),
             )
         })
 }
@@ -1025,7 +1039,7 @@ fn track_list_header(p: BiuPalette) -> Div {
         .child(div().w(px(28.0)).text_center().child("#"))
         .child(div().flex_1().min_w_0().child("歌曲 / 视频"))
         .child(div().w(px(56.0)).text_right().child("时长"))
-        .child(div().w(px(124.0)).text_right().child("操作"))
+        .child(div().w(px(152.0)).text_right().child("操作"))
 }
 
 pub(super) fn track_row(
@@ -1167,7 +1181,7 @@ pub(super) fn track_row(
         )
         .child(
             div()
-                .w(px(124.0))
+                .w(px(152.0))
                 .flex_shrink_0()
                 .flex()
                 .items_center()

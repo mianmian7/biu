@@ -14,6 +14,7 @@ enum DownloadFilter {
 pub(super) struct DownloadList {
     tasks: Option<Result<Vec<DownloadTask>, String>>,
     filter: DownloadFilter,
+    confirm_clear: bool,
     poll: Option<Task<()>>,
 }
 
@@ -145,8 +146,58 @@ impl PagesHost {
                     ),
             )
             .child(
-                icon_pill_button("dl-refresh", IconName::RotateCw, "刷新", p)
-                    .on_click(cx.listener(|this, _, _, cx| this.load_downloads(cx))),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .when(!self.mutating, |bar| {
+                        if self.data.downloads.confirm_clear {
+                            bar.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(p.danger)
+                                    .child("清空已结束记录？（不删文件）"),
+                            )
+                            .child(
+                                button("dl-confirm-clear", "确认清空", p)
+                                    .text_color(p.danger)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.data.downloads.confirm_clear = false;
+                                        this.mutate(
+                                            |s| async move {
+                                                let mgr = s.downloads.clone();
+                                                tokio::task::spawn_blocking(move || {
+                                                    mgr.clear_finished()
+                                                })
+                                                .await??;
+                                                Ok(())
+                                            },
+                                            "已清空下载记录",
+                                            Self::refresh_downloads,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(button("dl-cancel-clear", "取消", p).on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.data.downloads.confirm_clear = false;
+                                    cx.notify();
+                                },
+                            )))
+                        } else {
+                            bar.child(
+                                icon_pill_button("dl-clear", IconName::Trash, "清空已结束", p)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.data.downloads.confirm_clear = true;
+                                        cx.notify();
+                                    })),
+                            )
+                        }
+                    })
+                    .child(
+                        icon_pill_button("dl-refresh", IconName::RotateCw, "刷新", p)
+                            .on_click(cx.listener(|this, _, _, cx| this.load_downloads(cx))),
+                    ),
             );
 
         let body = match &self.data.downloads.tasks {
@@ -398,6 +449,37 @@ impl PagesHost {
                 col.child(div().text_size(px(11.0)).text_color(p.danger).truncate().child(err))
             });
 
+        let bili_url = task
+            .bvid
+            .as_deref()
+            .filter(|b| !b.is_empty())
+            .map(|b| format!("https://www.bilibili.com/video/{b}"))
+            .or_else(|| {
+                task.sid
+                    .as_ref()
+                    .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+                    .filter(|sid| *sid > 0)
+                    .map(|sid| format!("https://www.bilibili.com/audio/au{sid}"))
+            });
+        let size_label = (task.total_bytes > 0)
+            .then(|| format!("{:.1} MB", task.total_bytes as f64 / 1_048_576.0));
+
+        let mut title_el = div()
+            .id(("dl-title", index))
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .truncate()
+            .child(task.title.clone());
+        if let Some(url) = bili_url {
+            title_el = title_el
+                .cursor_pointer()
+                .hover(move |s| s.text_color(p.accent))
+                .tip("在 B 站打开")
+                .on_click(move |_, _, _| {
+                    let _ = open::that_detached(&url);
+                });
+        }
+
         div()
             .id(("dl-row", index))
             .w_full()
@@ -423,13 +505,7 @@ impl PagesHost {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .truncate()
-                            .child(task.title.clone()),
-                    )
+                    .child(title_el)
                     .child(
                         div()
                             .flex()
@@ -445,7 +521,10 @@ impl PagesHost {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(p.text_muted)
                                     .child(format),
-                            ),
+                            )
+                            .when_some(size_label, |row, sz| {
+                                row.child(div().text_xs().text_color(p.text_dim).child(sz))
+                            }),
                     ),
             )
             .child(status_col)

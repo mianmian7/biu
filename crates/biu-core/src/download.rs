@@ -266,6 +266,40 @@ impl DownloadManager {
         Ok(true)
     }
 
+    /// Clear all non-active download history entries (preserving downloaded files on disk).
+    pub fn clear_finished(&self) -> Result<usize> {
+        let mut state = self.state.lock().unwrap();
+        let ids: Vec<String> = state
+            .tasks
+            .iter()
+            .filter(|(id, task)| {
+                !state.running.contains_key(*id)
+                    && matches!(
+                        task.status,
+                        DownloadStatus::Done
+                            | DownloadStatus::Failed
+                            | DownloadStatus::Cancelled
+                            | DownloadStatus::Paused
+                            | DownloadStatus::Other
+                    )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        self.store.update("media-downloads", |entries| {
+            for id in &ids {
+                remove_task(entries, id);
+            }
+            Ok(())
+        })?;
+        for id in &ids {
+            state.tasks.remove(id);
+        }
+        Ok(ids.len())
+    }
+
     fn persist(&self, task: &DownloadTask) -> Result<()> {
         self.store.update("media-downloads", |entries| {
             remove_task(entries, &task.id);

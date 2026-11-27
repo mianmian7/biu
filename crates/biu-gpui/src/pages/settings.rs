@@ -1,4 +1,5 @@
 use super::*;
+use crate::desktop_lyrics::open_or_toggle_desktop_lyrics;
 use crate::theme::parse_hex_hsla;
 use crate::widgets::section_header;
 use biu_core::{AppSettings, AudioQuality, ProxySettings};
@@ -7,6 +8,21 @@ use std::path::{Path, PathBuf};
 
 const COLORS: [&str; 6] = [
     "#1ed760", "#fb7299", "#3b82f6", "#a855f7", "#f59e0b", "#ef4444",
+];
+
+const UNPLAYED_COLORS: [&str; 6] = [
+    "#ffffff", "#e5e7eb", "#cbd5e1", "#fde68a", "#bae6fd", "#fecdd3",
+];
+
+const MENU_TOGGLE_ITEMS: [(&str, &str); 8] = [
+    ("music-recommend", "推荐音乐"),
+    ("search", "搜索发现"),
+    ("follow-list", "我的关注"),
+    ("dynamic-feed", "关注动态"),
+    ("later", "稍后再看"),
+    ("history", "历史记录"),
+    ("local-music", "本地音乐"),
+    ("download-list", "下载记录"),
 ];
 
 struct SettingsInputs {
@@ -146,6 +162,107 @@ impl PagesHost {
         );
     }
 
+    fn pick_ffmpeg_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let runtime = self.state.read(cx).services.rt.handle().clone();
+        let epoch = self.epoch;
+        let window_handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let path = runtime
+                .spawn_blocking(|| {
+                    rfd::FileDialog::new()
+                        .set_title("选择 FFmpeg 可执行文件")
+                        .pick_file()
+                })
+                .await
+                .ok()
+                .flatten()
+                .map(|p| p.to_string_lossy().into_owned());
+            if let Some(path) = path {
+                let _ = this.update(cx, |this, cx| {
+                    if this.epoch != epoch {
+                        return;
+                    }
+                    if let Some(inputs) = &this.data.settings.inputs {
+                        let input = inputs.ffmpeg.clone();
+                        let val = path.clone();
+                        let _ = window_handle.update(cx, |_, window, cx| {
+                            input.update(cx, |i, cx| i.set_value(val, window, cx));
+                        });
+                    }
+                    this.state.update(cx, |s, cx| {
+                        s.update_settings(|st| st.ffmpeg_path = path, cx)
+                    });
+                    this.detect_ffmpeg(cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn export_settings(&self, cx: &mut Context<Self>) {
+        let runtime = self.state.read(cx).services.rt.handle().clone();
+        let state = self.state.clone();
+        let Ok(payload) = serde_json::to_string_pretty(&self.state.read(cx).settings) else {
+            return;
+        };
+        cx.spawn(async move |_, cx| {
+            let res = runtime
+                .spawn_blocking(move || -> anyhow::Result<Option<PathBuf>> {
+                    let Some(path) = rfd::FileDialog::new()
+                        .set_title("导出 Biu 配置")
+                        .set_file_name("biu-settings.json")
+                        .add_filter("JSON", &["json"])
+                        .save_file()
+                    else {
+                        return Ok(None);
+                    };
+                    std::fs::write(&path, payload)?;
+                    Ok(Some(path))
+                })
+                .await;
+            state.update(cx, |s, cx| match res {
+                Ok(Ok(Some(path))) => {
+                    s.show_toast(format!("已导出配置至 {}", path.display()), false, cx)
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => s.show_toast(format!("导出失败: {e}"), true, cx),
+                Err(e) => s.show_toast(format!("导出异常: {e}"), true, cx),
+            });
+        })
+        .detach();
+    }
+
+    fn import_settings(&mut self, cx: &mut Context<Self>) {
+        let runtime = self.state.read(cx).services.rt.handle().clone();
+        let state = self.state.clone();
+        cx.spawn(async move |_, cx| {
+            let res = runtime
+                .spawn_blocking(|| -> anyhow::Result<Option<AppSettings>> {
+                    let Some(path) = rfd::FileDialog::new()
+                        .set_title("导入 Biu 配置")
+                        .add_filter("JSON", &["json"])
+                        .pick_file()
+                    else {
+                        return Ok(None);
+                    };
+                    let raw = std::fs::read_to_string(&path)?;
+                    let parsed: AppSettings = serde_json::from_str(&raw)?;
+                    Ok(Some(parsed))
+                })
+                .await;
+            state.update(cx, |s, cx| match res {
+                Ok(Ok(Some(imported))) => {
+                    s.update_settings(|st| *st = imported, cx);
+                    s.show_toast("配置已导入并生效", false, cx);
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => s.show_toast(format!("导入失败: {e}"), true, cx),
+                Err(e) => s.show_toast(format!("导入异常: {e}"), true, cx),
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn settings_view(&self, p: BiuPalette, cx: &Context<Self>) -> Div {
         let state = self.state.read(cx);
         let s = &state.settings;
@@ -190,7 +307,72 @@ impl PagesHost {
                 &[("card", "卡片网格"), ("list", "精致列表")],
                 p,
                 |s, value| s.display_mode = value.into(),
+            ))
+            .child(toggle(
+                entity,
+                "显示搜索历史",
+                "在顶部搜索下拉框与搜索页展示最近搜索记录",
+                s.show_search_history,
+                p,
+                |s, value| s.show_search_history = value,
             ));
+
+        let menu_visibility = group("侧边栏菜单显隐", p).child(
+            toolbar().children(MENU_TOGGLE_ITEMS.into_iter().enumerate().map(
+                |(i, (key, label))| {
+                    let visible = !s.hidden_menu_keys.iter().any(|h| h == key);
+                    let st = entity.clone();
+                    div()
+                        .id(("menu-vis", i))
+                        .h(px(30.0))
+                        .px_3()
+                        .rounded_full()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .text_xs()
+                        .font_weight(if visible {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .bg(if visible {
+                            p.accent_soft
+                        } else {
+                            p.surface_elevated
+                        })
+                        .text_color(if visible { p.accent } else { p.text_dim })
+                        .cursor_pointer()
+                        .hover(move |s| s.opacity(0.88))
+                        .child(icon(
+                            if visible {
+                                IconName::Eye
+                            } else {
+                                IconName::EyeOff
+                            },
+                            12.0,
+                            if visible { p.accent } else { p.text_dim },
+                        ))
+                        .child(label)
+                        .on_click(move |_, _, cx| {
+                            st.update(cx, |s, cx| {
+                                s.update_settings(
+                                    |st| {
+                                        if let Some(pos) =
+                                            st.hidden_menu_keys.iter().position(|h| h == key)
+                                        {
+                                            st.hidden_menu_keys.remove(pos);
+                                        } else {
+                                            st.hidden_menu_keys.push(key.to_string());
+                                        }
+                                    },
+                                    cx,
+                                );
+                            });
+                        })
+                },
+            )),
+        );
 
         let cache = &self.data.settings.cache;
         let playback = group("播放与音频", p)
@@ -250,7 +432,19 @@ impl PagesHost {
             });
 
         let style = &s.desktop_lyrics_style;
+        let lyrics_open = state.windows.desktop_lyrics.is_some();
+        let st_dl_toggle = entity.clone();
         let lyrics = group("歌词与桌面歌词", p)
+            .child(
+                setting_row("桌面歌词窗口", "独立置顶的透明悬浮歌词窗口", p).child(
+                    Switch::new("settings-desktop-lyrics-open")
+                        .checked(lyrics_open)
+                        .on_click(move |_, _, cx| {
+                            let st = st_dl_toggle.clone();
+                            cx.defer(move |cx| open_or_toggle_desktop_lyrics(st, cx));
+                        }),
+                ),
+            )
             .child(toggle(
                 entity,
                 "顶部栏歌词",
@@ -340,6 +534,15 @@ impl PagesHost {
                 &style.played_color,
                 p,
                 |s, value| s.desktop_lyrics_style.played_color = value.into(),
+            ))
+            .child(swatches_from(
+                entity,
+                "未唱歌词颜色",
+                "桌面歌词默认文本颜色",
+                &style.unplayed_color,
+                &UNPLAYED_COLORS,
+                p,
+                |s, value| s.desktop_lyrics_style.unplayed_color = value.into(),
             ));
 
         let mut local = group("下载与本地", p).child(
@@ -384,7 +587,7 @@ impl PagesHost {
                         .gap_2()
                         .child(
                             div()
-                                .w(px(240.0))
+                                .w(px(220.0))
                                 .h(px(34.0))
                                 .px_3()
                                 .rounded(px(8.0))
@@ -393,6 +596,12 @@ impl PagesHost {
                                 .items_center()
                                 .text_sm()
                                 .child(Input::new(&ffmpeg).appearance(false)),
+                        )
+                        .child(
+                            icon_pill_button("pick-ffmpeg", IconName::FolderOpen, "选择", p)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.pick_ffmpeg_file(window, cx)
+                                })),
                         )
                         .child(button("save-ffmpeg", "应用", p).on_click(cx.listener(
                             move |this, _, _, cx| {
@@ -416,32 +625,37 @@ impl PagesHost {
                             .rounded_full()
                             .bg(p.surface_elevated)
                             .children(
-                                [("none", "不使用"), ("http", "HTTP"), ("socks5", "SOCKS5")]
-                                    .into_iter()
-                                    .map(|(id, title)| {
-                                        let active = self.data.settings.proxy_type == id;
-                                        div()
-                                            .id(id)
-                                            .h(px(26.0))
-                                            .px_3()
-                                            .rounded_full()
-                                            .flex()
-                                            .items_center()
-                                            .text_xs()
-                                            .font_weight(if active {
-                                                FontWeight::SEMIBOLD
-                                            } else {
-                                                FontWeight::MEDIUM
-                                            })
-                                            .text_color(if active { p.accent } else { p.text_muted })
-                                            .cursor_pointer()
-                                            .when(active, |d| d.bg(p.surface_active))
-                                            .child(title)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.data.settings.proxy_type = id.into();
-                                                cx.notify();
-                                            }))
-                                    }),
+                                [
+                                    ("none", "不使用"),
+                                    ("http", "HTTP"),
+                                    ("socks4", "SOCKS4"),
+                                    ("socks5", "SOCKS5"),
+                                ]
+                                .into_iter()
+                                .map(|(id, title)| {
+                                    let active = self.data.settings.proxy_type == id;
+                                    div()
+                                        .id(id)
+                                        .h(px(26.0))
+                                        .px_3()
+                                        .rounded_full()
+                                        .flex()
+                                        .items_center()
+                                        .text_xs()
+                                        .font_weight(if active {
+                                            FontWeight::SEMIBOLD
+                                        } else {
+                                            FontWeight::MEDIUM
+                                        })
+                                        .text_color(if active { p.accent } else { p.text_muted })
+                                        .cursor_pointer()
+                                        .when(active, |d| d.bg(p.surface_active))
+                                        .child(title)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.data.settings.proxy_type = id.into();
+                                            cx.notify();
+                                        }))
+                                }),
                             ),
                     ),
                 )
@@ -477,6 +691,25 @@ impl PagesHost {
                     ),
                 );
         }
+
+        let backup = group("配置备份与恢复", p).child(
+            setting_row(
+                "导出 / 导入配置",
+                "以 JSON 文件备份或恢复外观、歌词、代理与目录配置",
+                p,
+            )
+            .child(
+                toolbar()
+                    .child(
+                        icon_pill_button("export-cfg", IconName::Download, "导出配置", p)
+                            .on_click(cx.listener(|this, _, _, cx| this.export_settings(cx))),
+                    )
+                    .child(
+                        icon_pill_button("import-cfg", IconName::Upload, "导入配置", p)
+                            .on_click(cx.listener(|this, _, _, cx| this.import_settings(cx))),
+                    ),
+            ),
+        );
 
         let account = if let Some(user) = &state.user {
             group("账号", p).child(
@@ -544,10 +777,12 @@ impl PagesHost {
         page("设置")
             .max_w(px(860.0))
             .child(appearance)
+            .child(menu_visibility)
             .child(playback)
             .child(lyrics)
             .child(local)
             .child(proxy)
+            .child(backup)
             .child(account)
     }
 }
@@ -645,12 +880,24 @@ fn swatches(
     p: BiuPalette,
     set: fn(&mut AppSettings, &'static str),
 ) -> Stateful<Div> {
+    swatches_from(entity, label, desc, selected, &COLORS, p, set)
+}
+
+fn swatches_from(
+    entity: &Entity<AppState>,
+    label: &'static str,
+    desc: &'static str,
+    selected: &str,
+    palette_colors: &'static [&'static str],
+    p: BiuPalette,
+    set: fn(&mut AppSettings, &'static str),
+) -> Stateful<Div> {
     setting_row(label, desc, p).child(
         div()
             .flex()
             .items_center()
             .gap_2()
-            .children(COLORS.into_iter().enumerate().filter_map(|(idx, hex)| {
+            .children(palette_colors.iter().enumerate().filter_map(|(idx, &hex)| {
                 let color = parse_hex_hsla(hex)?;
                 let active = selected.eq_ignore_ascii_case(hex);
                 let st = entity.clone();
@@ -741,7 +988,7 @@ fn font_size(
 mod tests {
     #[test]
     fn all_color_presets_parse() {
-        for hex in super::COLORS {
+        for hex in super::COLORS.iter().chain(super::UNPLAYED_COLORS.iter()) {
             assert!(super::parse_hex_hsla(hex).is_some(), "{hex}");
         }
     }

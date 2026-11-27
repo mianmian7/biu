@@ -2,24 +2,41 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct Later {
+    input: Option<Entity<InputState>>,
+    keyword: String,
+    confirm_clear_viewed: bool,
     results: Load<Page<TrackItem>>,
     page: u64,
 }
 
 impl PagesHost {
+    pub(super) fn enter_later(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.account.is_none() {
+            return;
+        }
+        self.data.later.input =
+            Some(self.filter_input("搜索稍后再看…", window, cx, Self::filter_later));
+        self.load_later(1, cx);
+    }
+
+    fn filter_later(&mut self, keyword: String, cx: &mut Context<Self>) {
+        self.data.later.keyword = keyword;
+        self.load_later(1, cx);
+    }
+
     pub(super) fn load_later(&mut self, page: u64, cx: &mut Context<Self>) {
         if self.account.is_none() {
             return;
         }
         self.data.later.page = page;
+        self.data.later.confirm_clear_viewed = false;
+        let keyword = self.data.later.keyword.clone();
         self.load_with(
             |h| &mut h.data.later.results,
             move |s| async move {
-                if page == 1 {
-                    s.bili.get_later_list().await
-                } else {
-                    s.bili.get_later_list_page(page).await
-                }
+                s.bili
+                    .get_later_list_filtered(page, (!keyword.is_empty()).then_some(keyword.as_str()))
+                    .await
             },
             |this, page_data, cx| this.prefetch_tracks(&page_data.items, cx),
             cx,
@@ -34,11 +51,48 @@ impl PagesHost {
         let reload = || cx.listener(|this, _, _, cx| this.refresh_later(cx));
         let data = &self.data.later;
 
+        let clear_viewed = if self.mutating {
+            toolbar()
+        } else if data.confirm_clear_viewed {
+            toolbar()
+                .child(div().text_xs().text_color(p.danger).child("清除已看完？"))
+                .child(
+                    button("confirm-clear-viewed", "确认", p)
+                        .text_color(p.danger)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.data.later.confirm_clear_viewed = false;
+                            this.mutate(
+                                |s| async move { s.bili.clear_viewed_later().await },
+                                "已清除已看完的视频",
+                                Self::refresh_later,
+                                cx,
+                            );
+                        })),
+                )
+                .child(button("cancel-clear-viewed", "取消", p).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.data.later.confirm_clear_viewed = false;
+                        cx.notify();
+                    },
+                )))
+        } else {
+            toolbar().child(
+                icon_pill_button("clear-viewed", IconName::Trash, "清除已看完", p).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.data.later.confirm_clear_viewed = true;
+                        cx.notify();
+                    }),
+                ),
+            )
+        };
+
         let header = div()
             .w_full()
             .flex()
+            .flex_wrap()
             .items_center()
             .justify_between()
+            .gap_3()
             .child(
                 div()
                     .text_2xl()
@@ -48,8 +102,13 @@ impl PagesHost {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
+                    .when_some(data.input.as_ref(), |bar, input| {
+                        bar.child(filter_bar(input, "搜索", p, cx, Self::filter_later))
+                    })
+                    .child(clear_viewed)
                     .child(display_mode_toggle(
                         &self.state,
                         grid,
@@ -129,8 +188,16 @@ impl PagesHost {
     }
 
     fn all_later(&mut self, append: bool, cx: &mut Context<Self>) {
+        let keyword = self.data.later.keyword.clone();
         self.queue_all(
-            |s, page| async move { s.bili.get_later_list_page(page).await },
+            move |s, page| {
+                let kw = keyword.clone();
+                async move {
+                    s.bili
+                        .get_later_list_filtered(page, (!kw.is_empty()).then_some(kw.as_str()))
+                        .await
+                }
+            },
             append,
             cx,
         );

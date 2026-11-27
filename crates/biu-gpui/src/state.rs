@@ -12,8 +12,8 @@ use biu_core::lyrics::{load_cached_lyrics, save_cached_lyrics, CachedLyrics, Lyr
 use biu_core::media_cache::{MediaCache, PreparedAudio};
 use biu_core::store::Store;
 use biu_core::{
-    AppSettings, FavFolder, LyricsCandidate, LyricsData, PlayMode, TrackItem, TrackSource,
-    UserInfo,
+    AppSettings, FavFolder, LyricsCandidate, LyricsData, MediaPage, PlayMode, TrackItem,
+    TrackSource, UserInfo,
 };
 use gpui_kit::*;
 use std::path::PathBuf;
@@ -60,6 +60,7 @@ pub enum ActiveModal {
     FavSelect { track: TrackItem },
     FavFolderEdit { folder: Option<FavFolder> },
     PlaylistDrawer,
+    PageList,
 }
 
 #[derive(Debug, Clone)]
@@ -165,8 +166,12 @@ pub struct AppState {
     pub snapshot: PlaybackSnapshot,
     pub spectrum: [f32; SPECTRUM_BARS],
     pub lyrics: LyricsData,
+    pub lyrics_offset_secs: f64,
     pub lyrics_loading: bool,
     pub auto_lyrics_running: bool,
+    pub current_video_pages: Vec<MediaPage>,
+    pub current_audio_badge: Option<String>,
+    pub current_track_liked: bool,
     pub resolve_request_id: u64,
     pub audio_generation: u64,
     pub active_prepared: Option<PreparedAudio>,
@@ -223,8 +228,12 @@ impl AppState {
             snapshot,
             spectrum: [0.0; SPECTRUM_BARS],
             lyrics: LyricsData::default(),
+            lyrics_offset_secs: 0.0,
             lyrics_loading: false,
             auto_lyrics_running: false,
+            current_video_pages: Vec::new(),
+            current_audio_badge: None,
+            current_track_liked: false,
             resolve_request_id: 0,
             audio_generation: 0,
             active_prepared: None,
@@ -669,7 +678,161 @@ impl AppState {
         self.services.media_controls.set_stopped();
         self.last_mc_state = Some(PlaybackState::Stopped);
         self.lyrics = LyricsData::default();
+        self.lyrics_offset_secs = 0.0;
         self.lyrics_loading = false;
+        self.current_video_pages.clear();
+        self.current_audio_badge = None;
+        self.current_track_liked = false;
+    }
+
+    pub fn open_track_in_bilibili(&mut self, track: &TrackItem, cx: &mut Context<Self>) {
+        let url = match &track.source {
+            TrackSource::BiliVideo { bvid, .. } if !bvid.is_empty() => {
+                format!("https://www.bilibili.com/video/{bvid}")
+            }
+            TrackSource::BiliAudio { sid } if *sid > 0 => {
+                format!("https://www.bilibili.com/audio/au{sid}")
+            }
+            _ => {
+                self.show_toast("本地文件没有 B 站链接", false, cx);
+                return;
+            }
+        };
+        if let Err(err) = open::that_detached(&url) {
+            self.show_toast(format!("打开浏览器失败: {err}"), true, cx);
+        }
+    }
+
+    pub fn adjust_lyrics_offset(&mut self, delta: f64, cx: &mut Context<Self>) {
+        let next = if delta == 0.0 {
+            0.0
+        } else {
+            ((self.lyrics_offset_secs + delta) * 10.0).round() / 10.0
+        };
+        self.lyrics_offset_secs = next.clamp(-30.0, 30.0);
+        self.show_toast(
+            format!("歌词偏移 {:+.1}s", self.lyrics_offset_secs),
+            false,
+            cx,
+        );
+        self.notify_playback(cx);
+    }
+
+    pub fn switch_video_part(&mut self, page: &MediaPage, cx: &mut Context<Self>) {
+        let Some(current) = self.current_track().cloned() else {
+            return;
+        };
+        let TrackSource::BiliVideo { bvid, aid, .. } = &current.source else {
+            return;
+        };
+        let part_track = TrackItem {
+            id: format!("{bvid}:{}", page.cid),
+            title: current.title.clone(),
+            artist: current.artist.clone(),
+            artist_mid: current.artist_mid,
+            cover: current.cover.clone(),
+            duration_secs: if page.duration > 0.0 {
+                page.duration
+            } else {
+                current.duration_secs
+            },
+            source: TrackSource::BiliVideo {
+                bvid: bvid.clone(),
+                aid: *aid,
+                cid: page.cid,
+                part_title: (!page.part.is_empty()).then(|| page.part.clone()),
+            },
+        };
+        self.play_track(part_track, cx);
+    }
+
+    pub fn queue_all_video_parts(&mut self, cx: &mut Context<Self>) {
+        let Some(current) = self.current_track().cloned() else {
+            return;
+        };
+        let TrackSource::BiliVideo { bvid, aid, .. } = &current.source else {
+            return;
+        };
+        if self.current_video_pages.is_empty() {
+            return;
+        }
+        let tracks: Vec<TrackItem> = self
+            .current_video_pages
+            .iter()
+            .map(|page| TrackItem {
+                id: format!("{bvid}:{}", page.cid),
+                title: if page.part.is_empty() {
+                    format!("{} · P{}", current.title, page.page)
+                } else {
+                    format!("{} · P{} {}", current.title, page.page, page.part)
+                },
+                artist: current.artist.clone(),
+                artist_mid: current.artist_mid,
+                cover: current.cover.clone(),
+                duration_secs: page.duration,
+                source: TrackSource::BiliVideo {
+                    bvid: bvid.clone(),
+                    aid: *aid,
+                    cid: page.cid,
+                    part_title: (!page.part.is_empty()).then(|| page.part.clone()),
+                },
+            })
+            .collect();
+        self.append_to_queue(tracks, cx);
+    }
+
+    pub fn toggle_like_current_track(&mut self, cx: &mut Context<Self>) {
+        if self.user.is_none() {
+            self.open_modal(ActiveModal::Login, cx);
+            return;
+        }
+        let Some(TrackSource::BiliVideo { bvid, .. }) =
+            self.current_track().map(|t| t.source.clone())
+        else {
+            return;
+        };
+        let target_like = !self.current_track_liked;
+        self.current_track_liked = target_like;
+        self.notify_ui(cx);
+
+        let services = self.services.clone();
+        let expected_bvid = bvid.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let res = services
+                .rt
+                .spawn({
+                    let bili = services.bili.clone();
+                    async move { bili.archive_like(&bvid, target_like).await }
+                })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                let same = matches!(
+                    state.current_track().map(|t| &t.source),
+                    Some(TrackSource::BiliVideo { bvid, .. }) if bvid == &expected_bvid
+                );
+                if !same {
+                    return;
+                }
+                match res {
+                    Ok(Ok(())) => {
+                        state.show_toast(
+                            if target_like { "已点赞" } else { "已取消点赞" },
+                            false,
+                            cx,
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        state.current_track_liked = !target_like;
+                        state.show_toast(format!("点赞失败: {e}"), true, cx);
+                    }
+                    Err(e) => {
+                        state.current_track_liked = !target_like;
+                        state.show_toast(format!("点赞任务异常: {e}"), true, cx);
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn toggle_play(&mut self, cx: &mut Context<Self>) {
@@ -761,7 +924,19 @@ impl AppState {
         self.current_track_audio_path = None;
         self.last_reported_heartbeat_track = None;
         self.lyrics = LyricsData::default();
+        self.lyrics_offset_secs = 0.0;
         self.lyrics_loading = true;
+        self.current_audio_badge = None;
+        self.current_track_liked = false;
+        let keep_pages = matches!(
+            &track.source,
+            TrackSource::BiliVideo { bvid, .. }
+                if !self.current_video_pages.is_empty()
+                    && self.queue.items().iter().any(|t| matches!(&t.source, TrackSource::BiliVideo { bvid: b, .. } if b == bvid))
+        );
+        if !keep_pages {
+            self.current_video_pages.clear();
+        }
 
         self.sync_pinned_covers();
         if !track.cover.is_empty() {
@@ -773,6 +948,45 @@ impl AppState {
         }
 
         self.load_lyrics_for_track(&track, req_id, cx);
+
+        if let TrackSource::BiliVideo { ref bvid, .. } = track.source
+            && !bvid.is_empty()
+        {
+            let services_meta = self.services.clone();
+            let bvid_owned = bvid.clone();
+            let logged_in = self.user.is_some();
+            cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                let res = services_meta
+                    .rt
+                    .spawn({
+                        let bili = services_meta.bili.clone();
+                        let bvid = bvid_owned.clone();
+                        async move {
+                            let pages = bili.get_video_pagelist(&bvid).await.ok();
+                            let liked = if logged_in {
+                                bili.archive_has_like(&bvid).await.unwrap_or(false)
+                            } else {
+                                false
+                            };
+                            (pages, liked)
+                        }
+                    })
+                    .await;
+                if let Ok((pages, liked)) = res {
+                    let _ = this.update(cx, |state, cx| {
+                        if state.resolve_request_id != req_id {
+                            return;
+                        }
+                        if let Some(pages) = pages {
+                            state.current_video_pages = pages;
+                        }
+                        state.current_track_liked = liked;
+                        state.notify_ui(cx);
+                    });
+                }
+            })
+            .detach();
+        }
 
         let services = self.services.clone();
         let quality = self.settings.audio_quality;
@@ -790,15 +1004,16 @@ impl AppState {
 
             let _ = this.update(cx, |state, cx| {
                 if state.resolve_request_id != req_id {
-                    if let Ok(Ok((_, Some(prep), _))) = resolve_res {
+                    if let Ok(Ok((_, Some(prep), _, _))) = resolve_res {
                         prep.abort();
                     }
                     return;
                 }
                 match resolve_res {
-                    Ok(Ok((source, prepared, file_path))) => {
+                    Ok(Ok((source, prepared, file_path, audio_badge))) => {
                         state.active_prepared = prepared;
                         state.current_track_audio_path = file_path;
+                        state.current_audio_badge = audio_badge;
                         let audio_gen = state.services.audio.play(source, 0.0);
                         state.audio_generation = audio_gen;
                         state.snapshot = state.services.audio.snapshot();
@@ -1238,22 +1453,27 @@ async fn resolve_audio_source(
     track: &TrackItem,
     quality: biu_core::AudioQuality,
     report_history: bool,
-) -> anyhow::Result<(AudioSource, Option<PreparedAudio>, Option<PathBuf>)> {
+) -> anyhow::Result<(AudioSource, Option<PreparedAudio>, Option<PathBuf>, Option<String>)> {
     match &track.source {
         TrackSource::LocalFile { path, .. } => {
             let p = PathBuf::from(path);
             if !p.exists() {
                 anyhow::bail!("本地文件不存在: {path}");
             }
-            Ok((AudioSource::File(p.clone()), None, Some(p)))
+            Ok((AudioSource::File(p.clone()), None, Some(p), None))
         }
         TrackSource::BiliAudio { sid } => {
             let info = services.bili.get_audio_playurl(*sid).await?;
+            let badge = info
+                .streams
+                .first()
+                .and_then(|s| (s.id == 3 || s.codecs == "flac").then(|| "无损".to_string()));
             let url = info
                 .urls
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("未获取到音频直链"))?;
-            prepare_stream_from_url(services, url).await
+            let (src, prep, path) = prepare_stream_from_url(services, url).await?;
+            Ok((src, prep, path, badge))
         }
         TrackSource::BiliVideo { bvid, aid, cid, .. } => {
             let (resolved_aid, resolved_cid) = if *cid > 0 {
@@ -1286,18 +1506,29 @@ async fn resolve_audio_source(
             }
             let info = services.bili.get_playurl(bvid, resolved_cid, quality).await?;
             let mut last_err = None;
-            let all_urls = info
-                .streams
-                .iter()
-                .flat_map(|s| s.urls.iter())
-                .chain(info.urls.iter());
             let mut tried = std::collections::HashSet::new();
-            for url in all_urls {
+            for stream in &info.streams {
+                let badge = match stream.id {
+                    30251 => Some("无损".to_string()),
+                    30250 => Some("杜比".to_string()),
+                    _ => None,
+                };
+                for url in &stream.urls {
+                    if !tried.insert(url.as_str().to_string()) {
+                        continue;
+                    }
+                    match prepare_stream_from_url(services, url).await {
+                        Ok((src, prep, path)) => return Ok((src, prep, path, badge)),
+                        Err(e) => last_err = Some(e),
+                    }
+                }
+            }
+            for url in &info.urls {
                 if !tried.insert(url.as_str().to_string()) {
                     continue;
                 }
                 match prepare_stream_from_url(services, url).await {
-                    Ok(ok) => return Ok(ok),
+                    Ok((src, prep, path)) => return Ok((src, prep, path, None)),
                     Err(e) => last_err = Some(e),
                 }
             }

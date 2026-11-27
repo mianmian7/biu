@@ -129,16 +129,21 @@ impl ModalsHost {
                     button("save", "保存", p)
                         .on_click(cx.listener(|this, _, _, cx| this.save_folder(cx))),
                 )
-                .when(edit.folder.is_some(), |bar| {
-                    bar.child(
-                        button("delete", "删除收藏夹", p)
-                            .text_color(p.danger)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.data.edit.confirm_delete = true;
-                                cx.notify();
-                            })),
-                    )
-                }),
+                .when(
+                    edit.folder
+                        .as_ref()
+                        .is_some_and(|folder| ((folder.attr >> 1) & 1) != 0),
+                    |bar| {
+                        bar.child(
+                            button("delete", "删除收藏夹", p)
+                                .text_color(p.danger)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.data.edit.confirm_delete = true;
+                                    cx.notify();
+                                })),
+                        )
+                    },
+                ),
         )
     }
 }

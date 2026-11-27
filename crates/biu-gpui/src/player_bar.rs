@@ -487,7 +487,19 @@ pub fn render_player_bar(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let (track, cover, missing_cover, snap, mode, queue_len, full_screen) = {
+    let (
+        track,
+        cover,
+        missing_cover,
+        snap,
+        mode,
+        queue_len,
+        full_screen,
+        audio_badge,
+        pages_count,
+        liked,
+        logged_in,
+    ) = {
         let s = state.read(cx);
         let track = s.current_track().cloned();
         let cover_url = track.as_ref().map(|t| t.cover.clone()).unwrap_or_default();
@@ -510,6 +522,10 @@ pub fn render_player_bar(
             s.queue.mode(),
             s.queue.len(),
             s.is_full_screen,
+            s.current_audio_badge.clone(),
+            s.current_video_pages.len(),
+            s.current_track_liked,
+            s.user.is_some(),
         )
     };
     if let Some(url) = missing_cover {
@@ -531,18 +547,51 @@ pub fn render_player_bar(
     let has_track = track.is_some();
 
     // -- Left: album art + title + quality badge + artist ------------------
-    let title: SharedString = track
-        .as_ref()
-        .map(|t| t.title.clone())
-        .unwrap_or_else(|| "Biu 音乐".into())
-        .into();
+    let display_title = match track.as_ref() {
+        Some(t) => match &t.source {
+            TrackSource::BiliVideo {
+                part_title: Some(part),
+                ..
+            } if !part.is_empty() && pages_count > 1 => format!("{part} · {}", t.title),
+            _ => t.title.clone(),
+        },
+        None => "Biu 音乐".into(),
+    };
+    let title: SharedString = display_title.into();
     let artist: SharedString = track
         .as_ref()
         .map(|t| t.artist.clone())
         .unwrap_or_else(|| "挑选一首歌开始聆听".into())
         .into();
     let artist_mid = track.as_ref().and_then(|t| t.artist_mid);
-    let badge = track.as_ref().and_then(|t| quality_tag(&t.source));
+    let badge = audio_badge.or_else(|| track.as_ref().and_then(|t| quality_tag(&t.source)));
+    let is_bili_track = track
+        .as_ref()
+        .is_some_and(|t| !matches!(t.source, TrackSource::LocalFile { .. }));
+    let is_bili_video = track
+        .as_ref()
+        .is_some_and(|t| matches!(t.source, TrackSource::BiliVideo { .. }));
+
+    let mut title_el = div()
+        .id("pb-title")
+        .flex_1()
+        .min_w_0()
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(palette.text)
+        .truncate()
+        .child(title);
+    if is_bili_track
+        && let Some(t) = track.clone()
+    {
+        title_el = title_el
+            .cursor_pointer()
+            .hover(move |s| s.text_color(palette.accent))
+            .tip("在 B 站打开")
+            .on_click(on_state(state, move |s, cx| {
+                s.open_track_in_bilibili(&t, cx)
+            }));
+    }
 
     let mut artist_el = div()
         .id("pb-artist")
@@ -567,7 +616,7 @@ pub fn render_player_bar(
     }
 
     let left = div()
-        .w(px(280.0))
+        .w(px(300.0))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -615,16 +664,7 @@ pub fn render_player_bar(
                         .items_center()
                         .gap_1p5()
                         .min_w_0()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(palette.text)
-                                .truncate()
-                                .child(title),
-                        )
+                        .child(title_el)
                         .when_some(badge, |row, tag| {
                             row.child(
                                 div()
@@ -632,16 +672,40 @@ pub fn render_player_bar(
                                     .px_1p5()
                                     .py(px(1.0))
                                     .rounded(px(4.0))
-                                    .bg(palette.surface_elevated)
+                                    .bg(palette.accent_soft)
                                     .text_size(px(10.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(palette.text_muted)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(palette.accent)
                                     .child(tag),
                             )
                         }),
                 )
                 .child(artist_el),
-        );
+        )
+        .when(pages_count > 1, |row| {
+            row.child(
+                div()
+                    .id("pb-parts")
+                    .h(px(26.0))
+                    .px_2()
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(palette.surface)
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(palette.accent)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(palette.surface_hover))
+                    .tip(format!("切换视频分集（共 {pages_count}P）"))
+                    .on_click(on_state(state, |s, cx| {
+                        s.open_modal(ActiveModal::PageList, cx)
+                    }))
+                    .child(icon(IconName::ListVideo, 13.0, palette.accent))
+                    .child(format!("{pages_count}P")),
+            )
+        });
 
     // -- Center: transport + sleek seek bar --------------------------------
     let center = div()
@@ -699,7 +763,7 @@ pub fn render_player_bar(
     };
 
     let right = div()
-        .w(px(280.0))
+        .w(px(310.0))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -720,7 +784,14 @@ pub fn render_player_bar(
                 s.show_toast(label, false, cx);
             })),
         )
-        .when_some(track.clone(), |row, t| {
+        .when(is_bili_video && logged_in, |row| {
+            row.child(
+                icon_button("pb-like", IconName::ThumbsUp, 15.0, palette, liked)
+                    .tip(if liked { "取消点赞" } else { "点赞" })
+                    .on_click(on_state(state, |s, cx| s.toggle_like_current_track(cx))),
+            )
+        })
+        .when_some(track.clone().filter(|_| is_bili_track), |row, t| {
             let fav_track = t.clone();
             let dl_track = t;
             row.child(

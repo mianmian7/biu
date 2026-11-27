@@ -201,7 +201,10 @@ impl Render for TopLyricsView {
         let p = s.palette(window);
         let playing = is_playing(s.snapshot.state);
         let ticker = if s.settings.show_top_lyrics && playing && !s.is_full_screen {
-            active_line_index(&s.lyrics.lines, s.snapshot.position_secs)
+            active_line_index(
+                &s.lyrics.lines,
+                (s.snapshot.position_secs + s.lyrics_offset_secs).max(0.0),
+            )
                 .and_then(|i| s.lyrics.lines.get(i))
                 .filter(|l| !l.text.trim().is_empty())
                 .map(|l| {

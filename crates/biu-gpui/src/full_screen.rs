@@ -110,6 +110,8 @@ pub struct FullScreenPlayer {
     lyrics_scroll: ScrollHandle,
     last_active: Option<usize>,
     user_scroll_at: Option<Instant>,
+    show_translation: bool,
+    show_romaji: bool,
     _observe: Subscription,
 }
 
@@ -125,6 +127,8 @@ impl FullScreenPlayer {
             lyrics_scroll: ScrollHandle::new(),
             last_active: None,
             user_scroll_at: None,
+            show_translation: true,
+            show_romaji: true,
             _observe: observe,
         }
     }
@@ -179,8 +183,11 @@ impl FullScreenPlayer {
         let loading = s.lyrics_loading;
         let auto_running = s.auto_lyrics_running;
         let font = s.settings.lyrics_font_size.clamp(14, 40) as f32;
-        let pos = s.snapshot.position_secs;
+        let offset = s.lyrics_offset_secs;
+        let pos = (s.snapshot.position_secs + offset).max(0.0);
         let active = active_line_index(&lines, pos);
+        let show_translation = self.show_translation;
+        let show_romaji = self.show_romaji;
 
         if lines.is_empty() {
             let st = self.state.clone();
@@ -300,7 +307,10 @@ impl FullScreenPlayer {
                         }),
                 )
                 .when_some(
-                    line.translation.clone().filter(|t| !t.trim().is_empty()),
+                    show_translation
+                        .then(|| line.translation.clone())
+                        .flatten()
+                        .filter(|t| !t.trim().is_empty()),
                     |d, t| {
                         d.child(
                             div()
@@ -312,7 +322,10 @@ impl FullScreenPlayer {
                     },
                 )
                 .when_some(
-                    line.romaji.clone().filter(|t| !t.trim().is_empty()),
+                    show_romaji
+                        .then(|| line.romaji.clone())
+                        .flatten()
+                        .filter(|t| !t.trim().is_empty()),
                     |d, t| {
                         d.child(
                             div()
@@ -424,9 +437,17 @@ impl Render for FullScreenPlayer {
         let spectrum = s.spectrum;
         let auto_running = s.auto_lyrics_running;
         let lyrics_open = s.windows.desktop_lyrics.is_some();
+        let lyrics_offset = s.lyrics_offset_secs;
+        let has_lyrics = !s.lyrics.lines.is_empty();
+        let pages_count = s.current_video_pages.len();
+        let liked = s.current_track_liked;
+        let logged_in = s.user.is_some();
         let title = track.as_ref().map(|t| t.title.clone()).unwrap_or_default();
         let artist = track.as_ref().map(|t| t.artist.clone()).unwrap_or_default();
-        let badge = track.as_ref().map(|t| source_badge(&t.source));
+        let badge = s
+            .current_audio_badge
+            .clone()
+            .or_else(|| track.as_ref().map(|t| source_badge(&t.source)));
         let st = self.state.clone();
         let mac_pad = if cfg!(target_os = "macos") {
             84.0
@@ -480,6 +501,153 @@ impl Render for FullScreenPlayer {
                             .child(title.clone()),
                     ),
             )
+            .when(pages_count > 1, |bar| {
+                bar.child(
+                    pill_button(
+                        "fs-parts",
+                        IconName::ListVideo,
+                        format!("分集 ({pages_count})"),
+                        p,
+                        false,
+                    )
+                    .on_click({
+                        let st = st.clone();
+                        move |_, _, cx| {
+                            st.update(cx, |s, cx| s.open_modal(ActiveModal::PageList, cx))
+                        }
+                    }),
+                )
+            })
+            .when(has_lyrics, |bar| {
+                bar.child(
+                    div()
+                        .h(px(30.0))
+                        .px_2()
+                        .rounded_full()
+                        .bg(p.surface)
+                        .border_1()
+                        .border_color(p.border)
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .text_xs()
+                        .child(
+                            div()
+                                .id("fs-off-dec")
+                                .px_1()
+                                .cursor_pointer()
+                                .text_color(p.text_muted)
+                                .hover(|s| s.text_color(p.text))
+                                .tip("歌词提前 0.5 秒")
+                                .child("−0.5s")
+                                .on_click({
+                                    let st = st.clone();
+                                    move |_, _, cx| {
+                                        st.update(cx, |s, cx| s.adjust_lyrics_offset(-0.5, cx))
+                                    }
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("fs-off-reset")
+                                .px_1()
+                                .cursor_pointer()
+                                .text_color(if lyrics_offset.abs() > 0.05 {
+                                    p.accent
+                                } else {
+                                    p.text_dim
+                                })
+                                .tip("点击重置歌词偏移")
+                                .child(format!("{lyrics_offset:+.1}s"))
+                                .on_click({
+                                    let st = st.clone();
+                                    move |_, _, cx| {
+                                        st.update(cx, |s, cx| s.adjust_lyrics_offset(0.0, cx))
+                                    }
+                                }),
+                        )
+                        .child(
+                            div()
+                                .id("fs-off-inc")
+                                .px_1()
+                                .cursor_pointer()
+                                .text_color(p.text_muted)
+                                .hover(|s| s.text_color(p.text))
+                                .tip("歌词延后 0.5 秒")
+                                .child("+0.5s")
+                                .on_click({
+                                    let st = st.clone();
+                                    move |_, _, cx| {
+                                        st.update(cx, |s, cx| s.adjust_lyrics_offset(0.5, cx))
+                                    }
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("fs-toggle-tr")
+                        .size(px(30.0))
+                        .rounded_full()
+                        .bg(if self.show_translation {
+                            p.accent.opacity(0.22)
+                        } else {
+                            p.surface
+                        })
+                        .border_1()
+                        .border_color(if self.show_translation {
+                            p.accent.opacity(0.5)
+                        } else {
+                            p.border
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if self.show_translation {
+                            p.accent
+                        } else {
+                            p.text_dim
+                        })
+                        .cursor_pointer()
+                        .tip("显示 / 隐藏翻译")
+                        .child("译")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_translation = !this.show_translation;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id("fs-toggle-ro")
+                        .size(px(30.0))
+                        .rounded_full()
+                        .bg(if self.show_romaji {
+                            p.accent.opacity(0.22)
+                        } else {
+                            p.surface
+                        })
+                        .border_1()
+                        .border_color(if self.show_romaji {
+                            p.accent.opacity(0.5)
+                        } else {
+                            p.border
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if self.show_romaji { p.accent } else { p.text_dim })
+                        .cursor_pointer()
+                        .tip("显示 / 隐藏罗马音")
+                        .child("音")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_romaji = !this.show_romaji;
+                            cx.notify();
+                        })),
+                )
+            })
             .child(
                 pill_button(
                     "fs-search-lyrics",
@@ -582,6 +750,81 @@ impl Render for FullScreenPlayer {
                             .text_center()
                             .truncate()
                             .child(artist),
+                    )
+                    .when_some(
+                        track
+                            .as_ref()
+                            .filter(|t| !matches!(t.source, TrackSource::LocalFile { .. }))
+                            .cloned(),
+                        |col, t| {
+                            let is_video = matches!(t.source, TrackSource::BiliVideo { .. });
+                            let t_fav = t.clone();
+                            let t_open = t;
+                            col.child(
+                                div()
+                                    .pt_1()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_2()
+                                    .when(is_video && logged_in, |row| {
+                                        row.child(
+                                            icon_button(
+                                                "fs-like",
+                                                IconName::ThumbsUp,
+                                                15.0,
+                                                p,
+                                                liked,
+                                            )
+                                            .tip(if liked { "取消点赞" } else { "点赞" })
+                                            .on_click({
+                                                let st = st.clone();
+                                                move |_, _, cx| {
+                                                    st.update(cx, |s, cx| {
+                                                        s.toggle_like_current_track(cx)
+                                                    })
+                                                }
+                                            }),
+                                        )
+                                    })
+                                    .child(
+                                        icon_button("fs-fav", IconName::Star, 15.0, p, false)
+                                            .tip("收藏到收藏夹")
+                                            .on_click({
+                                                let st = st.clone();
+                                                move |_, _, cx| {
+                                                    let track = t_fav.clone();
+                                                    st.update(cx, |s, cx| {
+                                                        let m = if s.user.is_some() {
+                                                            ActiveModal::FavSelect { track }
+                                                        } else {
+                                                            ActiveModal::Login
+                                                        };
+                                                        s.open_modal(m, cx);
+                                                    })
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        icon_button(
+                                            "fs-bili",
+                                            IconName::ExternalLink,
+                                            15.0,
+                                            p,
+                                            false,
+                                        )
+                                        .tip("在 B 站打开")
+                                        .on_click({
+                                            let st = st.clone();
+                                            move |_, _, cx| {
+                                                st.update(cx, |s, cx| {
+                                                    s.open_track_in_bilibili(&t_open, cx)
+                                                })
+                                            }
+                                        }),
+                                    ),
+                            )
+                        },
                     ),
             )
             .child(div().w(px(320.0)).child(waveform(&spectrum, p, 56.0)));

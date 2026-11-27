@@ -497,13 +497,24 @@ impl BiliClient {
         pn: u64,
         keyword: Option<&str>,
     ) -> Result<Page<TrackItem>> {
+        self.get_fav_folder_resources_ordered(media_id, pn, keyword, "mtime")
+            .await
+    }
+
+    pub async fn get_fav_folder_resources_ordered(
+        &self,
+        media_id: u64,
+        pn: u64,
+        keyword: Option<&str>,
+        order: &str,
+    ) -> Result<Page<TrackItem>> {
         let data = self
             .get(
                 API,
                 "/x/v3/fav/resource/list",
                 json!({
                     "media_id": media_id, "pn": pn, "ps": 20, "platform": "web",
-                    "keyword": keyword, "tid": 0, "type": 0, "order": "mtime"
+                    "keyword": keyword, "tid": 0, "type": 0, "order": order
                 }),
                 false,
             )
@@ -514,6 +525,17 @@ impl BiliClient {
             has_more: data["has_more"].as_bool(),
             next_offset: None,
         })
+    }
+
+    pub async fn clean_fav_resources(&self, media_id: u64) -> Result<()> {
+        self.post(
+            API,
+            "/x/v3/fav/resource/clean",
+            json!({ "media_id": media_id, "platform": "web" }),
+            None,
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn create_fav_folder(
@@ -662,11 +684,19 @@ impl BiliClient {
     }
 
     pub async fn get_later_list_page(&self, pn: u64) -> Result<Page<TrackItem>> {
+        self.get_later_list_filtered(pn, None).await
+    }
+
+    pub async fn get_later_list_filtered(
+        &self,
+        pn: u64,
+        key: Option<&str>,
+    ) -> Result<Page<TrackItem>> {
         let data = self
             .get(
                 API,
                 "/x/v2/history/toview/web",
-                json!({ "pn": pn, "ps": 20 }),
+                json!({ "pn": pn, "ps": 20, "key": key }),
                 true,
             )
             .await?;
@@ -683,6 +713,40 @@ impl BiliClient {
         self.post(API, "/x/v2/history/toview/del", json!({ "aid": aid }), None)
             .await?;
         Ok(())
+    }
+
+    pub async fn clear_viewed_later(&self) -> Result<()> {
+        self.post(
+            API,
+            "/x/v2/history/toview/del",
+            json!({ "viewed": true }),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn archive_like(&self, bvid: &str, like: bool) -> Result<()> {
+        self.post(
+            API,
+            "/x/web-interface/archive/like",
+            json!({ "bvid": bvid, "like": if like { 1 } else { 2 } }),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn archive_has_like(&self, bvid: &str) -> Result<bool> {
+        let data = self
+            .get(
+                API,
+                "/x/web-interface/archive/has/like",
+                json!({ "bvid": bvid }),
+                false,
+            )
+            .await?;
+        Ok(data.as_i64() == Some(1))
     }
 
     pub async fn get_history(
@@ -785,32 +849,29 @@ impl BiliClient {
         let data = self.get(API, "/x/polymer/web-dynamic/v1/feed/all", json!({
             "type": "video", "offset": offset, "timezone_offset": -480, "platform": "web", "web_location": "333.1365"
         }), false).await?;
-        let items = list(&data["items"])
-            .iter()
-            .map(|item| {
-                let module = &item["modules"];
-                let archive = &module["module_dynamic"]["major"]["archive"];
-                let mut track = video_track(archive);
-                if let Some(track) = &mut track {
-                    track.artist = strip_html_tags(field(&module["module_author"], &["name"]));
-                    track.artist_mid = number(&module["module_author"]["mid"]);
-                }
-                DynamicItem {
-                    id: field(item, &["id_str"]).to_owned(),
-                    track,
-                    raw: sanitize_fields(item.clone()),
-                }
-            })
-            .collect();
-        Ok(Page {
-            items,
-            total: None,
-            has_more: data["has_more"].as_bool(),
-            next_offset: data["offset"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned),
-        })
+        Ok(parse_dynamic_page(&data))
+    }
+
+    pub async fn get_dynamic_feed_space(
+        &self,
+        host_mid: u64,
+        offset: Option<&str>,
+    ) -> Result<Page<DynamicItem>> {
+        let data = self
+            .get(
+                API,
+                "/x/polymer/web-dynamic/v1/feed/space",
+                json!({
+                    "host_mid": host_mid,
+                    "offset": offset,
+                    "type": "video",
+                    "timezone_offset": -480,
+                    "platform": "web",
+                }),
+                true,
+            )
+            .await?;
+        Ok(parse_dynamic_page(&data))
     }
 
     pub async fn get_user_info(&self, mid: u64) -> Result<UserInfo> {
@@ -826,12 +887,23 @@ impl BiliClient {
         pn: u64,
         keyword: Option<&str>,
     ) -> Result<Page<TrackItem>> {
+        self.get_user_videos_ordered(mid, pn, keyword, "pubdate")
+            .await
+    }
+
+    pub async fn get_user_videos_ordered(
+        &self,
+        mid: u64,
+        pn: u64,
+        keyword: Option<&str>,
+        order: &str,
+    ) -> Result<Page<TrackItem>> {
         let data = self
             .get(
                 API,
                 "/x/space/wbi/arc/search",
                 json!({
-                    "mid": mid, "pn": pn, "ps": 30, "order": "pubdate", "keyword": keyword
+                    "mid": mid, "pn": pn, "ps": 30, "order": order, "keyword": keyword
                 }),
                 true,
             )
@@ -890,6 +962,35 @@ impl BiliClient {
             has_more: total.map(|count| pn.saturating_mul(20) < count),
             next_offset: None,
         })
+    }
+}
+
+fn parse_dynamic_page(data: &Value) -> Page<DynamicItem> {
+    let items = list(&data["items"])
+        .iter()
+        .map(|item| {
+            let module = &item["modules"];
+            let archive = &module["module_dynamic"]["major"]["archive"];
+            let mut track = video_track(archive);
+            if let Some(track) = &mut track {
+                track.artist = strip_html_tags(field(&module["module_author"], &["name"]));
+                track.artist_mid = number(&module["module_author"]["mid"]);
+            }
+            DynamicItem {
+                id: field(item, &["id_str"]).to_owned(),
+                track,
+                raw: sanitize_fields(item.clone()),
+            }
+        })
+        .collect();
+    Page {
+        items,
+        total: None,
+        has_more: data["has_more"].as_bool(),
+        next_offset: data["offset"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
     }
 }
 

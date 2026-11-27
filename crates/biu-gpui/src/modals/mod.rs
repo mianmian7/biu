@@ -2,6 +2,7 @@ mod fav_folder_edit_modal;
 mod fav_select_modal;
 mod login_modal;
 mod lyrics_search_modal;
+mod page_list_modal;
 mod playlist_drawer;
 
 use crate::pages::{
@@ -25,6 +26,7 @@ enum ModalKey {
     Favorite(String, Option<u64>),
     EditFolder(Option<u64>, Option<u64>),
     Queue,
+    PageList(Option<String>),
 }
 
 fn modal_key(state: &AppState) -> Option<ModalKey> {
@@ -41,6 +43,9 @@ fn modal_key(state: &AppState) -> Option<ModalKey> {
             mid,
         )),
         ActiveModal::PlaylistDrawer => Some(ModalKey::Queue),
+        ActiveModal::PageList => Some(ModalKey::PageList(
+            state.current_track().map(|track| track.id.clone()),
+        )),
     }
 }
 
@@ -54,6 +59,8 @@ struct ModalData {
     lyrics: lyrics_search_modal::LyricsSearchModal,
     favorites: fav_select_modal::FavSelectModal,
     edit: fav_folder_edit_modal::FavFolderEditModal,
+    page_list: page_list_modal::PageListModal,
+    queue: playlist_drawer::PlaylistDrawerState,
 }
 
 pub struct ModalsHost {
@@ -139,6 +146,7 @@ impl ModalsHost {
                     .filter(|t| !t.cover.is_empty())
                     .map(|t| (t.cover.clone(), ThumbSize::Tiny))
                     .collect();
+                self.enter_queue(window, cx);
                 if !covers.is_empty() {
                     let st = self.state.clone();
                     window.defer(cx, move |_, cx| {
@@ -146,6 +154,7 @@ impl ModalsHost {
                     });
                 }
             }
+            ActiveModal::PageList => self.enter_page_list(window, cx),
         }
         self.focus.focus(window, cx);
     }
@@ -244,6 +253,7 @@ impl Render for ModalsHost {
                 self.folder_edit_view(p, cx).into_any_element(),
             ),
             ModalKey::Queue => ("播放列表", self.queue_view(p, cx).into_any_element()),
+            ModalKey::PageList(_) => ("视频分集", self.page_list_view(p, cx).into_any_element()),
         };
 
         div().absolute().top_0().left_0().size_full().child(

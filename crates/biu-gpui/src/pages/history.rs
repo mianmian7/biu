@@ -1,5 +1,6 @@
 use super::*;
 use biu_core::HistoryItem;
+use gpui_kit::component::switch::Switch;
 
 #[derive(Default)]
 pub(super) struct History {
@@ -75,13 +76,18 @@ impl PagesHost {
                 Ok(response)
             },
             |this, page_data, cx| {
+                let size = if is_grid_mode(this.state.read(cx)) {
+                    ThumbSize::Card
+                } else {
+                    ThumbSize::Tiny
+                };
                 let covers = page_data
                     .items
                     .iter()
                     .take(48)
                     .filter_map(|item| item.track.as_ref())
                     .filter(|t| !t.cover.is_empty())
-                    .map(|t| (t.cover.clone(), ThumbSize::Tiny))
+                    .map(|t| (t.cover.clone(), size))
                     .collect();
                 this.prefetch_covers(covers, cx);
             },
@@ -89,11 +95,19 @@ impl PagesHost {
         );
     }
 
-    pub(super) fn history_view(&self, p: BiuPalette, cx: &Context<Self>) -> Div {
+    pub(super) fn history_view(
+        &self,
+        p: BiuPalette,
+        content_width: f32,
+        cx: &Context<Self>,
+    ) -> Div {
         let history = &self.data.history;
         let Some(input) = &history.input else {
             return page("历史记录").child(self.login_hint(p));
         };
+        let state = self.state.read(cx);
+        let grid = is_grid_mode(state);
+        let report_history = state.settings.report_play_history;
 
         let clear_control = if !self.mutating {
             if history.confirm_clear {
@@ -137,6 +151,7 @@ impl PagesHost {
             toolbar()
         };
 
+        let st_report = self.state.clone();
         let header = div()
             .w_full()
             .flex()
@@ -153,9 +168,42 @@ impl PagesHost {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
-                    .gap_2()
+                    .gap_2p5()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_xs().text_color(p.text_muted).child("记录播放历史"))
+                            .child(
+                                Switch::new("history-report-switch")
+                                    .checked(report_history)
+                                    .on_click(move |val, _, cx| {
+                                        st_report.update(cx, |s, cx| {
+                                            s.update_settings(|st| st.report_play_history = *val, cx)
+                                        });
+                                    }),
+                            ),
+                    )
                     .child(filter_bar(input, "搜索", p, cx, Self::filter_history))
+                    .child(display_mode_toggle(
+                        &self.state,
+                        grid,
+                        p,
+                        |this, _, cx| {
+                            if let Some(Ok(res)) = this.data.history.results.result.as_ref() {
+                                let tracks: Vec<TrackItem> = res
+                                    .items
+                                    .iter()
+                                    .filter_map(|i| i.track.clone())
+                                    .collect();
+                                this.prefetch_tracks(&tracks, cx);
+                            }
+                        },
+                        cx,
+                    ))
                     .child(clear_control),
             );
 
@@ -167,43 +215,67 @@ impl PagesHost {
                 if result.items.is_empty() {
                     return empty_state("没有历史记录", "", p);
                 }
+                let tracks: Vec<TrackItem> = result
+                    .items
+                    .iter()
+                    .filter_map(|item| item.track.clone())
+                    .collect();
                 column()
-                    .gap(px(2.0))
-                    .child(track_list_header(p))
-                    .children(result.items.iter().enumerate().map(|(i, item)| {
-                        let row = if let Some(track) = &item.track {
-                            track_row(&self.state, i, track, p, cx)
-                        } else {
-                            div()
-                                .id(("hist-plain", i))
-                                .h(px(52.0))
-                                .px_3()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .rounded(px(10.0))
-                                .hover(move |s| s.bg(p.surface_hover))
-                                .child(div().text_sm().truncate().child(item.title.clone()))
-                        };
-                        let kid = item.kid.clone();
-                        row.when(!kid.is_empty() && !self.mutating, |row| {
-                            row.child(
-                                compact_icon_btn(("del-hist", i), IconName::Trash, "删除记录", p)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        let kid = kid.clone();
-                                        this.mutate(
-                                            move |s| async move {
-                                                s.bili.delete_history(&kid).await
+                    .gap_4()
+                    .when(!tracks.is_empty(), |c| {
+                        c.child(play_all(&self.state, &tracks, p))
+                    })
+                    .child(if grid {
+                        track_grid(&self.state, &tracks, content_width, p, cx)
+                    } else {
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(track_list_header(p))
+                            .children(result.items.iter().enumerate().map(|(i, item)| {
+                                let row = if let Some(track) = &item.track {
+                                    track_row(&self.state, i, track, p, cx)
+                                } else {
+                                    div()
+                                        .id(("hist-plain", i))
+                                        .h(px(52.0))
+                                        .px_3()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .rounded(px(10.0))
+                                        .hover(move |s| s.bg(p.surface_hover))
+                                        .child(div().text_sm().truncate().child(item.title.clone()))
+                                };
+                                let kid = item.kid.clone();
+                                row.when(!kid.is_empty() && !self.mutating, |row| {
+                                    row.child(
+                                        compact_icon_btn(
+                                            ("del-hist", i),
+                                            IconName::Trash,
+                                            "删除记录",
+                                            p,
+                                        )
+                                        .on_click(cx.listener(
+                                            move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                let kid = kid.clone();
+                                                this.mutate(
+                                                    move |s| async move {
+                                                        s.bili.delete_history(&kid).await
+                                                    },
+                                                    "已删除历史记录",
+                                                    Self::reset_history,
+                                                    cx,
+                                                );
                                             },
-                                            "已删除历史记录",
-                                            Self::reset_history,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                        })
-                    }))
+                                        )),
+                                    )
+                                })
+                            }))
+                    })
                     .when(result.next_offset.is_some(), |c| {
                         c.child(
                             div().w_full().pt_4().flex().justify_center().child(

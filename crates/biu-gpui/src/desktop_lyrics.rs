@@ -311,52 +311,49 @@ impl Render for DesktopLyricsWindow {
         let show_romaji = style.show_romaji;
         let align = style.align.clone();
         let playing = is_playing(s.snapshot.state);
-        let pos = s.snapshot.position_secs;
+        let pos = (s.snapshot.position_secs + s.lyrics_offset_secs).max(0.0);
         let lines = &s.lyrics.lines;
         let idx = active_line_index(lines, pos);
 
-        let (main_text, main_progress, sub_text, next_text) = match idx.and_then(|i| lines.get(i)) {
-            Some(line) => {
-                let next_start = idx.and_then(|i| lines.get(i + 1)).map(|l| l.start_secs);
-                let sub = if show_translation {
-                    line.translation.clone()
-                } else {
-                    None
+        let (main_text, main_progress, tr_text, ro_text, next_text) =
+            match idx.and_then(|i| lines.get(i)) {
+                Some(line) => {
+                    let next_start = idx.and_then(|i| lines.get(i + 1)).map(|l| l.start_secs);
+                    let tr = show_translation
+                        .then(|| line.translation.clone())
+                        .flatten()
+                        .filter(|t| !t.trim().is_empty());
+                    let ro = show_romaji
+                        .then(|| line.romaji.clone())
+                        .flatten()
+                        .filter(|t| !t.trim().is_empty());
+                    let next = idx
+                        .and_then(|i| lines.get(i + 1))
+                        .map(|l| l.text.clone())
+                        .filter(|t| !t.trim().is_empty());
+                    (
+                        line.text.clone(),
+                        line_progress(line, next_start, pos),
+                        tr,
+                        ro,
+                        next,
+                    )
                 }
-                .or_else(|| {
-                    if show_romaji {
-                        line.romaji.clone()
-                    } else {
-                        None
-                    }
-                })
-                .filter(|t| !t.trim().is_empty());
-                let next = idx
-                    .and_then(|i| lines.get(i + 1))
-                    .map(|l| l.text.clone())
-                    .filter(|t| !t.trim().is_empty());
-                (
-                    line.text.clone(),
-                    line_progress(line, next_start, pos),
-                    sub,
-                    next,
-                )
-            }
-            None => {
-                let fallback = s
-                    .current_track()
-                    .map(|t| {
-                        if t.artist.is_empty() {
-                            t.title.clone()
-                        } else {
-                            format!("{} - {}", t.title, t.artist)
-                        }
-                    })
-                    .unwrap_or_else(|| "Biu 桌面歌词".to_string());
-                let next = lines.first().map(|l| l.text.clone());
-                (fallback, 0.0, None, next)
-            }
-        };
+                None => {
+                    let fallback = s
+                        .current_track()
+                        .map(|t| {
+                            if t.artist.is_empty() {
+                                t.title.clone()
+                            } else {
+                                format!("{} - {}", t.title, t.artist)
+                            }
+                        })
+                        .unwrap_or_else(|| "Biu 桌面歌词".to_string());
+                    let next = lines.first().map(|l| l.text.clone());
+                    (fallback, 0.0, None, None, next)
+                }
+            };
 
         let main_text = if main_text.trim().is_empty() {
             "♪".to_string()
@@ -425,13 +422,22 @@ impl Render for DesktopLyricsWindow {
                 FontWeight::BOLD,
                 main_text.clone(),
             ))
-            .when_some(sub_text, |d, sub| {
+            .when_some(tr_text, |d, sub| {
                 d.child(text_layer(
                     sub.clone().into_any_element(),
-                    unplayed_color.opacity(0.85),
+                    unplayed_color.opacity(0.88),
                     font * 0.5,
                     FontWeight::MEDIUM,
                     sub,
+                ))
+            })
+            .when_some(ro_text, |d, ro| {
+                d.child(text_layer(
+                    ro.clone().into_any_element(),
+                    unplayed_color.opacity(0.72),
+                    font * 0.44,
+                    FontWeight::NORMAL,
+                    ro,
                 ))
             })
             .when(double, |d| {
@@ -504,6 +510,109 @@ impl Render for DesktopLyricsWindow {
                     .child(toolbar_button("dl-font-inc", IconName::AArrowUp).on_click(
                         cx.listener(|this, _, window, cx| this.change_font(2, window, cx)),
                     ))
+                    .child(
+                        div()
+                            .id("dl-layout")
+                            .h(px(26.0))
+                            .px_1p5()
+                            .rounded(px(6.0))
+                            .flex()
+                            .items_center()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if double {
+                                played_color
+                            } else {
+                                hsla(0.0, 0.0, 1.0, 0.78)
+                            })
+                            .cursor_pointer()
+                            .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.18)))
+                            .child(if double { "双" } else { "单" })
+                            .on_click({
+                                let st = st.clone();
+                                move |_, _, cx| {
+                                    st.update(cx, |s, cx| {
+                                        s.update_settings(
+                                            |st| {
+                                                st.desktop_lyrics_style.layout =
+                                                    if st.desktop_lyrics_style.layout == "double" {
+                                                        "single".into()
+                                                    } else {
+                                                        "double".into()
+                                                    };
+                                            },
+                                            cx,
+                                        )
+                                    })
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("dl-tr")
+                            .h(px(26.0))
+                            .px_1p5()
+                            .rounded(px(6.0))
+                            .flex()
+                            .items_center()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if show_translation {
+                                played_color
+                            } else {
+                                hsla(0.0, 0.0, 1.0, 0.55)
+                            })
+                            .cursor_pointer()
+                            .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.18)))
+                            .child("译")
+                            .on_click({
+                                let st = st.clone();
+                                move |_, _, cx| {
+                                    st.update(cx, |s, cx| {
+                                        s.update_settings(
+                                            |st| {
+                                                st.desktop_lyrics_style.show_translation =
+                                                    !st.desktop_lyrics_style.show_translation;
+                                            },
+                                            cx,
+                                        )
+                                    })
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("dl-ro")
+                            .h(px(26.0))
+                            .px_1p5()
+                            .rounded(px(6.0))
+                            .flex()
+                            .items_center()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if show_romaji {
+                                played_color
+                            } else {
+                                hsla(0.0, 0.0, 1.0, 0.55)
+                            })
+                            .cursor_pointer()
+                            .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.18)))
+                            .child("音")
+                            .on_click({
+                                let st = st.clone();
+                                move |_, _, cx| {
+                                    st.update(cx, |s, cx| {
+                                        s.update_settings(
+                                            |st| {
+                                                st.desktop_lyrics_style.show_romaji =
+                                                    !st.desktop_lyrics_style.show_romaji;
+                                            },
+                                            cx,
+                                        )
+                                    })
+                                }
+                            }),
+                    )
                     .child(toolbar_button("dl-lock", IconName::Lock).on_click({
                         let st = st.clone();
                         move |_, _, cx| set_desktop_lyrics_locked(&st, true, cx)

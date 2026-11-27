@@ -1,16 +1,30 @@
 use super::*;
 use crate::state::CollectionKind;
 
+const FAV_ORDERS: [(&str, &str); 3] = [
+    ("mtime", "最近收藏"),
+    ("view", "最多播放"),
+    ("pubtime", "最近投稿"),
+];
+
 #[derive(Default)]
 pub(super) struct Collection {
     input: Option<Entity<InputState>>,
     keyword: String,
+    order: usize,
     page: u64,
     results: Load<Page<TrackItem>>,
 }
 
 impl PagesHost {
     pub(super) fn enter_collection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.data.collection.input =
+            Some(self.filter_input("在歌单内搜索…", window, cx, Self::filter_collection));
+        self.load_collection(1, cx);
+    }
+
+    fn filter_collection(&mut self, keyword: String, cx: &mut Context<Self>) {
+        self.data.collection.keyword = keyword;
         if matches!(
             self.route,
             Some(Route::Collection {
@@ -18,15 +32,10 @@ impl PagesHost {
                 ..
             })
         ) {
-            self.data.collection.input =
-                Some(self.filter_input("在歌单内搜索…", window, cx, Self::filter_collection));
+            self.load_collection(1, cx);
+        } else {
+            cx.notify();
         }
-        self.load_collection(1, cx);
-    }
-
-    fn filter_collection(&mut self, keyword: String, cx: &mut Context<Self>) {
-        self.data.collection.keyword = keyword;
-        self.load_collection(1, cx);
     }
 
     fn load_collection(&mut self, page: u64, cx: &mut Context<Self>) {
@@ -35,9 +44,10 @@ impl PagesHost {
         };
         self.data.collection.page = page;
         let keyword = self.data.collection.keyword.clone();
+        let order = FAV_ORDERS[self.data.collection.order].0;
         self.load_with(
             |h| &mut h.data.collection.results,
-            move |s| collection_page(s, kind, id, mid, page, keyword),
+            move |s| collection_page(s, kind, id, mid, page, keyword, order),
             |this, page_data, cx| {
                 this.prefetch_tracks(&page_data.items, cx);
                 if let Some(first) = page_data.items.first()
@@ -55,8 +65,9 @@ impl PagesHost {
             return;
         };
         let keyword = self.data.collection.keyword.clone();
+        let order = FAV_ORDERS[self.data.collection.order].0;
         self.queue_all(
-            move |s, page| collection_page(s, kind, id, mid, page, keyword.clone()),
+            move |s, page| collection_page(s, kind, id, mid, page, keyword.clone(), order),
             append,
             cx,
         );
@@ -77,7 +88,8 @@ impl PagesHost {
         let data = &self.data.collection;
         let state = self.state.read(cx);
         let grid = is_grid_mode(state);
-        let owned = (*kind == CollectionKind::FavFolder)
+        let is_fav = *kind == CollectionKind::FavFolder;
+        let owned = is_fav
             .then(|| state.created_folders.iter().find(|folder| folder.id == *id))
             .flatten()
             .cloned();
@@ -121,6 +133,15 @@ impl PagesHost {
                         .get(&CoverKey::thumb(hero_cover_url.to_string(), ThumbSize::Tiny))
                 })
         };
+
+        let page_tracks: Vec<TrackItem> = data
+            .results
+            .result
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .map(|r| r.items.clone())
+            .unwrap_or_default();
+        let folder_id = *id;
 
         // Hero Banner matching `screenshots/main.png`
         let hero = div()
@@ -193,6 +214,36 @@ impl PagesHost {
                                             ))
                                         },
                                     )
+                                    .when(!page_tracks.is_empty(), |bar| {
+                                        let tracks_dl = page_tracks.clone();
+                                        let st = self.state.clone();
+                                        bar.child(
+                                            icon_pill_button(
+                                                "col-dl-page",
+                                                IconName::Download,
+                                                "下载本页音频",
+                                                p,
+                                            )
+                                            .on_click(move |_, _, cx| {
+                                                let count = tracks_dl.len();
+                                                st.update(cx, |s, cx| {
+                                                    let runtime = s.services.rt.handle().clone();
+                                                    let _guard = runtime.enter();
+                                                    for t in &tracks_dl {
+                                                        let _ = s.services.downloads.queue(
+                                                            t.clone(),
+                                                            DownloadFormat::Native,
+                                                        );
+                                                    }
+                                                    s.show_toast(
+                                                        format!("已添加 {count} 首到下载队列"),
+                                                        false,
+                                                        cx,
+                                                    );
+                                                });
+                                            }),
+                                        )
+                                    })
                                     .when_some(owned.clone(), |bar, folder| {
                                         let st = self.state.clone();
                                         bar.child(
@@ -213,6 +264,28 @@ impl PagesHost {
                                                 });
                                             }),
                                         )
+                                        .when(!self.mutating, |b| {
+                                            b.child(
+                                                icon_pill_button(
+                                                    "clean-invalid",
+                                                    IconName::Trash,
+                                                    "清除失效",
+                                                    p,
+                                                )
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.mutate(
+                                                        move |s| async move {
+                                                            s.bili
+                                                                .clean_fav_resources(folder_id)
+                                                                .await
+                                                        },
+                                                        "已清除失效内容",
+                                                        Self::refresh_collection,
+                                                        cx,
+                                                    );
+                                                })),
+                                            )
+                                        })
                                     }),
                             )
                             .child(
@@ -247,72 +320,122 @@ impl PagesHost {
                     ),
             );
 
-        let folder_id = *id;
-        page("").child(hero).child(data.results.content(
-            p,
-            button("retry", "重试", p).on_click(
-                cx.listener(|this, _, _, cx| this.load_collection(this.data.collection.page, cx)),
-            ),
-            |result| {
-                if result.items.is_empty() {
-                    return empty_state("歌单为空", "收藏的视频或音频会显示在这里", p);
-                }
-                column()
-                    .gap_4()
-                    .child(if grid {
-                        track_grid(&self.state, &result.items, content_width, p, cx)
+        let sort_bar = is_fav.then(|| {
+            toolbar().children(FAV_ORDERS.iter().enumerate().map(|(index, &(id, label))| {
+                let active = index == data.order;
+                div()
+                    .id(("fav-order", index))
+                    .h(px(28.0))
+                    .px_3()
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .text_xs()
+                    .font_weight(if active {
+                        FontWeight::SEMIBOLD
                     } else {
-                        div()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .child(track_list_header(p))
-                            .children(result.items.iter().enumerate().map(|(i, track)| {
-                                let resource = playable_id(track);
-                                track_row(&self.state, i, track, p, cx).when(
-                                    owned.is_some() && !self.mutating,
-                                    |row| {
-                                        row.when_some(resource, |row, resource| {
-                                            row.child(
-                                                compact_icon_btn(
-                                                    ("rm-fav", i),
-                                                    IconName::Trash,
-                                                    "移出收藏夹",
-                                                    p,
-                                                )
-                                                .on_click(cx.listener(
-                                                    move |this, _, _, cx| {
-                                                        cx.stop_propagation();
-                                                        this.mutate(
-                                                            move |s| async move {
-                                                                s.bili
-                                                                    .batch_del_fav_resources(
-                                                                        folder_id,
-                                                                        &[resource],
-                                                                    )
-                                                                    .await
-                                                            },
-                                                            "已移出收藏夹",
-                                                            Self::refresh_collection,
-                                                            cx,
-                                                        );
-                                                    },
-                                                )),
-                                            )
-                                        })
-                                    },
-                                )
-                            }))
+                        FontWeight::NORMAL
                     })
-                    .child(pager(
-                        result,
-                        data.page,
-                        p,
-                        page_change(cx, Self::load_collection),
-                    ))
-            },
-        ))
+                    .text_color(if active { p.accent } else { p.text_muted })
+                    .bg(if active {
+                        p.accent_soft
+                    } else {
+                        gpui_kit::transparent_black()
+                    })
+                    .cursor_pointer()
+                    .when(!active, |d| {
+                        d.hover(move |s| s.bg(p.surface_hover).text_color(p.text))
+                    })
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let _ = id;
+                        this.data.collection.order = index;
+                        this.load_collection(1, cx);
+                    }))
+            }))
+        });
+
+        let local_kw = (!is_fav && !data.keyword.is_empty()).then(|| data.keyword.to_lowercase());
+        page("")
+            .child(hero)
+            .when_some(sort_bar, |d, bar| d.child(bar))
+            .child(data.results.content(
+                p,
+                button("retry", "重试", p).on_click(cx.listener(|this, _, _, cx| {
+                    this.load_collection(this.data.collection.page, cx)
+                })),
+                |result| {
+                    let filtered: Vec<TrackItem> = match &local_kw {
+                        Some(kw) => result
+                            .items
+                            .iter()
+                            .filter(|t| {
+                                t.title.to_lowercase().contains(kw)
+                                    || t.artist.to_lowercase().contains(kw)
+                            })
+                            .cloned()
+                            .collect(),
+                        None => result.items.clone(),
+                    };
+                    if filtered.is_empty() {
+                        return empty_state("歌单为空", "收藏的视频或音频会显示在这里", p);
+                    }
+                    column()
+                        .gap_4()
+                        .child(if grid {
+                            track_grid(&self.state, &filtered, content_width, p, cx)
+                        } else {
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(track_list_header(p))
+                                .children(filtered.iter().enumerate().map(|(i, track)| {
+                                    let resource = playable_id(track);
+                                    track_row(&self.state, i, track, p, cx).when(
+                                        owned.is_some() && !self.mutating,
+                                        |row| {
+                                            row.when_some(resource, |row, resource| {
+                                                row.child(
+                                                    compact_icon_btn(
+                                                        ("rm-fav", i),
+                                                        IconName::Trash,
+                                                        "移出收藏夹",
+                                                        p,
+                                                    )
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            cx.stop_propagation();
+                                                            this.mutate(
+                                                                move |s| async move {
+                                                                    s.bili
+                                                                        .batch_del_fav_resources(
+                                                                            folder_id,
+                                                                            &[resource],
+                                                                        )
+                                                                        .await
+                                                                },
+                                                                "已移出收藏夹",
+                                                                Self::refresh_collection,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                                )
+                                            })
+                                        },
+                                    )
+                                }))
+                        })
+                        .child(pager(
+                            result,
+                            data.page,
+                            p,
+                            page_change(cx, Self::load_collection),
+                        ))
+                },
+            ))
     }
 
     fn refresh_collection(&mut self, cx: &mut Context<Self>) {
@@ -328,11 +451,15 @@ async fn collection_page(
     mid: u64,
     page: u64,
     keyword: String,
+    order: &'static str,
 ) -> anyhow::Result<Page<TrackItem>> {
     let keyword = (!keyword.is_empty()).then_some(keyword.as_str());
     let bili = &services.bili;
     match kind {
-        CollectionKind::FavFolder => bili.get_fav_folder_resources(id, page, keyword).await,
+        CollectionKind::FavFolder => {
+            bili.get_fav_folder_resources_ordered(id, page, keyword, order)
+                .await
+        }
         CollectionKind::Season => bili.get_season_archives(mid, id, page).await,
         CollectionKind::Series => bili.get_series_archives(mid, id, page).await,
     }
