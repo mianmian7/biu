@@ -1689,16 +1689,22 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         e.send(Cmd::SetNullRate(22_050));
-        let p0 = e.snapshot().position_secs;
         e.resume();
         wait_for(&e, Duration::from_secs(2), |s| {
             s.state == PlaybackState::Playing
         });
         assert_eq!(e.inner.shared.out_rate.load(Ordering::Acquire), 22_050);
+        let t0 = Instant::now();
+        let p0 = e.snapshot().position_secs;
         std::thread::sleep(Duration::from_millis(400));
+        let elapsed = t0.elapsed().as_secs_f64();
         let advanced = e.snapshot().position_secs - p0;
-        // Stale 48 kHz samples played at 22.05 kHz would advance only ~0.18 s.
-        assert!((0.3..0.5).contains(&advanced), "advanced {advanced}");
+        let ratio = advanced / elapsed;
+        // Stale 48 kHz samples played at 22.05 kHz would advance at ~0.46x real time.
+        assert!(
+            (0.75..=1.25).contains(&ratio),
+            "advanced {advanced}s in {elapsed}s (ratio {ratio})"
+        );
     }
 
     /// Opens the real default output device (muted). Run with `--ignored` on a dev machine.

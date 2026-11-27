@@ -5,7 +5,7 @@
 //! - `nightly`: `https://github.com/mianmian7/biu/releases/download/nightly/latest.json`
 
 use crate::bili::{USER_AGENT, allowlist_redirect_policy};
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -419,12 +419,13 @@ pub fn install_and_relaunch(archive_path: &Path) -> Result<()> {
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = exe;
-        bail!("当前平台暂不支持自动替换更新")
+        anyhow::bail!("当前平台暂不支持自动替换更新")
     }
 }
 
 #[cfg(target_os = "macos")]
 fn install_macos(archive_path: &Path, exe: &Path) -> Result<()> {
+    use anyhow::{anyhow, bail};
     use std::process::{Command, Stdio};
 
     let target_app = macos_app_bundle_from_exe(exe).ok_or_else(|| {
