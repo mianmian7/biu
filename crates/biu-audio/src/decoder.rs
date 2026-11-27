@@ -221,12 +221,16 @@ impl SymphoniaDecoder {
         let mss = MediaSourceStream::new(ms, Default::default());
         let mut hint = Hint::new();
         if let Some(ext) = source.hint_extension() {
-            // DASH segments from Bilibili are fragmented MP4.
+            // DASH segments from Bilibili are fragmented MP4. Cache files use generic
+            // `.part`/`.audio`/`.bin` extensions, so let Symphonia sniff their header directly.
             let ext = match ext.as_str() {
-                "m4s" | "m4a" | "mp4" | "m4b" => "mp4",
-                other => other,
+                "m4s" | "m4a" | "mp4" | "m4b" => Some("mp4"),
+                "part" | "audio" | "bin" => None,
+                other => Some(other),
             };
-            hint.with_extension(ext);
+            if let Some(ext) = ext {
+                hint.with_extension(ext);
+            }
         }
         let format = symphonia::default::get_probe()
             .probe(
@@ -305,6 +309,13 @@ impl SymphoniaDecoder {
     fn decode_raw(&mut self, out: &mut Vec<f32>) -> Result<bool> {
         let mut consecutive_errors = 0u32;
         loop {
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::Acquire))
+            {
+                bail!("decode cancelled");
+            }
             let packet = match self.format.next_packet() {
                 Ok(Some(p)) => p,
                 Ok(None) => return Ok(false),
@@ -588,15 +599,19 @@ impl FfmpegDecoder {
         cmd.arg("-hide_banner").arg("-loglevel").arg("info");
         if path_input.is_some() {
             cmd.arg("-nostdin");
-        }
-        if start_secs > 0.0 {
-            cmd.arg("-ss").arg(format!("{start_secs:.3}"));
+            if start_secs > 0.0 {
+                cmd.arg("-ss").arg(format!("{start_secs:.3}"));
+            }
         }
         cmd.arg("-i");
         match &path_input {
             Some(p) => cmd.arg(p),
             None => cmd.arg("pipe:0"),
         };
+        if path_input.is_none() && start_secs > 0.0 {
+            // Non-seekable pipes cannot use input-side `-ss` reliably on MP4/fMP4.
+            cmd.arg("-ss").arg(format!("{start_secs:.3}"));
+        }
         cmd.args(["-vn", "-sn", "-dn", "-f", "f32le", "-acodec", "pcm_f32le"])
             .arg("-ac")
             .arg("2")
@@ -1087,5 +1102,23 @@ mod tests {
             Some(201.5)
         );
         assert_eq!(parse_ffmpeg_duration("  Duration: N/A, bitrate: N/A"), None);
+    }
+
+    #[test]
+    fn symphonia_decode_checks_cancel_during_discard() {
+        let wav = sine_wav(44_100, 2, 44_100 * 10, 440.0);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut dec = SymphoniaDecoder::open_cancellable(
+            AudioSource::bytes(wav, Some("wav")),
+            Some(cancel.clone()),
+        )
+        .unwrap();
+        // Force a large discard window and cancel before decoding it.
+        dec.pending.clear();
+        dec.skip_frames = 44_100 * 8;
+        cancel.store(true, Ordering::Release);
+        let mut out = Vec::new();
+        let err = dec.decode_next(&mut out).unwrap_err();
+        assert!(err.to_string().contains("cancelled"), "{err:#}");
     }
 }

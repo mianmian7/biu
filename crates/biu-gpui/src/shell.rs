@@ -10,7 +10,7 @@ use crate::mini_player::open_or_toggle_mini_player;
 use crate::modals::ModalsHost;
 use crate::pages::PagesHost;
 use crate::player_bar::{PlayerBarView, TooltipExt, icon, icon_button, is_playing, on_state};
-use crate::state::{ActiveModal, AppState, CollectionKind, Route};
+use crate::state::{ActiveModal, AppState, CollectionKind, Route, UpdateState};
 use crate::system;
 use crate::theme::BiuPalette;
 use biu_core::FavFolder;
@@ -1513,6 +1513,177 @@ impl MainShell {
         )
     }
 
+    fn render_update_banner(&self, p: BiuPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let s = self.state.read(cx);
+        if s.update_banner_dismissed {
+            return None;
+        }
+        let (headline, detail, release_url, action_el, dismissible) = match &s.update_state {
+            UpdateState::Available(info) => {
+                let ver_tag = if info.channel.as_str() == "nightly" && !info.commit.is_empty() {
+                    format!("v{} ({} · {})", info.version, info.channel.label(), &info.commit[..info.commit.len().min(7)])
+                } else {
+                    format!("v{} ({})", info.version, info.channel.label())
+                };
+                let btn = div()
+                    .id("update-banner-install")
+                    .h(px(26.0))
+                    .px_3()
+                    .rounded_full()
+                    .bg(p.accent)
+                    .text_color(rgb(0x0b0c0e))
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.9))
+                    .on_click(on_state(&self.state, |s, cx| {
+                        s.download_and_install_update(cx)
+                    }))
+                    .child(icon(IconName::Download, 12.0, rgb(0x0b0c0e).into()))
+                    .child("一键更新并重启")
+                    .into_any_element();
+                (
+                    format!("发现新版本 Biu {ver_tag}"),
+                    info.notes.lines().next().unwrap_or("已准备好无缝更新包").trim().to_string(),
+                    Some(info.release_url.clone()),
+                    btn,
+                    true,
+                )
+            }
+            UpdateState::Downloading {
+                info,
+                downloaded,
+                total,
+            } => {
+                let pct = total
+                    .filter(|t| *t > 0)
+                    .map(|t| format!("{:.0}%", (*downloaded as f64 / t as f64 * 100.0).clamp(0.0, 100.0)))
+                    .unwrap_or_else(|| format!("{:.1} MB", *downloaded as f64 / (1024.0 * 1024.0)));
+                let pill = div()
+                    .h(px(26.0))
+                    .px_3()
+                    .rounded_full()
+                    .bg(p.surface_active)
+                    .text_color(p.accent)
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .flex()
+                    .items_center()
+                    .child(format!("下载中 {pct}"))
+                    .into_any_element();
+                (
+                    format!("正在后台下载 Biu v{}", info.version),
+                    "下载完成并校验 SHA-256 后将自动替换重启".into(),
+                    None,
+                    pill,
+                    false,
+                )
+            }
+            UpdateState::Installing(info) => {
+                let pill = div()
+                    .h(px(26.0))
+                    .px_3()
+                    .rounded_full()
+                    .bg(p.surface_active)
+                    .text_color(p.accent)
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .flex()
+                    .items_center()
+                    .child("正在重启…")
+                    .into_any_element();
+                (
+                    format!("正在安装 Biu v{}", info.version),
+                    "即将自动重启至新版本".into(),
+                    None,
+                    pill,
+                    false,
+                )
+            }
+            _ => return None,
+        };
+
+        Some(
+            div()
+                .flex_shrink_0()
+                .mx_4()
+                .mb_2()
+                .px_3p5()
+                .py_2()
+                .rounded(px(12.0))
+                .bg(p.accent.opacity(0.12))
+                .border_1()
+                .border_color(p.accent.opacity(0.32))
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(icon(IconName::Sparkles, 16.0, p.accent))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(p.text)
+                                .child(headline),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(p.text_muted)
+                                .truncate()
+                                .child(detail),
+                        ),
+                )
+                .when_some(release_url, |d, url| {
+                    d.child(
+                        div()
+                            .id("update-banner-notes")
+                            .px_2()
+                            .py_1()
+                            .rounded_full()
+                            .text_xs()
+                            .text_color(p.text_muted)
+                            .cursor_pointer()
+                            .hover(move |s| s.text_color(p.text).bg(p.surface_hover))
+                            .on_click(move |_, _, _| {
+                                let _ = open::that_detached(&url);
+                            })
+                            .child("更新日志"),
+                    )
+                })
+                .child(action_el)
+                .when(dismissible, |d| {
+                    d.child(
+                        div()
+                            .id("update-banner-dismiss")
+                            .size(px(24.0))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(p.surface_hover))
+                            .on_click(on_state(&self.state, |s, cx| {
+                                s.dismiss_update_banner(cx)
+                            }))
+                            .child(icon(IconName::X, 13.0, p.text_dim)),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     fn render_toast(&self, p: BiuPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let toast = self.state.read(cx).toast.clone()?;
         let (fg, ring) = if toast.is_error {
@@ -1601,6 +1772,7 @@ impl Render for MainShell {
 
         let sidebar = self.render_sidebar(p, cx);
         let header = self.render_header(p, avatar, cx);
+        let update_banner = self.render_update_banner(p, cx);
         let search_dropdown = self.render_search_dropdown(p, cx);
         let user_menu = self.render_user_menu(p, cx);
         let toast = self.render_toast(p, cx);
@@ -1631,6 +1803,7 @@ impl Render for MainShell {
                             .flex_col()
                             .bg(p.bg)
                             .child(header)
+                            .when_some(update_banner, |d, b| d.child(b))
                             .child(
                                 div()
                                     .flex_1()

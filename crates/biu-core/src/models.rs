@@ -124,6 +124,8 @@ pub struct AppSettings {
     pub desktop_lyrics_locked: bool,
     pub desktop_lyrics_font_size: u32,
     pub desktop_lyrics_style: DesktopLyricsStyle,
+    pub auto_check_update: bool,
+    pub update_channel: String,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -166,6 +168,8 @@ impl Default for AppSettings {
             desktop_lyrics_locked: true,
             desktop_lyrics_font_size: 36,
             desktop_lyrics_style: DesktopLyricsStyle::default(),
+            auto_check_update: true,
+            update_channel: "stable".into(),
             extra: Map::new(),
         }
     }
@@ -286,6 +290,8 @@ impl<'de> Deserialize<'de> for AppSettings {
             &mut settings.desktop_lyrics_font_size,
         );
         fields.read("desktopLyricsStyle", &mut settings.desktop_lyrics_style);
+        fields.read("autoCheckUpdate", &mut settings.auto_check_update);
+        fields.read("updateChannel", &mut settings.update_channel);
         settings.extra = fields.0;
         Ok(settings)
     }

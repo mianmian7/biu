@@ -1,5 +1,6 @@
 use super::*;
 use crate::desktop_lyrics::open_or_toggle_desktop_lyrics;
+use crate::state::UpdateState;
 use crate::theme::parse_hex_hsla;
 use crate::widgets::section_header;
 use biu_core::{AppSettings, AudioQuality, ProxySettings};
@@ -774,6 +775,92 @@ impl PagesHost {
             )
         };
 
+        let update_status_desc = match &state.update_state {
+            UpdateState::Idle => format!(
+                "当前版本 Biu v{} ({}) · 原生 Rust GPUI",
+                crate::APP_VERSION,
+                crate::BUILD_COMMIT
+            ),
+            UpdateState::Checking => "正在连接 GitHub Releases 检查更新…".into(),
+            UpdateState::UpToDate => format!(
+                "已是最新版本（Biu v{} · {}）",
+                crate::APP_VERSION,
+                crate::BUILD_COMMIT
+            ),
+            UpdateState::Available(info) => format!(
+                "发现新版本 v{}（{}）· 点击一键下载校验并重启",
+                info.version,
+                info.channel.label()
+            ),
+            UpdateState::Downloading {
+                info,
+                downloaded,
+                total,
+            } => {
+                let pct = total
+                    .filter(|t| *t > 0)
+                    .map(|t| {
+                        format!(
+                            "{:.0}%",
+                            (*downloaded as f64 / t as f64 * 100.0).clamp(0.0, 100.0)
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        format!("{:.1} MB", *downloaded as f64 / (1024.0 * 1024.0))
+                    });
+                format!("正在下载 Biu v{} ({pct})…", info.version)
+            }
+            UpdateState::Installing(info) => {
+                format!("正在安装 Biu v{} 并自动重启…", info.version)
+            }
+            UpdateState::Error(err) => format!("检查更新失败：{err}"),
+        };
+
+        let update_action = match &state.update_state {
+            UpdateState::Available(_) => primary_button(
+                "settings-update-install",
+                IconName::Download,
+                "一键更新并重启",
+                p,
+            )
+            .on_click({
+                let st = entity.clone();
+                move |_, _, cx| st.update(cx, |s, cx| s.download_and_install_update(cx))
+            })
+            .into_any_element(),
+            UpdateState::Checking
+            | UpdateState::Downloading { .. }
+            | UpdateState::Installing(_) => button("settings-update-busy", "处理中…", p)
+                .text_color(p.text_dim)
+                .into_any_element(),
+            _ => button("settings-update-check", "检查更新", p)
+                .on_click({
+                    let st = entity.clone();
+                    move |_, _, cx| st.update(cx, |s, cx| s.check_for_updates(false, cx))
+                })
+                .into_any_element(),
+        };
+
+        let updates = group("关于与无缝更新", p)
+            .child(setting_row("应用版本", update_status_desc, p).child(update_action))
+            .child(options(
+                entity,
+                "更新通道",
+                "正式版跟随 Release 标签；抢鲜版跟随 master 每次提交自动构建",
+                s.update_channel.as_str(),
+                &[("stable", "正式版 (Stable)"), ("nightly", "抢鲜版 (Nightly)")],
+                p,
+                |s, value| s.update_channel = value.into(),
+            ))
+            .child(toggle(
+                entity,
+                "启动时自动检查更新",
+                "启动 3 秒后静默检查新版本，发现后在顶部轻提示",
+                s.auto_check_update,
+                p,
+                |s, value| s.auto_check_update = value,
+            ));
+
         page("设置")
             .max_w(px(860.0))
             .child(appearance)
@@ -783,6 +870,7 @@ impl PagesHost {
             .child(local)
             .child(proxy)
             .child(backup)
+            .child(updates)
             .child(account)
     }
 }

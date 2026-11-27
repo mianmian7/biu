@@ -5,10 +5,9 @@ members = [
     "crates/biu-audio",
     "crates/biu-gpui",
 ]
-exclude = ["src-tauri"]
 
 [workspace.package]
-version = "2.1.0-gpui"
+version = "2.1.0"
 edition = "2024"
 license = "MIT"
 

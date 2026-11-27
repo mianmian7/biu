@@ -9,5 +9,6 @@ pub mod lyrics;
 pub mod media_cache;
 pub mod models;
 pub mod store;
+pub mod updater;
 
 pub use models::*;

@@ -19,8 +19,10 @@ use gpui_kit::*;
 use std::borrow::Cow;
 use std::sync::Arc;
 
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const BUILD_COMMIT: &str = env!("BIU_BUILD_COMMIT");
 pub const BIU_LOGO_SVG: &str = "icons/biu-logo.svg";
-const BIU_LOGO_BYTES: &[u8] = include_bytes!("../../../src/assets/icons/logo.svg");
+const BIU_LOGO_BYTES: &[u8] = include_bytes!("../../../assets/icons/logo.svg");
 
 struct BiuAssets;
 
@@ -67,7 +69,10 @@ fn main() {
 
         let state = cx.new(|cx| AppState::new(services.clone(), cx));
         cx.set_global(GlobalAppState(state.clone()));
-        state.update(cx, |s, cx| s.refresh_user_and_folders(cx));
+        state.update(cx, |s, cx| {
+            s.refresh_user_and_folders(cx);
+            s.schedule_startup_update_check(cx);
+        });
 
         system::observe_window_closures(state.clone(), cx);
         system::init_tray_and_hotkeys(state.clone(), cx);

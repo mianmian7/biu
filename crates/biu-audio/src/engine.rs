@@ -929,6 +929,13 @@ impl Control {
             secs
         };
         match (&self.worker, self.shared.state()) {
+            (Some(_), PlaybackState::Loading | PlaybackState::Playing | PlaybackState::Paused)
+                if self.source.as_ref().is_some_and(|s| s.is_growing()) =>
+            {
+                // A growing-file worker may be blocked waiting for bytes at an earlier far-ahead
+                // seek; cancel and restart it so the new target takes effect immediately.
+                self.start_track(secs, self.want_playing);
+            }
             (Some(w), PlaybackState::Loading | PlaybackState::Playing | PlaybackState::Paused) => {
                 let epoch = self.shared.ring.reset(secs);
                 let _ = w.tx.send(WorkerCmd::Seek { secs, epoch });
@@ -1752,5 +1759,33 @@ mod tests {
         while let Ok(ev) = rx.try_recv() {
             assert!(!matches!(ev, AudioEvent::TrackEnded { .. }));
         }
+    }
+
+    #[test]
+    fn seeking_back_preempts_blocked_forward_seek_on_growing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.part");
+        let wav = sine_wav(44_100, 2, 44_100 * 10, 440.0);
+        // Only first ~1 s downloaded; bytes at 8 s never arrive (idle timeout is 30 s).
+        std::fs::write(&path, &wav[..wav.len() / 10]).unwrap();
+        let src = AudioSource::streaming_file(&path, Some(wav.len() as u64));
+        let e = null_engine();
+        e.play(src, 0.0);
+        wait_for(&e, Duration::from_secs(5), |s| {
+            s.state == PlaybackState::Playing
+        });
+        // Seek far past the downloaded range; the worker blocks waiting for future bytes.
+        e.seek(8.0);
+        std::thread::sleep(Duration::from_millis(80));
+        // Seeking back into the downloaded range must preempt the blocked worker promptly.
+        let started = Instant::now();
+        e.seek(0.2);
+        wait_for(&e, Duration::from_secs(2), |s| {
+            s.state == PlaybackState::Playing && s.position_secs < 1.0
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "seek-back hung behind stalled forward seek"
+        );
     }
 }

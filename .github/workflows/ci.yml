@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: ["feat/**"]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "screenshots/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Clippy & Tests (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-15
+          - name: linux-x64
+            os: ubuntu-24.04
+          - name: windows-x64
+            os: windows-latest
+
+    env:
+      CI: "true"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config \
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libgtk-3-dev \
+            libssl-dev libvulkan-dev libwayland-dev libxcb1-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev
+
+      - name: Setup Rust stable
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: biu-ci-${{ matrix.name }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Workspace tests
+        run: cargo test --workspace --locked

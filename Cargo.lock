@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "biu-audio"
-version = "2.1.0-gpui"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "biu-core",
@@ -726,7 +726,7 @@ dependencies = [
 
 [[package]]
 name = "biu-core"
-version = "2.1.0-gpui"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "cookie_store 0.21.1",
@@ -750,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "biu-gpui"
-version = "2.1.0-gpui"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "biu-audio",

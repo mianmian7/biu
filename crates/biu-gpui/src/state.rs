@@ -14,6 +14,9 @@ use biu_core::lyrics::matcher::{
 use biu_core::lyrics::{load_cached_lyrics, save_cached_lyrics, CachedLyrics, LyricsClient};
 use biu_core::media_cache::{MediaCache, PreparedAudio};
 use biu_core::store::Store;
+use biu_core::updater::{
+    UpdateChannel, UpdateCheckResult, UpdateInfo, UpdaterClient, install_and_relaunch,
+};
 use biu_core::{
     AppSettings, FavFolder, LyricsCandidate, LyricsData, MediaPage, PlayMode, TrackItem,
     TrackSource, UserInfo,
@@ -73,6 +76,22 @@ pub struct ToastMessage {
     pub expires_at: Instant,
 }
 
+#[derive(Debug, Clone, Default)]
+pub enum UpdateState {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    Available(Box<UpdateInfo>),
+    Downloading {
+        info: Box<UpdateInfo>,
+        downloaded: u64,
+        total: Option<u64>,
+    },
+    Installing(Box<UpdateInfo>),
+    Error(String),
+}
+
 /// Shared background services (pure Rust, zero UI coupling).
 pub struct Services {
     pub rt: tokio::runtime::Runtime,
@@ -81,6 +100,7 @@ pub struct Services {
     pub media_cache: Arc<MediaCache>,
     pub image_cache: Arc<ImageCache>,
     pub lyrics: Arc<LyricsClient>,
+    pub updater: Arc<UpdaterClient>,
     pub downloads: Arc<DownloadManager>,
     pub audio: AudioEngine,
     pub media_controls: MediaControlsBridge,
@@ -104,6 +124,7 @@ impl Services {
         let image_cache = Arc::new(ImageCache::new(cache_root.join("image-cache"))?);
         let bili = Arc::new(BiliClient::open(&store)?);
         let lyrics = Arc::new(LyricsClient::new()?);
+        let updater = Arc::new(UpdaterClient::new()?);
         let downloads = DownloadManager::open(store.clone(), bili.clone())?;
         let audio = AudioEngine::new();
 
@@ -122,6 +143,7 @@ impl Services {
             media_cache,
             image_cache,
             lyrics,
+            updater,
             downloads,
             audio,
             media_controls,
@@ -163,6 +185,8 @@ pub struct AppState {
     pub collected_folders: Vec<FavFolder>,
     pub search_history: Vec<String>,
     pub toast: Option<ToastMessage>,
+    pub update_state: UpdateState,
+    pub update_banner_dismissed: bool,
 
     // Playback & queue
     pub queue: PlayQueue,
@@ -178,6 +202,8 @@ pub struct AppState {
     pub resolve_request_id: u64,
     pub audio_generation: u64,
     pub active_prepared: Option<PreparedAudio>,
+    active_resolve_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    active_resolve_abort: Option<tokio::task::AbortHandle>,
     pub current_track_audio_path: Option<PathBuf>,
     last_reported_heartbeat_track: Option<String>,
     last_mc_state: Option<PlaybackState>,
@@ -227,6 +253,8 @@ impl AppState {
             collected_folders: Vec::new(),
             search_history,
             toast: None,
+            update_state: UpdateState::Idle,
+            update_banner_dismissed: false,
             queue,
             snapshot,
             spectrum: [0.0; SPECTRUM_BARS],
@@ -240,6 +268,8 @@ impl AppState {
             resolve_request_id: 0,
             audio_generation: 0,
             active_prepared: None,
+            active_resolve_cancel: None,
+            active_resolve_abort: None,
             current_track_audio_path: None,
             last_reported_heartbeat_track: None,
             last_mc_state: None,
@@ -670,14 +700,25 @@ impl AppState {
         self.notify_ui(cx);
     }
 
+    fn cancel_active_resolve(&mut self) {
+        if let Some(cancel) = self.active_resolve_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
+        if let Some(handle) = self.active_resolve_abort.take() {
+            handle.abort();
+        }
+    }
+
     fn invalidate_active_playback(&mut self) {
+        self.cancel_active_resolve();
         self.resolve_request_id = self.resolve_request_id.wrapping_add(1);
         self.audio_generation = 0;
+        self.services.audio.stop();
         if let Some(prev) = self.active_prepared.take() {
             prev.abort();
         }
+        self.snapshot = self.services.audio.snapshot();
         self.current_track_audio_path = None;
-        self.services.audio.stop();
         self.services.media_controls.set_stopped();
         self.last_mc_state = Some(PlaybackState::Stopped);
         self.lyrics = LyricsData::default();
@@ -686,6 +727,223 @@ impl AppState {
         self.current_video_pages.clear();
         self.current_audio_badge = None;
         self.current_track_liked = false;
+    }
+
+    pub fn dismiss_update_banner(&mut self, cx: &mut Context<Self>) {
+        self.update_banner_dismissed = true;
+        self.notify_ui(cx);
+    }
+
+    pub fn schedule_startup_update_check(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.auto_check_update {
+            return;
+        }
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.background_executor().timer(Duration::from_secs(3)).await;
+            let _ = this.update(cx, |state, cx| {
+                if state.settings.auto_check_update {
+                    state.check_for_updates(true, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn check_for_updates(&mut self, silent: bool, cx: &mut Context<Self>) {
+        if matches!(
+            self.update_state,
+            UpdateState::Checking
+                | UpdateState::Downloading { .. }
+                | UpdateState::Installing(_)
+        ) {
+            return;
+        }
+        let channel = UpdateChannel::from_str_lossy(&self.settings.update_channel);
+        self.update_state = UpdateState::Checking;
+        self.update_banner_dismissed = false;
+        self.notify_ui(cx);
+
+        let services = self.services.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let res = services
+                .rt
+                .spawn({
+                    let updater = services.updater.clone();
+                    async move {
+                        updater
+                            .check(crate::APP_VERSION, crate::BUILD_COMMIT, channel)
+                            .await
+                    }
+                })
+                .await;
+
+            let _ = this.update(cx, |state, cx| match res {
+                Ok(Ok(UpdateCheckResult::Available(info))) => {
+                    let ver = info.version.clone();
+                    let label = info.channel.label();
+                    state.update_state = UpdateState::Available(info);
+                    if !silent {
+                        state.show_toast(format!("发现新版本 v{ver}（{label}）"), false, cx);
+                    }
+                    state.notify_ui(cx);
+                }
+                Ok(Ok(UpdateCheckResult::UpToDate)) => {
+                    state.update_state = UpdateState::UpToDate;
+                    if !silent {
+                        state.show_toast("当前已是最新版本", false, cx);
+                    }
+                    state.notify_ui(cx);
+                }
+                Ok(Err(err)) => {
+                    let msg = err.to_string();
+                    state.update_state = if silent {
+                        UpdateState::Idle
+                    } else {
+                        UpdateState::Error(msg.clone())
+                    };
+                    if !silent {
+                        state.show_toast(format!("检查更新失败: {msg}"), true, cx);
+                    }
+                    state.notify_ui(cx);
+                }
+                Err(err) => {
+                    state.update_state = if silent {
+                        UpdateState::Idle
+                    } else {
+                        UpdateState::Error(err.to_string())
+                    };
+                    if !silent {
+                        state.show_toast(format!("检查更新异常: {err}"), true, cx);
+                    }
+                    state.notify_ui(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn download_and_install_update(&mut self, cx: &mut Context<Self>) {
+        let info = match &self.update_state {
+            UpdateState::Available(info) => info.clone(),
+            _ => return,
+        };
+        self.update_banner_dismissed = false;
+        self.update_state = UpdateState::Downloading {
+            info: info.clone(),
+            downloaded: 0,
+            total: info.asset.size,
+        };
+        self.show_toast(format!("正在后台下载 Biu v{}…", info.version), false, cx);
+        self.notify_ui(cx);
+
+        let services = self.services.clone();
+        let staging_dir = dirs::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("com.biu.wood3n")
+            .join("updates");
+
+        let progress_downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let progress_total = Arc::new(std::sync::atomic::AtomicU64::new(
+            info.asset.size.unwrap_or(0),
+        ));
+        let progress_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let pd_poll = progress_downloaded.clone();
+        let pt_poll = progress_total.clone();
+        let done_poll = progress_done.clone();
+        let info_poll = info.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            while !done_poll.load(std::sync::atomic::Ordering::Acquire) {
+                cx.background_executor()
+                    .timer(Duration::from_millis(120))
+                    .await;
+                let dl = pd_poll.load(std::sync::atomic::Ordering::Acquire);
+                let tot = pt_poll.load(std::sync::atomic::Ordering::Acquire);
+                let ok = this.update(cx, |state, cx| {
+                    if matches!(state.update_state, UpdateState::Downloading { .. }) {
+                        state.update_state = UpdateState::Downloading {
+                            info: info_poll.clone(),
+                            downloaded: dl,
+                            total: (tot > 0).then_some(tot),
+                        };
+                        state.notify_ui(cx);
+                    }
+                });
+                if ok.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let pd = progress_downloaded.clone();
+            let pt = progress_total.clone();
+            let dl_res = services
+                .rt
+                .spawn({
+                    let updater = services.updater.clone();
+                    let info_dl = info.clone();
+                    async move {
+                        updater
+                            .download_update(&info_dl, &staging_dir, move |downloaded, total| {
+                                pd.store(downloaded, std::sync::atomic::Ordering::Release);
+                                if let Some(t) = total {
+                                    pt.store(t, std::sync::atomic::Ordering::Release);
+                                }
+                            })
+                            .await
+                    }
+                })
+                .await;
+            progress_done.store(true, std::sync::atomic::Ordering::Release);
+
+            match dl_res {
+                Ok(Ok(archive_path)) => {
+                    let _ = this.update(cx, |state, cx| {
+                        state.update_state = UpdateState::Installing(info.clone());
+                        state.show_toast("校验通过，正在自动替换并重启…", false, cx);
+                        state.notify_ui(cx);
+                    });
+                    let install_res = services
+                        .rt
+                        .spawn_blocking(move || install_and_relaunch(&archive_path))
+                        .await;
+                    let _ = this.update(cx, |state, cx| match install_res {
+                        Ok(Ok(())) => {
+                            cx.quit();
+                        }
+                        Ok(Err(err)) => {
+                            let msg = err.to_string();
+                            state.update_state = UpdateState::Available(info);
+                            state.show_toast(format!("安装更新失败: {msg}"), true, cx);
+                            state.notify_ui(cx);
+                        }
+                        Err(err) => {
+                            state.update_state = UpdateState::Available(info);
+                            state.show_toast(format!("安装任务异常: {err}"), true, cx);
+                            state.notify_ui(cx);
+                        }
+                    });
+                }
+                Ok(Err(err)) => {
+                    let _ = this.update(cx, |state, cx| {
+                        let msg = err.to_string();
+                        state.update_state = UpdateState::Available(info);
+                        state.show_toast(format!("下载更新失败: {msg}"), true, cx);
+                        state.notify_ui(cx);
+                    });
+                }
+                Err(err) => {
+                    let _ = this.update(cx, |state, cx| {
+                        state.update_state = UpdateState::Available(info);
+                        state.show_toast(format!("下载任务异常: {err}"), true, cx);
+                        state.notify_ui(cx);
+                    });
+                }
+            }
+        })
+        .detach();
     }
 
     pub fn open_track_in_bilibili(&mut self, track: &TrackItem, cx: &mut Context<Self>) {
@@ -926,9 +1184,16 @@ impl AppState {
     }
 
     pub fn start_playback_for_track(&mut self, track: TrackItem, cx: &mut Context<Self>) {
+        // Cancel any in-flight URL resolution and stop the previous audio stream BEFORE
+        // aborting the previous cache fill so stale streams never starve permits or emit
+        // spurious "streaming download aborted" errors.
+        self.cancel_active_resolve();
+        self.audio_generation = 0;
+        self.services.audio.stop();
         if let Some(prev) = self.active_prepared.take() {
             prev.abort();
         }
+        self.snapshot = self.services.audio.snapshot();
         self.resolve_request_id = self.resolve_request_id.wrapping_add(1);
         let req_id = self.resolve_request_id;
         self.current_track_audio_path = None;
@@ -1001,16 +1266,20 @@ impl AppState {
         let services = self.services.clone();
         let quality = self.settings.audio_quality;
         let report_history = self.settings.report_play_history;
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let resolve_handle = services.rt.spawn({
+            let services = services.clone();
+            let track = track.clone();
+            let cancel = cancel.clone();
+            async move {
+                resolve_audio_source(&services, &track, quality, report_history, cancel).await
+            }
+        });
+        self.active_resolve_cancel = Some(cancel.clone());
+        self.active_resolve_abort = Some(resolve_handle.abort_handle());
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let resolve_res = services
-                .rt
-                .spawn({
-                    let services = services.clone();
-                    let track = track.clone();
-                    async move { resolve_audio_source(&services, &track, quality, report_history).await }
-                })
-                .await;
+            let resolve_res = resolve_handle.await;
 
             let _ = this.update(cx, |state, cx| {
                 if state.resolve_request_id != req_id {
@@ -1019,6 +1288,8 @@ impl AppState {
                     }
                     return;
                 }
+                state.active_resolve_cancel = None;
+                state.active_resolve_abort = None;
                 match resolve_res {
                     Ok(Ok((source, prepared, file_path, audio_badge))) => {
                         state.active_prepared = prepared;
@@ -1030,8 +1301,15 @@ impl AppState {
                         state.update_os_media_metadata(&track);
                     }
                     Ok(Err(err)) => {
-                        state.show_toast(format!("无法播放《{}》: {err}", track.title), true, cx);
+                        if !cancel.load(std::sync::atomic::Ordering::Acquire) {
+                            state.show_toast(
+                                format!("无法播放《{}》: {err}", track.title),
+                                true,
+                                cx,
+                            );
+                        }
                     }
+                    Err(err) if err.is_cancelled() => {}
                     Err(err) => {
                         state.show_toast(format!("播放任务异常: {err}"), true, cx);
                     }
@@ -1498,7 +1776,8 @@ impl AppState {
                         state.next_track(true, cx);
                     }
                     if let Some((err_gen, msg)) = err_msg
-                        && (state.audio_generation == 0 || err_gen == state.audio_generation)
+                        && state.audio_generation > 0
+                        && err_gen == state.audio_generation
                     {
                         state.show_toast(format!("播放出错: {msg}"), true, cx);
                     }
@@ -1646,7 +1925,12 @@ async fn resolve_audio_source(
     track: &TrackItem,
     quality: biu_core::AudioQuality,
     report_history: bool,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<(AudioSource, Option<PreparedAudio>, Option<PathBuf>, Option<String>)> {
+    let is_cancelled = || cancel.load(std::sync::atomic::Ordering::Acquire);
+    if is_cancelled() {
+        anyhow::bail!("playback resolve cancelled");
+    }
     match &track.source {
         TrackSource::LocalFile { path, .. } => {
             let p = PathBuf::from(path);
@@ -1657,16 +1941,29 @@ async fn resolve_audio_source(
         }
         TrackSource::BiliAudio { sid } => {
             let info = services.bili.get_audio_playurl(*sid).await?;
+            if is_cancelled() {
+                anyhow::bail!("playback resolve cancelled");
+            }
             let badge = info
                 .streams
                 .first()
                 .and_then(|s| (s.id == 3 || s.codecs == "flac").then(|| "无损".to_string()));
-            let url = info
-                .urls
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("未获取到音频直链"))?;
-            let (src, prep, path) = prepare_stream_from_url(services, url).await?;
-            Ok((src, prep, path, badge))
+            let mut last_err = None;
+            for url in &info.urls {
+                if is_cancelled() {
+                    anyhow::bail!("playback resolve cancelled");
+                }
+                match prepare_stream_from_url(services, url, &cancel).await {
+                    Ok((src, prep, path)) => return Ok((src, prep, path, badge)),
+                    Err(e) => {
+                        if biu_core::media_cache::is_oversized_error(&e) {
+                            return Err(e);
+                        }
+                        last_err = Some(e);
+                    }
+                }
+            }
+            Err(last_err.unwrap_or_else(|| anyhow::anyhow!("未获取到音频直链")))
         }
         TrackSource::BiliVideo { bvid, aid, cid, .. } => {
             let (resolved_aid, resolved_cid) = if *cid > 0 {
@@ -1688,6 +1985,9 @@ async fn resolve_audio_source(
                 };
                 (resolved_aid, first_cid)
             };
+            if is_cancelled() {
+                anyhow::bail!("playback resolve cancelled");
+            }
             if resolved_cid == 0 {
                 anyhow::bail!("无法解析视频分 P cid");
             }
@@ -1701,26 +2001,46 @@ async fn resolve_audio_source(
             let mut last_err = None;
             let mut tried = std::collections::HashSet::new();
             for stream in &info.streams {
+                if is_cancelled() {
+                    anyhow::bail!("playback resolve cancelled");
+                }
                 let badge = match stream.id {
                     30251 => Some("无损".to_string()),
                     30250 => Some("杜比".to_string()),
                     _ => None,
                 };
                 for url in &stream.urls {
+                    if is_cancelled() {
+                        anyhow::bail!("playback resolve cancelled");
+                    }
                     if !tried.insert(url.as_str().to_string()) {
                         continue;
                     }
-                    match prepare_stream_from_url(services, url).await {
+                    match prepare_stream_from_url(services, url, &cancel).await {
                         Ok((src, prep, path)) => return Ok((src, prep, path, badge)),
-                        Err(e) => last_err = Some(e),
+                        Err(e) => {
+                            let oversized = biu_core::media_cache::is_oversized_error(&e);
+                            last_err = Some(e);
+                            if oversized {
+                                // All backup URLs of this stream point to the same oversized file
+                                // (e.g. a 2-hour Hi-Res FLAC > 1 GiB); fall back to the next stream immediately.
+                                for skipped in &stream.urls {
+                                    tried.insert(skipped.as_str().to_string());
+                                }
+                                break;
+                            }
+                        }
                     }
                 }
             }
             for url in &info.urls {
+                if is_cancelled() {
+                    anyhow::bail!("playback resolve cancelled");
+                }
                 if !tried.insert(url.as_str().to_string()) {
                     continue;
                 }
-                match prepare_stream_from_url(services, url).await {
+                match prepare_stream_from_url(services, url, &cancel).await {
                     Ok((src, prep, path)) => return Ok((src, prep, path, None)),
                     Err(e) => last_err = Some(e),
                 }
@@ -1733,13 +2053,17 @@ async fn resolve_audio_source(
 async fn prepare_stream_from_url(
     services: &Services,
     url: &url::Url,
+    cancel: &Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<(AudioSource, Option<PreparedAudio>, Option<PathBuf>)> {
     let bili = services.bili.clone();
     let prepared = services
         .media_cache
-        .prepare_audio_file(url.clone(), services.bili.media_client(), move |u| {
-            bili.is_media_url_allowed(u)
-        })
+        .prepare_audio_file_cancellable(
+            url.clone(),
+            services.bili.media_client(),
+            move |u| bili.is_media_url_allowed(u),
+            Some(cancel.clone()),
+        )
         .await?;
 
     match &prepared {

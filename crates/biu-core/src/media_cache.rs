@@ -8,17 +8,27 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::{Duration, SystemTime};
 use tokio::{
     io::AsyncWriteExt,
-    sync::{Mutex as AsyncMutex, Semaphore, watch},
+    sync::{Mutex as AsyncMutex, Notify, Semaphore, watch},
 };
 use url::Url;
 
 pub const AUDIO_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+pub const AUDIO_EXCEEDS_CACHE_LIMIT_ERR: &str = "audio exceeds disk cache limit";
+const MAX_CONCURRENT_FILLS: usize = 4;
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Whether an error from [`MediaCache`] indicates the stream itself exceeds the disk cache limit
+/// (so retrying mirror URLs for the same stream will not help).
+pub fn is_oversized_error(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains(AUDIO_EXCEEDS_CACHE_LIMIT_ERR))
+}
 
 #[derive(Debug, Clone)]
 pub enum PreparedAudio {
@@ -169,7 +179,19 @@ struct Metadata {
 struct FillState {
     done: Arc<AtomicBool>,
     aborted: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
+    waiters: Arc<AtomicUsize>,
+    handed_out: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
+}
+
+impl FillState {
+    fn abort(&self) {
+        if !self.done.load(Ordering::Acquire) {
+            self.aborted.store(true, Ordering::Release);
+            self.cancel_notify.notify_waiters();
+        }
+    }
 }
 
 type ActiveFill = (FillState, watch::Receiver<Option<PreparedAudio>>);
@@ -205,6 +227,47 @@ impl Drop for FillGuard {
     }
 }
 
+/// Ensures an abandoned or cancelled caller waiting for the first chunk aborts an orphaned fill
+/// so its download permit is released immediately instead of starving subsequent playback.
+struct WaiterGuard {
+    cache: Arc<MediaCache>,
+    state: FillState,
+    active: bool,
+}
+
+impl WaiterGuard {
+    fn new(cache: Arc<MediaCache>, state: FillState) -> Self {
+        Self {
+            cache,
+            state,
+            active: true,
+        }
+    }
+
+    fn mark_handed_out(mut self) {
+        let _fills = self.cache.fills.lock().unwrap();
+        self.state.handed_out.store(true, Ordering::Release);
+        self.state.waiters.fetch_sub(1, Ordering::AcqRel);
+        self.active = false;
+    }
+}
+
+impl Drop for WaiterGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let _fills = self.cache.fills.lock().unwrap();
+        let remaining = self.state.waiters.fetch_sub(1, Ordering::AcqRel) - 1;
+        if remaining == 0
+            && !self.state.handed_out.load(Ordering::Acquire)
+            && !self.state.done.load(Ordering::Acquire)
+        {
+            self.state.abort();
+        }
+    }
+}
+
 impl MediaCache {
     pub fn new(directory: impl Into<PathBuf>) -> io::Result<Self> {
         Self::with_limit(directory, AUDIO_CACHE_MAX_BYTES)
@@ -213,12 +276,19 @@ impl MediaCache {
     pub fn with_limit(directory: impl Into<PathBuf>, max_bytes: u64) -> io::Result<Self> {
         let directory = directory.into();
         std::fs::create_dir_all(&directory)?;
+        // Remove orphaned staging files left behind by a previous crash or forced exit.
+        for entry in std::fs::read_dir(&directory)?.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("part") {
+                let _ = std::fs::remove_file(path);
+            }
+        }
         Ok(Self {
             directory,
             max_bytes,
             storage: AsyncMutex::new(()),
             fills: Mutex::new(HashMap::new()),
-            permits: Semaphore::new(2),
+            permits: Semaphore::new(MAX_CONCURRENT_FILLS),
         })
     }
 
@@ -277,9 +347,29 @@ impl MediaCache {
         media_client: reqwest::Client,
         allowed_check: impl Fn(&Url) -> bool + Send,
     ) -> Result<PreparedAudio> {
+        self.prepare_audio_file_cancellable(url, media_client, allowed_check, None)
+            .await
+    }
+
+    /// Like [`prepare_audio_file`](Self::prepare_audio_file), but stops waiting promptly when
+    /// `cancel` is set (or when the future is dropped) and aborts an orphaned background fill so
+    /// its download permit is released immediately.
+    pub async fn prepare_audio_file_cancellable(
+        self: &Arc<Self>,
+        url: Url,
+        media_client: reqwest::Client,
+        allowed_check: impl Fn(&Url) -> bool + Send,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<PreparedAudio> {
+        if cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
+            anyhow::bail!("audio cache fill cancelled");
+        }
         ensure!(allowed_check(&url), "audio source is not allowlisted");
         let key = Self::key(&url);
-        let (state, mut receiver) = loop {
+        let (state, mut receiver, waiter) = loop {
+            if cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
+                anyhow::bail!("audio cache fill cancelled");
+            }
             let mut cancelled = {
                 let _storage = self.storage.lock().await;
                 if let Some(ready) = self.lookup(&key).await {
@@ -288,13 +378,17 @@ impl MediaCache {
                 let mut fills = self.fills.lock().unwrap();
                 if let Some((state, receiver)) = fills.get(&key) {
                     if !state.aborted.load(Ordering::Acquire) {
-                        break (state.clone(), receiver.clone());
+                        state.waiters.fetch_add(1, Ordering::AcqRel);
+                        let waiter = WaiterGuard::new(self.clone(), state.clone());
+                        break (state.clone(), receiver.clone(), waiter);
                     }
                     receiver.clone()
                 } else {
                     let state = FillState::default();
+                    state.waiters.store(1, Ordering::Release);
                     let (sender, receiver) = watch::channel(None);
                     fills.insert(key.clone(), (state.clone(), receiver.clone()));
+                    let waiter = WaiterGuard::new(self.clone(), state.clone());
                     let guard = FillGuard {
                         cache: self.clone(),
                         key,
@@ -308,22 +402,32 @@ impl MediaCache {
                         guard.state.done.store(true, Ordering::Release);
                         drop(guard);
                     });
-                    break (state, receiver);
+                    break (state, receiver, waiter);
                 }
             };
             // Wait for the cancelled worker to release the shared staging paths.
-            while cancelled.changed().await.is_ok() {}
+            while until_cancelled(cancel.as_deref(), cancelled.changed())
+                .await?
+                .is_ok()
+            {}
         };
         loop {
+            if cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
+                anyhow::bail!("audio cache fill cancelled");
+            }
             if let Some(prepared) = receiver.borrow_and_update().clone() {
                 if state.done.load(Ordering::Acquire)
                     && let Some(err) = &*state.error.lock().unwrap()
                 {
                     anyhow::bail!("{err}");
                 }
+                waiter.mark_handed_out();
                 return Ok(prepared);
             }
-            if receiver.changed().await.is_err() {
+            if until_cancelled(cancel.as_deref(), receiver.changed())
+                .await?
+                .is_err()
+            {
                 let error = state
                     .error
                     .lock()
@@ -342,11 +446,17 @@ impl MediaCache {
         client: reqwest::Client,
         sender: &watch::Sender<Option<PreparedAudio>>,
     ) -> Result<()> {
-        let _permit = until_aborted(&guard.state.aborted, self.permits.acquire()).await??;
+        let _permit = until_aborted(
+            &guard.state.aborted,
+            &guard.state.cancel_notify,
+            self.permits.acquire(),
+        )
+        .await??;
         let response = until_aborted(
             &guard.state.aborted,
+            &guard.state.cancel_notify,
             tokio::time::timeout(
-                IDLE_TIMEOUT,
+                RESPONSE_TIMEOUT,
                 client
                     .get(url.clone())
                     .header("Referer", BILI_REFERER)
@@ -372,7 +482,7 @@ impl MediaCache {
         let expected = response.content_length();
         ensure!(
             expected.is_none_or(|len| len <= self.max_bytes),
-            "audio exceeds disk cache limit"
+            "{AUDIO_EXCEEDS_CACHE_LIMIT_ERR}"
         );
         let content_type = media_content_type(
             headers
@@ -390,6 +500,7 @@ impl MediaCache {
         let mut bytes = 0;
         while let Some(chunk) = until_aborted(
             &guard.state.aborted,
+            &guard.state.cancel_notify,
             tokio::time::timeout(IDLE_TIMEOUT, stream.next()),
         )
         .await??
@@ -405,6 +516,9 @@ impl MediaCache {
                 "audio length exceeds expected size"
             );
             file.write_all(&chunk).await?;
+            if guard.state.aborted.load(Ordering::Acquire) {
+                anyhow::bail!("audio cache fill cancelled");
+            }
             if first {
                 file.flush().await?;
                 sender.send_replace(Some(PreparedAudio::Streaming {
@@ -416,6 +530,10 @@ impl MediaCache {
                 }));
             }
         }
+        ensure!(
+            !guard.state.aborted.load(Ordering::Acquire),
+            "audio cache fill cancelled"
+        );
         ensure!(
             bytes > 0 && expected.is_none_or(|len| len == bytes),
             "audio response is empty or incomplete"
@@ -487,17 +605,46 @@ impl MediaCache {
     }
 }
 
-async fn until_aborted<T>(aborted: &AtomicBool, operation: impl Future<Output = T>) -> Result<T> {
+async fn until_aborted<T>(
+    aborted: &AtomicBool,
+    notify: &Notify,
+    operation: impl Future<Output = T>,
+) -> Result<T> {
     if aborted.load(Ordering::Acquire) {
         anyhow::bail!("audio cache fill cancelled");
     }
     tokio::select! {
-        result = operation => Ok(result),
+        biased;
         () = async {
             while !aborted.load(Ordering::Acquire) {
-                tokio::time::sleep(Duration::from_millis(40)).await;
+                tokio::select! {
+                    () = notify.notified() => {}
+                    () = tokio::time::sleep(Duration::from_millis(25)) => {}
+                }
             }
         } => anyhow::bail!("audio cache fill cancelled"),
+        result = operation => Ok(result),
+    }
+}
+
+async fn until_cancelled<T>(
+    cancel: Option<&AtomicBool>,
+    operation: impl Future<Output = T>,
+) -> Result<T> {
+    let Some(cancel) = cancel else {
+        return Ok(operation.await);
+    };
+    if cancel.load(Ordering::Acquire) {
+        anyhow::bail!("audio cache fill cancelled");
+    }
+    tokio::select! {
+        biased;
+        () = async {
+            while !cancel.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        } => anyhow::bail!("audio cache fill cancelled"),
+        result = operation => Ok(result),
     }
 }
 
@@ -765,6 +912,171 @@ mod tests {
         );
         cache.clear_cache().await?;
         assert_eq!(cache.cache_size_bytes().await?, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelling_stalled_prepares_releases_permits_for_next_track() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let cache = Arc::new(MediaCache::new(dir.path())?);
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        // Hold open connections for stalled tracks (never send headers), then serve the final track.
+        let server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            for _ in 0..(MAX_CONCURRENT_FILLS + 1) {
+                let (mut socket, _) = listener.accept().await?;
+                let mut req = Vec::new();
+                while !req.ends_with(b"\r\n\r\n") {
+                    req.push(socket.read_u8().await?);
+                }
+                let text = String::from_utf8_lossy(&req);
+                if text.starts_with("GET /ready.m4s ") {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Type: audio/mp4\r\nConnection: close\r\n\r\nabcdef",
+                        )
+                        .await?;
+                    break;
+                }
+                held.push(socket);
+            }
+            drop(held);
+            Ok::<_, io::Error>(())
+        });
+
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        // Saturate all download permits with stalled requests, then cancel them before first chunk.
+        let mut handles = Vec::new();
+        let mut cancels = Vec::new();
+        for i in 0..MAX_CONCURRENT_FILLS {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let cache = cache.clone();
+            let client = client.clone();
+            let url = Url::parse(&format!("http://{addr}/stalled-{i}.m4s"))?;
+            let c = cancel.clone();
+            handles.push(tokio::spawn(async move {
+                cache
+                    .prepare_audio_file_cancellable(url, client, |_| true, Some(c))
+                    .await
+            }));
+            cancels.push(cancel);
+        }
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        for c in cancels {
+            c.store(true, Ordering::Release);
+        }
+        for h in handles {
+            let res = tokio::time::timeout(Duration::from_secs(2), h).await??;
+            assert!(res.is_err());
+        }
+
+        // Subsequent track must acquire a permit and play immediately instead of starving.
+        let ready = tokio::time::timeout(
+            Duration::from_secs(2),
+            cache.prepare_audio_file(
+                Url::parse(&format!("http://{addr}/ready.m4s"))?,
+                client,
+                |_| true,
+            ),
+        )
+        .await??;
+        assert_eq!(read_audio(ready).await?, b"abcdef");
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oversized_stream_reports_oversized_error_and_cleans_part_on_startup() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let orphan = dir.path().join("orphan.part");
+        std::fs::write(&orphan, b"stale")?;
+        let cache = Arc::new(MediaCache::with_limit(dir.path(), 100)?);
+        assert!(!orphan.exists(), "startup should remove leftover .part files");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let url = Url::parse(&format!("http://{}/huge.m4s", listener.local_addr()?))?;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let mut req = Vec::new();
+            while !req.ends_with(b"\r\n\r\n") {
+                req.push(socket.read_u8().await?);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 500\r\nContent-Type: audio/mp4\r\nConnection: close\r\n\r\n",
+                )
+                .await?;
+            Ok::<_, io::Error>(())
+        });
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let err = cache
+            .prepare_audio_file(url, client, |_| true)
+            .await
+            .unwrap_err();
+        assert!(is_oversized_error(&err), "unexpected error: {err:#}");
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_stalled_prepare_future_releases_permits() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let cache = Arc::new(MediaCache::new(dir.path())?);
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            for _ in 0..(MAX_CONCURRENT_FILLS + 1) {
+                let (mut socket, _) = listener.accept().await?;
+                let mut req = Vec::new();
+                while !req.ends_with(b"\r\n\r\n") {
+                    req.push(socket.read_u8().await?);
+                }
+                let text = String::from_utf8_lossy(&req);
+                if text.starts_with("GET /ok.m4s ") {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Type: audio/mp4\r\nConnection: close\r\n\r\ntest",
+                        )
+                        .await?;
+                    break;
+                }
+                held.push(socket);
+            }
+            drop(held);
+            Ok::<_, io::Error>(())
+        });
+
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let mut handles = Vec::new();
+        for i in 0..MAX_CONCURRENT_FILLS {
+            let cache = cache.clone();
+            let client = client.clone();
+            let url = Url::parse(&format!("http://{addr}/drop-{i}.m4s"))?;
+            handles.push(tokio::spawn(async move {
+                cache.prepare_audio_file(url, client, |_| true).await
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        for h in &handles {
+            h.abort();
+        }
+        for h in handles {
+            let _ = h.await;
+        }
+
+        let ready = tokio::time::timeout(
+            Duration::from_secs(2),
+            cache.prepare_audio_file(
+                Url::parse(&format!("http://{addr}/ok.m4s"))?,
+                client,
+                |_| true,
+            ),
+        )
+        .await??;
+        assert_eq!(read_audio(ready).await?, b"test");
+        server.await??;
         Ok(())
     }
 }
