@@ -18,7 +18,7 @@ use tokio::io::{AsyncReadExt, BufReader};
 
 mod alignment;
 mod features;
-mod titles;
+pub(crate) mod titles;
 
 pub use alignment::{GlobalOffset, estimate_global_offset};
 pub use features::{AudioFeatures, Fft, SAMPLE_RATE, extract_features};
@@ -303,19 +303,45 @@ async fn search_candidates(
         .iter()
         .map(|query| client.search_netease(query, 10))
         .collect();
+    let qq_futs: Vec<_> = queries
+        .iter()
+        .take(3)
+        .map(|query| client.search_qq(query, 10))
+        .collect();
     let netease = stream::iter(netease_futs)
         .buffered(3)
         .collect::<Vec<_>>();
-    let (results, lrclib) = tokio::join!(netease, client.search_lrclib(&queries[0]));
+    let qq = stream::iter(qq_futs).buffered(3).collect::<Vec<_>>();
+    let (ne_results, qq_results, lrclib) =
+        tokio::join!(netease, qq, client.search_lrclib(&queries[0]));
     let mut seen = HashSet::new();
-    let mut candidates = results
+    let mut candidates = Vec::new();
+    for candidate in ne_results
         .into_iter()
+        .chain(qq_results)
         .filter_map(Result::ok)
         .flatten()
-        .filter(|candidate| seen.insert(candidate.id))
-        .collect::<Vec<_>>();
+    {
+        let key = (
+            candidate.provider,
+            candidate
+                .provider_key
+                .clone()
+                .unwrap_or_else(|| candidate.id.to_string()),
+        );
+        if seen.insert(key) {
+            candidates.push(candidate);
+        }
+    }
     match lrclib {
-        Ok(results) => candidates.extend(results),
+        Ok(results) => {
+            for candidate in results {
+                let key = (candidate.provider, candidate.id.to_string());
+                if seen.insert(key) {
+                    candidates.push(candidate);
+                }
+            }
+        }
         Err(err) if candidates.is_empty() => return Err(err),
         Err(err) => log::debug!("LRCLIB search failed: {err}"),
     }

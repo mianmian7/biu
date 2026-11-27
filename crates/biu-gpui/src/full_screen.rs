@@ -7,7 +7,7 @@ use crate::player_bar::{
     TooltipExt, effective_duration, icon, icon_button, is_playing, play_button, play_mode_icon,
     play_mode_short_label, queue_button, rate_chip, seek_slider, time_label, volume_slider_with,
 };
-use crate::state::{ActiveModal, AppState};
+use crate::state::{ActiveModal, AppState, lyrics_source_display};
 use crate::theme::BiuPalette;
 use crate::widgets::cover_box;
 use biu_audio::SPECTRUM_BARS;
@@ -184,7 +184,7 @@ impl FullScreenPlayer {
         let auto_running = s.auto_lyrics_running;
         let font = s.settings.lyrics_font_size.clamp(14, 40) as f32;
         let offset = s.lyrics_offset_secs;
-        let pos = (s.snapshot.position_secs + offset).max(0.0);
+        let pos = (s.snapshot.position_secs - offset).max(0.0);
         let active = active_line_index(&lines, pos);
         let show_translation = self.show_translation;
         let show_romaji = self.show_romaji;
@@ -192,6 +192,7 @@ impl FullScreenPlayer {
         if lines.is_empty() {
             let st = self.state.clone();
             let st2 = self.state.clone();
+            let st3 = self.state.clone();
             return div()
                 .size_full()
                 .flex()
@@ -206,7 +207,7 @@ impl FullScreenPlayer {
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(p.text_muted)
                         .child(if loading {
-                            "正在查找歌词…"
+                            "正在多源智能匹配歌词…"
                         } else {
                             "暂无歌词"
                         }),
@@ -216,13 +217,25 @@ impl FullScreenPlayer {
                         div()
                             .text_sm()
                             .text_color(p.text_dim)
-                            .child("可以手动搜索，或用声纹自动对齐"),
+                            .child("支持网易云 / QQ音乐 / LRCLIB / B站字幕与声纹对齐"),
                     )
                     .child(
                         div()
                             .flex()
                             .gap_2()
                             .mt_2()
+                            .child(
+                                pill_button(
+                                    "fs-empty-rematch",
+                                    IconName::RefreshCw,
+                                    "智能重匹配",
+                                    p,
+                                    false,
+                                )
+                                .on_click(move |_, _, cx| {
+                                    st3.update(cx, |s, cx| s.rematch_lyrics(cx))
+                                }),
+                            )
                             .child(
                                 pill_button(
                                     "fs-empty-search",
@@ -439,6 +452,8 @@ impl Render for FullScreenPlayer {
         let lyrics_open = s.windows.desktop_lyrics.is_some();
         let lyrics_offset = s.lyrics_offset_secs;
         let has_lyrics = !s.lyrics.lines.is_empty();
+        let lyrics_source_tag = has_lyrics
+            .then(|| lyrics_source_display(s.lyrics.source.as_deref()));
         let pages_count = s.current_video_pages.len();
         let liked = s.current_track_liked;
         let logged_in = s.user.is_some();
@@ -516,6 +531,22 @@ impl Render for FullScreenPlayer {
                             st.update(cx, |s, cx| s.open_modal(ActiveModal::PageList, cx))
                         }
                     }),
+                )
+            })
+            .when_some(lyrics_source_tag, |bar, src| {
+                bar.child(
+                    div()
+                        .h(px(26.0))
+                        .px_2()
+                        .rounded_full()
+                        .bg(p.surface)
+                        .border_1()
+                        .border_color(p.border)
+                        .flex()
+                        .items_center()
+                        .text_xs()
+                        .text_color(p.text_dim)
+                        .child(format!("词源 · {src}")),
                 )
             })
             .when(has_lyrics, |bar| {

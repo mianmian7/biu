@@ -8,6 +8,9 @@ use biu_core::auto_lyrics::{format_lrc, run_auto_lyrics, AutoLyrics};
 use biu_core::bili::BiliClient;
 use biu_core::download::{DownloadFormat, DownloadManager};
 use biu_core::image_cache::{ImageCache, ThumbSize};
+use biu_core::lyrics::matcher::{
+    SMART_MATCHER_VERSION, auto_match_lyrics, effective_search_title,
+};
 use biu_core::lyrics::{load_cached_lyrics, save_cached_lyrics, CachedLyrics, LyricsClient};
 use biu_core::media_cache::{MediaCache, PreparedAudio};
 use biu_core::store::Store;
@@ -710,8 +713,15 @@ impl AppState {
             ((self.lyrics_offset_secs + delta) * 10.0).round() / 10.0
         };
         self.lyrics_offset_secs = next.clamp(-30.0, 30.0);
+        if let Some(track) = self.current_track()
+            && !self.lyrics.lines.is_empty()
+        {
+            let (primary_key, _) = lyrics_cache_keys(track);
+            let cached = lyrics_data_to_cached(&self.lyrics, self.lyrics_offset_secs * 1000.0, true);
+            let _ = save_cached_lyrics(&self.services.store, &primary_key, &cached, true);
+        }
         self.show_toast(
-            format!("歌词偏移 {:+.1}s", self.lyrics_offset_secs),
+            format!("歌词偏移 {:+.1}s（已保存）", self.lyrics_offset_secs),
             false,
             cx,
         );
@@ -947,7 +957,7 @@ impl AppState {
             }
         }
 
-        self.load_lyrics_for_track(&track, req_id, cx);
+        self.load_lyrics_for_track(&track, req_id, false, cx);
 
         if let TrackSource::BiliVideo { ref bvid, .. } = track.source
             && !bvid.is_empty()
@@ -1037,12 +1047,16 @@ impl AppState {
         &mut self,
         track: &TrackItem,
         req_id: u64,
+        force_rematch: bool,
         cx: &mut Context<Self>,
     ) {
         let services = self.services.clone();
+        let track_owned = track.clone();
         let track_id = track.id.clone();
         let (primary_key, legacy_key) = lyrics_cache_keys(track);
-        let query = clean_lyrics_query(&track.title, &track.artist);
+        let duration_hint = (self.snapshot.duration_secs > 0.0)
+            .then_some(self.snapshot.duration_secs)
+            .or_else(|| (track.duration_secs > 0.0).then_some(track.duration_secs));
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let res = services
@@ -1050,53 +1064,46 @@ impl AppState {
                 .spawn({
                     let services = services.clone();
                     async move {
-                        for key in std::iter::once(primary_key.as_str())
-                            .chain(legacy_key.as_deref())
-                        {
-                            if let Ok(Some(cached)) = load_cached_lyrics(&services.store, key) {
-                                let data = cached.data();
-                                if !data.lines.is_empty() {
-                                    return Ok::<LyricsData, anyhow::Error>(data);
+                        if !force_rematch {
+                            for key in std::iter::once(primary_key.as_str())
+                                .chain(legacy_key.as_deref())
+                            {
+                                if let Ok(Some(cached)) = load_cached_lyrics(&services.store, key)
+                                    && is_usable_cached_lyrics(&cached)
+                                {
+                                    let saved_offset_secs = (cached.offset / 1000.0).clamp(-30.0, 30.0);
+                                    let mut raw = cached;
+                                    raw.offset = 0.0;
+                                    let data = raw.data();
+                                    if !data.lines.is_empty() {
+                                        return Ok::<(LyricsData, f64, bool), anyhow::Error>((
+                                            data,
+                                            saved_offset_secs,
+                                            false,
+                                        ));
+                                    }
                                 }
                             }
                         }
-                        let candidates = services
-                            .lyrics
-                            .search_netease(&query, 5)
-                            .await
-                            .unwrap_or_default();
-                        if let Some(first) = candidates.first()
-                            && let Ok(data) = services.lyrics.fetch(first).await
-                            && !data.lines.is_empty()
+
+                        if let Some(matched) = auto_match_lyrics(
+                            &services.lyrics,
+                            Some(&services.bili),
+                            &track_owned,
+                            duration_hint,
+                        )
+                        .await
                         {
-                            let cached = lyrics_data_to_cached(&data, 0.0);
+                            let cached = lyrics_data_to_cached(&matched.lyrics, 0.0, false);
                             let _ = save_cached_lyrics(
                                 &services.store,
                                 &primary_key,
                                 &cached,
-                                false,
+                                force_rematch,
                             );
-                            return Ok(data);
+                            return Ok((matched.lyrics, 0.0, true));
                         }
-                        let lrclib = services
-                            .lyrics
-                            .search_lrclib(&query)
-                            .await
-                            .unwrap_or_default();
-                        if let Some(first) = lrclib.first()
-                            && let Ok(data) = services.lyrics.fetch(first).await
-                            && !data.lines.is_empty()
-                        {
-                            let cached = lyrics_data_to_cached(&data, 0.0);
-                            let _ = save_cached_lyrics(
-                                &services.store,
-                                &primary_key,
-                                &cached,
-                                false,
-                            );
-                            return Ok(data);
-                        }
-                        Ok(LyricsData::default())
+                        Ok((LyricsData::default(), 0.0, true))
                     }
                 })
                 .await;
@@ -1107,11 +1114,96 @@ impl AppState {
                     .is_some_and(|t| t.id == track_id);
                 if matches_current && state.resolve_request_id == req_id {
                     state.lyrics_loading = false;
-                    if let Ok(Ok(data)) = res {
+                    if let Ok(Ok((data, saved_offset, fresh))) = res {
+                        let found = !data.lines.is_empty();
+                        let source_label = lyrics_source_display(data.source.as_deref());
                         state.lyrics = data;
+                        state.lyrics_offset_secs = saved_offset;
+                        if force_rematch && fresh {
+                            if found {
+                                state.show_toast(
+                                    format!("智能匹配成功（来源：{source_label}）"),
+                                    false,
+                                    cx,
+                                );
+                            } else {
+                                state.show_toast("未找到匹配歌词，可尝试手动搜索或声纹对齐", true, cx);
+                            }
+                        }
                     }
                     state.notify_playback(cx);
                 }
+            });
+        })
+        .detach();
+    }
+
+    pub fn rematch_lyrics(&mut self, cx: &mut Context<Self>) {
+        let Some(track) = self.current_track().cloned() else {
+            return;
+        };
+        let req_id = self.resolve_request_id;
+        self.lyrics_loading = true;
+        self.show_toast("正在多源智能匹配歌词…", false, cx);
+        self.load_lyrics_for_track(&track, req_id, true, cx);
+        self.notify_ui(cx);
+    }
+
+    pub fn apply_bilibili_cc_lyrics(&mut self, cx: &mut Context<Self>) {
+        let Some(track) = self.current_track().cloned() else {
+            return;
+        };
+        let TrackSource::BiliVideo { bvid, cid, .. } = track.source.clone() else {
+            self.show_toast("仅 B 站视频支持读取 CC 字幕", false, cx);
+            return;
+        };
+        if bvid.is_empty() {
+            return;
+        }
+        let services = self.services.clone();
+        let expected_track_id = track.id.clone();
+        let (primary_key, _) = lyrics_cache_keys(&track);
+        self.lyrics_loading = true;
+        self.show_toast("正在获取 B 站 CC 字幕…", false, cx);
+        cx.notify();
+
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let res = services
+                .rt
+                .spawn({
+                    let services = services.clone();
+                    async move {
+                        let cc = services.bili.get_video_subtitles(&bvid, cid).await?;
+                        if let Some(data) = cc
+                            && !data.lines.is_empty()
+                        {
+                            let cached = lyrics_data_to_cached(&data, 0.0, true);
+                            let _ = save_cached_lyrics(&services.store, &primary_key, &cached, true);
+                            return Ok::<Option<LyricsData>, anyhow::Error>(Some(data));
+                        }
+                        Ok(None)
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                if !state.current_track().is_some_and(|t| t.id == expected_track_id) {
+                    return;
+                }
+                state.lyrics_loading = false;
+                match res {
+                    Ok(Ok(Some(data))) => {
+                        state.lyrics = data;
+                        state.lyrics_offset_secs = 0.0;
+                        if matches!(state.modal, ActiveModal::LyricsSearch) {
+                            state.close_modal(cx);
+                        }
+                        state.show_toast("已应用 B 站 CC 字幕", false, cx);
+                    }
+                    Ok(Ok(None)) => state.show_toast("该视频没有可用的 CC 字幕", false, cx),
+                    Ok(Err(e)) => state.show_toast(format!("获取 CC 字幕失败: {e}"), true, cx),
+                    Err(e) => state.show_toast(format!("CC 字幕任务异常: {e}"), true, cx),
+                }
+                state.notify_playback(cx);
             });
         })
         .detach();
@@ -1134,7 +1226,7 @@ impl AppState {
                     let services = services.clone();
                     async move {
                         let data = services.lyrics.fetch(&candidate).await?;
-                        let cached = lyrics_data_to_cached(&data, 0.0);
+                        let cached = lyrics_data_to_cached(&data, 0.0, true);
                         let _ = save_cached_lyrics(&services.store, &primary_key, &cached, true);
                         Ok::<LyricsData, anyhow::Error>(data)
                     }
@@ -1151,6 +1243,7 @@ impl AppState {
                 match res {
                     Ok(Ok(data)) => {
                         state.lyrics = data;
+                        state.lyrics_offset_secs = 0.0;
                         if matches!(state.modal, ActiveModal::LyricsSearch) {
                             state.close_modal(cx);
                         }
@@ -1169,35 +1262,45 @@ impl AppState {
         let Some(track) = self.current_track().cloned() else {
             return;
         };
-        let audio_path = match self.resolved_complete_audio_path() {
-            Ok(path) => path,
+        if self.auto_lyrics_running {
+            return;
+        }
+        let wait_target = match self.audio_path_or_stream() {
+            Ok(target) => target,
             Err(msg) => {
                 self.show_toast(msg, true, cx);
                 return;
             }
         };
-        if self.auto_lyrics_running {
-            return;
-        }
         self.auto_lyrics_running = true;
         self.show_toast("正在执行声纹自动对齐歌词…", false, cx);
         let services = self.services.clone();
         let expected_track_id = track.id.clone();
         let (primary_key, _) = lyrics_cache_keys(&track);
+        let part_title = match &track.source {
+            TrackSource::BiliVideo { part_title, .. } => part_title.as_deref(),
+            _ => None,
+        };
+        let effective_title = effective_search_title(&track.title, part_title);
         let ffmpeg_path = (!self.settings.ffmpeg_path.trim().is_empty())
             .then(|| PathBuf::from(self.settings.ffmpeg_path.trim()));
 
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let svc = services.clone();
             let res = services
                 .rt
-                .spawn(run_auto_lyrics_task(
-                    services.clone(),
-                    primary_key,
-                    audio_path,
-                    track.title.clone(),
-                    track.artist.clone(),
-                    ffmpeg_path,
-                ))
+                .spawn(async move {
+                    let audio_path = wait_for_audio_target(wait_target).await?;
+                    run_auto_lyrics_task(
+                        svc,
+                        primary_key,
+                        audio_path,
+                        effective_title,
+                        track.artist.clone(),
+                        ffmpeg_path,
+                    )
+                    .await
+                })
                 .await;
 
             let _ = this.update(cx, |state, cx| {
@@ -1212,6 +1315,7 @@ impl AppState {
                 match res {
                     Ok(Ok(aligned)) => {
                         state.lyrics = aligned.lyrics;
+                        state.lyrics_offset_secs = 0.0;
                         state.show_toast(
                             format!(
                                 "自动对齐成功（偏移 {:+.2}s · 置信度 {:.0}%）",
@@ -1231,20 +1335,32 @@ impl AppState {
         .detach();
     }
 
-    fn resolved_complete_audio_path(&self) -> Result<PathBuf, &'static str> {
+    fn audio_path_or_stream(&self) -> Result<AudioPathTarget, &'static str> {
         if let Some(ref prepared) = self.active_prepared {
             match prepared {
-                PreparedAudio::Ready { path, .. } if path.exists() => return Ok(path.clone()),
-                PreparedAudio::Streaming { path, done, .. } => {
-                    if !done.load(std::sync::atomic::Ordering::Acquire) {
-                        return Err("请等待当前音频缓冲完成后再自动对齐");
-                    }
-                    let committed = path.with_extension("audio");
-                    if committed.exists() {
-                        return Ok(committed);
-                    }
-                    if path.exists() {
-                        return Ok(path.clone());
+                PreparedAudio::Ready { path, .. } if path.exists() => {
+                    return Ok(AudioPathTarget::Ready(path.clone()));
+                }
+                PreparedAudio::Streaming {
+                    path,
+                    done,
+                    aborted,
+                    ..
+                } => {
+                    if done.load(std::sync::atomic::Ordering::Acquire) {
+                        let committed = path.with_extension("audio");
+                        if committed.exists() {
+                            return Ok(AudioPathTarget::Ready(committed));
+                        }
+                        if path.exists() {
+                            return Ok(AudioPathTarget::Ready(path.clone()));
+                        }
+                    } else if !aborted.load(std::sync::atomic::Ordering::Acquire) {
+                        return Ok(AudioPathTarget::Streaming {
+                            path: path.clone(),
+                            done: done.clone(),
+                            aborted: aborted.clone(),
+                        });
                     }
                 }
                 _ => {}
@@ -1252,14 +1368,14 @@ impl AppState {
         }
         if let Some(ref p) = self.current_track_audio_path {
             if p.exists() {
-                return Ok(p.clone());
+                return Ok(AudioPathTarget::Ready(p.clone()));
             }
             let committed = p.with_extension("audio");
             if committed.exists() {
-                return Ok(committed);
+                return Ok(AudioPathTarget::Ready(committed));
             }
         }
-        Err("请等待当前音频缓冲完成后再自动对齐")
+        Err("当前歌曲尚未开始加载音频，请稍候再试")
     }
 
     fn update_os_media_metadata(&mut self, track: &TrackItem) {
@@ -1413,6 +1529,75 @@ fn lyrics_cache_keys(track: &TrackItem) -> (String, Option<String>) {
     }
 }
 
+enum AudioPathTarget {
+    Ready(PathBuf),
+    Streaming {
+        path: PathBuf,
+        done: Arc<std::sync::atomic::AtomicBool>,
+        aborted: Arc<std::sync::atomic::AtomicBool>,
+    },
+}
+
+async fn wait_for_audio_target(target: AudioPathTarget) -> anyhow::Result<PathBuf> {
+    match target {
+        AudioPathTarget::Ready(path) => Ok(path),
+        AudioPathTarget::Streaming {
+            path,
+            done,
+            aborted,
+        } => {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !done.load(std::sync::atomic::Ordering::Acquire) {
+                if aborted.load(std::sync::atomic::Ordering::Acquire) {
+                    anyhow::bail!("音频缓冲已取消");
+                }
+                if Instant::now() >= deadline {
+                    anyhow::bail!("等待音频缓冲超时，请稍后重试");
+                }
+                tokio::time::sleep(Duration::from_millis(80)).await;
+            }
+            let committed = path.with_extension("audio");
+            if committed.exists() {
+                Ok(committed)
+            } else if path.exists() {
+                Ok(path)
+            } else {
+                anyhow::bail!("缓冲音频文件不可用")
+            }
+        }
+    }
+}
+
+pub fn lyrics_source_display(source: Option<&str>) -> &'static str {
+    match source {
+        Some("netease") => "网易云",
+        Some("qq" | "qqmusic") => "QQ音乐",
+        Some("lrclib") => "LRCLIB",
+        Some("bilibili-cc") => "B站字幕",
+        Some("auto") => "声纹对齐",
+        _ => "歌词",
+    }
+}
+
+fn is_usable_cached_lyrics(cached: &CachedLyrics) -> bool {
+    if cached
+        .extra
+        .get("manual")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if matches!(cached.source.as_deref(), Some("auto" | "bilibili-cc")) {
+        return true;
+    }
+    cached
+        .extra
+        .get("matcherVersion")
+        .and_then(|v| v.as_u64())
+        .is_some_and(|v| v >= u64::from(SMART_MATCHER_VERSION))
+}
+
 async fn run_auto_lyrics_task(
     services: Arc<Services>,
     track_key: String,
@@ -1428,15 +1613,23 @@ async fn run_auto_lyrics_task(
         ffmpeg: ffmpeg_path.as_deref(),
     };
     let aligned = run_auto_lyrics(&auto_client, &audio_path, &title, &artist).await?;
-    let cached = lyrics_data_to_cached(&aligned.lyrics, 0.0);
+    let cached = lyrics_data_to_cached(&aligned.lyrics, 0.0, false);
     let _ = save_cached_lyrics(&services.store, &track_key, &cached, false);
     Ok(aligned)
 }
 
-fn lyrics_data_to_cached(data: &LyricsData, offset_ms: f64) -> CachedLyrics {
+fn lyrics_data_to_cached(data: &LyricsData, offset_ms: f64, manual: bool) -> CachedLyrics {
     let main_lrc = format_lrc(&data.lines, |l| Some(l.text.as_str()));
     let t_lrc = format_lrc(&data.lines, |l| l.translation.as_deref());
     let r_lrc = format_lrc(&data.lines, |l| l.romaji.as_deref());
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "matcherVersion".into(),
+        serde_json::Value::from(SMART_MATCHER_VERSION),
+    );
+    if manual {
+        extra.insert("manual".into(), serde_json::Value::Bool(true));
+    }
     CachedLyrics {
         lyrics: (!main_lrc.is_empty()).then_some(main_lrc),
         t_lyrics: (!t_lrc.is_empty()).then_some(t_lrc),
@@ -1444,7 +1637,7 @@ fn lyrics_data_to_cached(data: &LyricsData, offset_ms: f64) -> CachedLyrics {
         yrc: None,
         offset: offset_ms,
         source: data.source.clone(),
-        extra: Default::default(),
+        extra,
     }
 }
 
@@ -1581,28 +1774,4 @@ fn load_search_history(store: &Store) -> Vec<String> {
         .and_then(|v| v.get("items").cloned())
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default()
-}
-
-fn clean_lyrics_query(title: &str, artist: &str) -> String {
-    let mut cleaned = title.to_string();
-    for pair in [('【', '】'), ('[', ']'), ('(', ')'), ('（', '）'), ('《', '》')] {
-        while let Some(start) = cleaned.find(pair.0) {
-            if let Some(end) = cleaned[start..].find(pair.1) {
-                cleaned.replace_range(start..start + end + pair.1.len_utf8(), " ");
-            } else {
-                break;
-            }
-        }
-    }
-    let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
-    let base = if cleaned.is_empty() {
-        title.trim().to_string()
-    } else {
-        cleaned
-    };
-    if artist.trim().is_empty() || base.contains(artist.trim()) {
-        base
-    } else {
-        format!("{base} {}", artist.trim())
-    }
 }

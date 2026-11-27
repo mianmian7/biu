@@ -7,10 +7,12 @@ use serde_json::{Map, Value, json};
 use std::time::Duration;
 use url::Url;
 
+pub mod matcher;
 mod romaji;
 pub use romaji::kana_to_romaji;
 
 const NETEASE: &str = "https://interface.music.163.com";
+const QQMUSIC: &str = "https://c.y.qq.com";
 const LRCLIB: &str = "https://lrclib.net";
 
 #[derive(Clone)]
@@ -22,9 +24,9 @@ impl LyricsClient {
     pub fn new() -> Result<Self> {
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
-            .pool_max_idle_per_host(2)
+            .pool_max_idle_per_host(4)
             .pool_idle_timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(10))
             .redirect(allowlist_redirect_policy(|url: &Url| {
                 matches!(url.scheme(), "http" | "https")
@@ -32,7 +34,7 @@ impl LyricsClient {
                     && url.password().is_none()
                     && matches!(
                         url.host_str(),
-                        Some("interface.music.163.com" | "lrclib.net")
+                        Some("interface.music.163.com" | "c.y.qq.com" | "lrclib.net")
                     )
             }))
             .build()?;
@@ -45,6 +47,10 @@ impl LyricsClient {
             request = request
                 .header("Referer", "https://music.163.com/")
                 .header("Origin", "https://music.163.com");
+        } else if base == QQMUSIC {
+            request = request
+                .header("Referer", "https://y.qq.com/")
+                .header("Origin", "https://y.qq.com");
         } else {
             request = request.header("User-Agent", "got (https://github.com/sindresorhus/got)");
         }
@@ -118,11 +124,69 @@ impl LyricsClient {
                         .or_else(|| song["dt"].as_f64())
                         .map(|ms| ms / 1000.0),
                     provider: LyricsProvider::NetEase,
+                    provider_key: None,
                     aliases: ["alias", "aliases", "transNames", "tns"]
                         .into_iter()
                         .flat_map(|key| song[key].as_array().into_iter().flatten())
                         .filter_map(|value| value.as_str().map(str::to_owned))
                         .collect(),
+                })
+            })
+            .collect())
+    }
+
+    pub async fn search_qq(&self, query: &str, limit: u32) -> Result<Vec<LyricsCandidate>> {
+        let limit_str = limit.clamp(1, 30).to_string();
+        let data = self
+            .get(
+                QQMUSIC,
+                "/soso/fcgi-bin/client_search_cp",
+                &[
+                    ("w", query),
+                    ("format", "json"),
+                    ("p", "1"),
+                    ("n", &limit_str),
+                ],
+            )
+            .await?;
+        ensure!(
+            data["code"] == 0,
+            "QQ Music search failed with code {}",
+            data["code"]
+        );
+        Ok(data["data"]["song"]["list"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|song| {
+                let songmid = song["songmid"].as_str()?.trim();
+                if songmid.is_empty() {
+                    return None;
+                }
+                let id = song["songid"].as_u64().unwrap_or(0);
+                let title = unescape_html(song["songname"].as_str()?);
+                let artist = song["singer"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| s["name"].as_str())
+                    .map(unescape_html)
+                    .collect::<Vec<_>>()
+                    .join(" / ");
+                let album = song["albumname"]
+                    .as_str()
+                    .map(unescape_html)
+                    .unwrap_or_default();
+                let duration_secs = song["interval"].as_f64().filter(|d| *d > 0.0);
+                Some(LyricsCandidate {
+                    id,
+                    title,
+                    artist,
+                    album,
+                    duration_secs,
+                    provider: LyricsProvider::QqMusic,
+                    provider_key: Some(songmid.to_owned()),
+                    aliases: Vec::new(),
                 })
             })
             .collect())
@@ -145,6 +209,7 @@ impl LyricsClient {
                     album: song["albumName"].as_str().unwrap_or_default().to_owned(),
                     duration_secs: song["duration"].as_f64(),
                     provider: LyricsProvider::Lrclib,
+                    provider_key: None,
                     aliases: Vec::new(),
                 })
             })
@@ -204,12 +269,66 @@ impl LyricsClient {
         })
     }
 
+    pub async fn fetch_qq(&self, songmid: &str) -> Result<LyricsData> {
+        let data = self
+            .get(
+                QQMUSIC,
+                "/lyric/fcgi-bin/fcg_query_lyric_new.fcg",
+                &[("songmid", songmid), ("format", "json"), ("nobase64", "1")],
+            )
+            .await?;
+        ensure!(
+            data["code"] == 0,
+            "QQ Music lyrics failed with code {}",
+            data["code"]
+        );
+        let raw_lrc = unescape_html(data["lyric"].as_str().unwrap_or_default());
+        let raw_trans = unescape_html(data["trans"].as_str().unwrap_or_default());
+        let cleaned_trans = raw_trans
+            .lines()
+            .filter(|line| {
+                let text = line
+                    .rsplit_once(']')
+                    .map(|(_, rest)| rest.trim())
+                    .unwrap_or("");
+                !text.is_empty() && text != "//"
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut lyrics = parse_lyrics(&raw_lrc, "", &cleaned_trans, "");
+        lyrics.source = Some("qqmusic".into());
+        Ok(lyrics)
+    }
+
     pub async fn fetch(&self, candidate: &LyricsCandidate) -> Result<LyricsData> {
         match candidate.provider {
             LyricsProvider::NetEase => self.fetch_netease(candidate.id).await,
+            LyricsProvider::QqMusic => {
+                let mid = candidate
+                    .provider_key
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .context("QQ Music candidate missing songmid")?;
+                self.fetch_qq(mid).await
+            }
             LyricsProvider::Lrclib => self.fetch_lrclib(candidate.id).await,
         }
     }
+}
+
+pub(crate) fn unescape_html(input: &str) -> String {
+    if !input.contains('&') {
+        return input.to_owned();
+    }
+    input
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&#039;", "'")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
 }
 
 /// Lines and word starts are in seconds from the start of the audio.

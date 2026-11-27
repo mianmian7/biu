@@ -290,6 +290,111 @@ impl BiliClient {
         )
     }
 
+    /// Fetch Bilibili video CC / music subtitles (exact video-synced timestamps).
+    pub async fn get_video_subtitles(&self, bvid: &str, cid: u64) -> Result<Option<LyricsData>> {
+        let resolved_cid = if cid > 0 {
+            cid
+        } else {
+            self.get_video_pagelist(bvid)
+                .await?
+                .first()
+                .map(|p| p.cid)
+                .unwrap_or(0)
+        };
+        if resolved_cid == 0 {
+            return Ok(None);
+        }
+        let data = self
+            .get(
+                API,
+                "/x/player/wbi/v2",
+                json!({ "bvid": bvid, "cid": resolved_cid }),
+                true,
+            )
+            .await?;
+        let subtitles = list(&data["subtitle"]["subtitles"]);
+        if subtitles.is_empty() {
+            return Ok(None);
+        }
+        let best = subtitles
+            .iter()
+            .filter_map(|sub| {
+                let raw_url = field(sub, &["subtitle_url", "subtitle_url_v2"]);
+                if raw_url.is_empty() {
+                    return None;
+                }
+                let lan = field(sub, &["lan"]).to_ascii_lowercase();
+                let is_ai = number(&sub["ai_type"]).unwrap_or(0) > 0
+                    || lan.starts_with("ai-");
+                let lang_score = if lan.contains("zh") {
+                    30
+                } else if lan.contains("ja") || lan.contains("jp") {
+                    25
+                } else if lan.contains("en") {
+                    15
+                } else {
+                    5
+                };
+                let score = lang_score + if is_ai { 0 } else { 40 };
+                Some((score, raw_url))
+            })
+            .max_by_key(|(score, _)| *score);
+
+        let Some((_, raw_url)) = best else {
+            return Ok(None);
+        };
+        let url_str = if raw_url.starts_with("//") {
+            format!("https:{raw_url}")
+        } else {
+            raw_url.to_owned()
+        };
+        let parsed = Url::parse(&url_str)?;
+        ensure!(
+            is_bili_api_url_allowed(&parsed),
+            "disallowed subtitle host"
+        );
+        let body = fetch_body(self.client().get(parsed)).await?;
+        let mut lines: Vec<LyricLine> = list(&body["body"])
+            .iter()
+            .filter_map(|item| {
+                let raw = item["content"].as_str()?;
+                let text = raw
+                    .trim()
+                    .trim_matches(|c| matches!(c, '♪' | '♫' | '♬' | '♩'))
+                    .trim()
+                    .to_owned();
+                if text.is_empty() {
+                    return None;
+                }
+                let start = item["from"].as_f64()?.max(0.0);
+                let end = item["to"].as_f64();
+                let duration_secs = end.map(|e| (e - start).max(0.0)).filter(|d| *d > 0.0);
+                Some(LyricLine {
+                    start_secs: start,
+                    duration_secs,
+                    text,
+                    ..LyricLine::default()
+                })
+            })
+            .collect();
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        lines.sort_by(|a, b| a.start_secs.total_cmp(&b.start_secs));
+        for line in &mut lines {
+            if line.romaji.is_none() {
+                let roma = crate::lyrics::kana_to_romaji(&line.text);
+                if roma != line.text && !roma.trim().is_empty() {
+                    line.romaji = Some(roma);
+                }
+            }
+        }
+        Ok(Some(LyricsData {
+            lines,
+            source: Some("bilibili-cc".into()),
+        }))
+    }
+
     pub async fn get_playurl(
         &self,
         bvid: &str,

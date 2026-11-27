@@ -1,12 +1,14 @@
 use super::*;
 use crate::widgets::format_duration;
-use biu_core::{LyricsCandidate, LyricsProvider};
+use biu_core::lyrics::matcher::{TrackQueryInfo, search_all_providers, smart_search_queries};
+use biu_core::{LyricsCandidate, LyricsProvider, TrackSource};
 
 #[derive(Default)]
 pub(super) struct LyricsSearchModal {
     input: Option<Entity<InputState>>,
     results: Option<Result<SearchResults, String>>,
     query: String,
+    track_info: Option<TrackQueryInfo>,
 }
 
 struct SearchResults {
@@ -16,11 +18,21 @@ struct SearchResults {
 
 impl ModalsHost {
     pub(super) fn enter_lyrics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(track) = self.state.read(cx).current_track() else {
-            return;
+        let (track, duration_hint) = {
+            let s = self.state.read(cx);
+            let Some(track) = s.current_track().cloned() else {
+                return;
+            };
+            let dur = (s.snapshot.duration_secs > 0.0).then_some(s.snapshot.duration_secs);
+            (track, dur)
         };
-        let title = track.title.clone();
-        let input = new_input("歌曲名或歌手", title.clone(), window, cx);
+        let info = TrackQueryInfo::from_track(&track, duration_hint);
+        let initial_query = smart_search_queries(&info)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| info.effective_title());
+        self.data.lyrics.track_info = Some(info);
+        let input = new_input("歌曲名或歌手", initial_query.clone(), window, cx);
         cx.subscribe_in(&input, window, |this, input, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.search_lyrics(normalize_query(&input.read(cx).value()), cx);
@@ -28,7 +40,7 @@ impl ModalsHost {
         })
         .detach();
         self.data.lyrics.input = Some(input);
-        self.search_lyrics(normalize_query(&title), cx);
+        self.search_lyrics(normalize_query(&initial_query), cx);
     }
 
     fn search_lyrics(&mut self, query: String, cx: &mut Context<Self>) {
@@ -39,21 +51,12 @@ impl ModalsHost {
             cx.notify();
             return;
         }
+        let track_info = self.data.lyrics.track_info.clone();
         self.with_task(
             move |s| async move {
-                let (netease, lrclib) = tokio::join!(
-                    s.lyrics.search_netease(&query, 20),
-                    s.lyrics.search_lrclib(&query)
-                );
-                let mut items = Vec::new();
-                let mut errors = Vec::new();
-                for (name, result) in [("网易云", netease), ("LRCLIB", lrclib)] {
-                    match result {
-                        Ok(mut candidates) => items.append(&mut candidates),
-                        Err(error) => errors.push(format!("{name}：{error}")),
-                    }
-                }
-                anyhow::ensure!(errors.len() < 2, "{}", errors.join("\n"));
+                let (items, errors) =
+                    search_all_providers(&s.lyrics, &query, track_info.as_ref()).await;
+                anyhow::ensure!(errors.len() < 3, "{}", errors.join("\n"));
                 Ok(SearchResults { items, errors })
             },
             |this, result, _| this.data.lyrics.results = Some(result),
@@ -68,6 +71,11 @@ impl ModalsHost {
         };
         let value = input.clone();
         let state = self.state.read(cx);
+        let target_dur = lyrics.track_info.as_ref().and_then(|i| i.duration_secs);
+        let is_bili_video = matches!(
+            state.current_track().map(|t| &t.source),
+            Some(TrackSource::BiliVideo { .. })
+        );
         let mut root = column()
             .child(
                 toolbar()
@@ -80,16 +88,38 @@ impl ModalsHost {
             )
             .child(
                 toolbar()
+                    .child(state_button(
+                        &self.state,
+                        "smart-rematch",
+                        if state.lyrics_loading {
+                            "匹配中…"
+                        } else {
+                            "多源智能匹配"
+                        },
+                        p,
+                        AppState::rematch_lyrics,
+                    ))
                     .when(!state.auto_lyrics_running, |bar| {
                         bar.child(state_button(
                             &self.state,
                             "auto-lyrics",
-                            "声纹自动对齐 (Auto-Lyrics)",
+                            "声纹对齐",
                             p,
                             AppState::trigger_auto_lyrics,
                         ))
                     })
-                    .when(state.auto_lyrics_running, |bar| bar.child("正在自动对齐…")),
+                    .when(state.auto_lyrics_running, |bar| {
+                        bar.child(div().text_xs().text_color(p.text_muted).child("正在声纹对齐…"))
+                    })
+                    .when(is_bili_video, |bar| {
+                        bar.child(state_button(
+                            &self.state,
+                            "bili-cc",
+                            "B站CC字幕",
+                            p,
+                            AppState::apply_bilibili_cc_lyrics,
+                        ))
+                    }),
             );
 
         if lyrics.query.is_empty() {
@@ -101,7 +131,7 @@ impl ModalsHost {
             }))
         };
         match &lyrics.results {
-            None => root.child(empty_state("正在搜索歌词…", "", p)),
+            None => root.child(empty_state("正在搜索网易云 / QQ音乐 / LRCLIB…", "", p)),
             Some(Err(error)) => {
                 root.child(empty_state("搜索失败", error.clone(), p).child(retry()))
             }
@@ -109,12 +139,17 @@ impl ModalsHost {
                 if !result.errors.is_empty() {
                     root = root.child(
                         toolbar()
-                            .child(div().text_color(p.warning).child(result.errors.join(" · ")))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(p.warning)
+                                    .child(result.errors.join(" · ")),
+                            )
                             .child(retry()),
                     );
                 }
                 root.when(result.items.is_empty(), |c| {
-                    c.child(empty_state("没有找到歌词", "", p))
+                    c.child(empty_state("没有找到歌词", "试试缩短关键词或点击「B站CC字幕」", p))
                 })
                 .children(result.items.iter().enumerate().map(|(i, candidate)| {
                     let selection = candidate.clone();
@@ -122,7 +157,12 @@ impl ModalsHost {
                     let track = state.current_track().map(|track| track.id.clone());
                     let provider = match candidate.provider {
                         LyricsProvider::NetEase => "网易云",
+                        LyricsProvider::QqMusic => "QQ音乐",
                         LyricsProvider::Lrclib => "LRCLIB",
+                    };
+                    let dur_close = match (target_dur, candidate.duration_secs) {
+                        (Some(t), Some(c)) if t > 0.0 && c > 0.0 => (t - c).abs() <= 3.0,
+                        _ => false,
                     };
                     div()
                         .id(i)
@@ -148,6 +188,7 @@ impl ModalsHost {
                             div()
                                 .text_xs()
                                 .px_2()
+                                .py_0p5()
                                 .bg(p.surface_active)
                                 .rounded(p.radius)
                                 .child(provider),
@@ -159,16 +200,23 @@ impl ModalsHost {
                                 .child(div().truncate().child(candidate.title.clone()))
                                 .child(
                                     div().truncate().text_sm().text_color(p.text_muted).child(
-                                        format!("{} · {}", candidate.artist, candidate.album),
+                                        if candidate.album.is_empty() {
+                                            candidate.artist.clone()
+                                        } else {
+                                            format!("{} · {}", candidate.artist, candidate.album)
+                                        },
                                     ),
                                 ),
                         )
                         .child(
-                            div().text_sm().child(
-                                candidate
-                                    .duration_secs
-                                    .map_or_else(|| "—".into(), format_duration),
-                            ),
+                            div()
+                                .text_sm()
+                                .text_color(if dur_close { p.accent } else { p.text_muted })
+                                .child(
+                                    candidate
+                                        .duration_secs
+                                        .map_or_else(|| "—".into(), format_duration),
+                                ),
                         )
                 }))
             }

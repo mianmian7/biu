@@ -323,7 +323,7 @@ pub fn clean_track_title(title: &str) -> String {
         .join(" ")
 }
 
-pub(super) fn normalize(text: &str) -> String {
+pub(crate) fn normalize(text: &str) -> String {
     text.chars()
         .map(|ch| match ch {
             '！'..='～' => char::from_u32(ch as u32 - 0xfee0).unwrap(),
@@ -428,12 +428,12 @@ pub fn build_search_queries(title: &str) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn has_word(text: &str, word: &str) -> bool {
+pub(crate) fn has_word(text: &str, word: &str) -> bool {
     text.split(|ch: char| !ch.is_ascii_alphanumeric())
         .any(|token| token.eq_ignore_ascii_case(word))
 }
 
-pub(super) fn strong_match(title: &str, text: &str) -> bool {
+pub(crate) fn strong_match(title: &str, text: &str) -> bool {
     let key = normalize(title);
     if key.is_empty() {
         return false;
@@ -468,7 +468,7 @@ pub(super) fn strong_match(title: &str, text: &str) -> bool {
     normalize(text).contains(&key)
 }
 
-pub(super) fn without_trailing_note(title: &str) -> &str {
+pub(crate) fn without_trailing_note(title: &str) -> &str {
     let title = title.trim();
     if !title.ends_with([')', '）']) {
         return title;

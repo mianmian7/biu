@@ -311,7 +311,7 @@ impl Render for DesktopLyricsWindow {
         let show_romaji = style.show_romaji;
         let align = style.align.clone();
         let playing = is_playing(s.snapshot.state);
-        let pos = (s.snapshot.position_secs + s.lyrics_offset_secs).max(0.0);
+        let pos = (s.snapshot.position_secs - s.lyrics_offset_secs).max(0.0);
         let lines = &s.lyrics.lines;
         let idx = active_line_index(lines, pos);
 

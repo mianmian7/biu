@@ -527,9 +527,10 @@ pub struct LyricsData {
     pub source: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LyricsProvider {
     NetEase,
+    QqMusic,
     Lrclib,
 }
 
@@ -541,6 +542,7 @@ pub struct LyricsCandidate {
     pub album: String,
     pub duration_secs: Option<f64>,
     pub provider: LyricsProvider,
+    pub provider_key: Option<String>,
     pub aliases: Vec<String>,
 }
 
