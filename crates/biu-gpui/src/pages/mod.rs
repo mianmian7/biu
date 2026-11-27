@@ -753,10 +753,12 @@ fn quick_track_icons(
     idx: usize,
     p: BiuPalette,
 ) -> Div {
+    let next_track = track.clone();
     let append = track.clone();
     let fav = track.clone();
     let download = track.clone();
     let is_local = matches!(&track.source, TrackSource::LocalFile { .. });
+    let st_next = state.clone();
     let st_add = state.clone();
     let st_fav = state.clone();
     let st_dl = state.clone();
@@ -766,7 +768,15 @@ fn quick_track_icons(
         .items_center()
         .gap_0p5()
         .child(
-            compact_icon_btn((id_prefix, idx * 4), IconName::Plus, "加入播放队列", p).on_click(
+            compact_icon_btn((id_prefix, idx * 5), IconName::ListStart, "下一首播放", p).on_click(
+                move |_, _, cx| {
+                    cx.stop_propagation();
+                    st_next.update(cx, |s, cx| s.play_next(next_track.clone(), cx));
+                },
+            ),
+        )
+        .child(
+            compact_icon_btn((id_prefix, idx * 5 + 1), IconName::Plus, "加入播放队列", p).on_click(
                 move |_, _, cx| {
                     cx.stop_propagation();
                     st_add.update(cx, |s, cx| s.append_to_queue(vec![append.clone()], cx));
@@ -775,7 +785,7 @@ fn quick_track_icons(
         )
         .when(!is_local, |bar| {
             bar.child(
-                compact_icon_btn((id_prefix, idx * 4 + 1), IconName::Star, "收藏", p).on_click(
+                compact_icon_btn((id_prefix, idx * 5 + 2), IconName::Star, "收藏", p).on_click(
                     move |_, _, cx| {
                         cx.stop_propagation();
                         st_fav.update(cx, |s, cx| {
@@ -790,7 +800,7 @@ fn quick_track_icons(
                 ),
             )
             .child(
-                compact_icon_btn((id_prefix, idx * 4 + 2), IconName::Download, "下载音频", p)
+                compact_icon_btn((id_prefix, idx * 5 + 3), IconName::Download, "下载音频", p)
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         st_dl.update(cx, |s, cx| {
@@ -1015,7 +1025,7 @@ fn track_list_header(p: BiuPalette) -> Div {
         .child(div().w(px(28.0)).text_center().child("#"))
         .child(div().flex_1().min_w_0().child("歌曲 / 视频"))
         .child(div().w(px(56.0)).text_right().child("时长"))
-        .child(div().w(px(104.0)).text_right().child("操作"))
+        .child(div().w(px(124.0)).text_right().child("操作"))
 }
 
 pub(super) fn track_row(
@@ -1157,7 +1167,7 @@ pub(super) fn track_row(
         )
         .child(
             div()
-                .w(px(96.0))
+                .w(px(124.0))
                 .flex_shrink_0()
                 .flex()
                 .items_center()

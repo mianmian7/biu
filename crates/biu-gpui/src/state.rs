@@ -431,6 +431,18 @@ impl AppState {
         );
     }
 
+    pub fn remove_search_history(&mut self, term: &str, cx: &mut Context<Self>) {
+        let before = self.search_history.len();
+        self.search_history.retain(|s| s != term);
+        if self.search_history.len() != before {
+            let _ = self.services.store.write(
+                "search-history",
+                serde_json::json!({ "items": self.search_history }),
+            );
+            self.notify_ui(cx);
+        }
+    }
+
     pub fn clear_search_history(&mut self, cx: &mut Context<Self>) {
         self.search_history.clear();
         let _ = self
@@ -595,6 +607,16 @@ impl AppState {
         self.queue.play_or_insert(track.clone());
         self.persist_queue();
         self.start_playback_for_track(track, cx);
+    }
+
+    pub fn play_next(&mut self, track: TrackItem, cx: &mut Context<Self>) {
+        if self.queue.is_empty() {
+            self.play_track(track, cx);
+            return;
+        }
+        self.queue.insert_next(track);
+        self.persist_queue();
+        self.show_toast("已添加到下一首播放", false, cx);
     }
 
     pub fn append_to_queue(&mut self, tracks: Vec<TrackItem>, cx: &mut Context<Self>) {

@@ -282,6 +282,12 @@ pub struct MainShell {
     top_lyrics: Entity<TopLyricsView>,
     full_screen: Entity<FullScreenPlayer>,
     search: Entity<InputState>,
+    search_open: bool,
+    search_suggestions: Vec<String>,
+    search_suggest_task: Option<Task<()>>,
+    search_active_idx: Option<usize>,
+    syncing_search: bool,
+    last_synced_search_query: String,
     focus: FocusHandle,
     user_menu_open: bool,
     last_ui_ver: u64,
@@ -301,19 +307,39 @@ impl MainShell {
 
         let mut subs = Vec::new();
         subs.push(cx.observe_in(&state, window, |this, state, window, cx| {
-            let s = state.read(cx);
-            let avatar_loaded = s
-                .user
-                .as_ref()
-                .filter(|u| !u.face.is_empty())
-                .is_some_and(|u| {
-                    s.covers
-                        .get(&CoverKey::thumb(u.face.clone(), ThumbSize::Avatar))
-                        .is_some()
-                });
-            if this.last_ui_ver != s.ui_version || this.last_avatar_loaded != avatar_loaded {
-                this.last_ui_ver = s.ui_version;
+            let (ui_ver, avatar_loaded, route_query) = {
+                let s = state.read(cx);
+                let avatar_loaded = s
+                    .user
+                    .as_ref()
+                    .filter(|u| !u.face.is_empty())
+                    .is_some_and(|u| {
+                        s.covers
+                            .get(&CoverKey::thumb(u.face.clone(), ThumbSize::Avatar))
+                            .is_some()
+                    });
+                let route_query = match &s.route {
+                    Route::Search { query } => Some(query.clone()),
+                    _ => None,
+                };
+                (s.ui_version, avatar_loaded, route_query)
+            };
+            if this.last_ui_ver != ui_ver || this.last_avatar_loaded != avatar_loaded {
+                this.last_ui_ver = ui_ver;
                 this.last_avatar_loaded = avatar_loaded;
+                if let Some(q) = route_query
+                    && q != this.last_synced_search_query
+                {
+                    this.last_synced_search_query = q.clone();
+                    if this.search.read(cx).value().as_ref() != q {
+                        this.syncing_search = true;
+                        this.search.update(cx, |input, cx| {
+                            input.set_value(q, window, cx);
+                        });
+                        this.syncing_search = false;
+                    }
+                    this.search_open = false;
+                }
                 this.sync_component_theme(window, cx);
                 cx.notify();
             }
@@ -323,13 +349,34 @@ impl MainShell {
             cx.notify();
         }));
         subs.push(
-            cx.subscribe_in(&search, window, |this, input, ev: &InputEvent, _, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    let query = input.read(cx).value().trim().to_string();
-                    if !query.is_empty() {
-                        this.state
-                            .update(cx, |s, cx| s.navigate(Route::Search { query }, cx));
+            cx.subscribe_in(&search, window, |this, input, ev: &InputEvent, window, cx| {
+                let raw = input.read(cx).value().trim().to_string();
+                match ev {
+                    InputEvent::Focus => {
+                        this.user_menu_open = false;
+                        this.search_open = true;
+                        if !raw.is_empty() && this.search_suggestions.is_empty() {
+                            this.fetch_search_suggestions(raw, cx);
+                        }
+                        cx.notify();
                     }
+                    InputEvent::Change => {
+                        if this.syncing_search {
+                            return;
+                        }
+                        this.search_open = true;
+                        this.search_active_idx = None;
+                        this.fetch_search_suggestions(raw, cx);
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { .. } => {
+                        let chosen = this
+                            .search_active_idx
+                            .and_then(|i| this.search_suggestions.get(i).cloned())
+                            .unwrap_or(raw);
+                        this.submit_top_search(chosen, window, cx);
+                    }
+                    InputEvent::Blur => {}
                 }
             }),
         );
@@ -378,6 +425,12 @@ impl MainShell {
             top_lyrics,
             full_screen,
             search,
+            search_open: false,
+            search_suggestions: Vec::new(),
+            search_suggest_task: None,
+            search_active_idx: None,
+            syncing_search: false,
+            last_synced_search_query: String::new(),
             focus,
             user_menu_open: false,
             last_ui_ver: initial_ver,
@@ -386,6 +439,52 @@ impl MainShell {
         };
         this.sync_component_theme(window, cx);
         this
+    }
+
+    fn submit_top_search(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
+        let query = query.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        self.search_open = false;
+        self.search_active_idx = None;
+        self.last_synced_search_query = query.clone();
+        if self.search.read(cx).value().as_ref() != query {
+            self.syncing_search = true;
+            self.search.update(cx, |input, cx| {
+                input.set_value(query.clone(), window, cx);
+            });
+            self.syncing_search = false;
+        }
+        window.focus(&self.focus, cx);
+        self.state
+            .update(cx, |s, cx| s.navigate(Route::Search { query }, cx));
+        cx.notify();
+    }
+
+    fn fetch_search_suggestions(&mut self, term: String, cx: &mut Context<Self>) {
+        if term.is_empty() {
+            self.search_suggestions.clear();
+            self.search_active_idx = None;
+            self.search_suggest_task = None;
+            return;
+        }
+        let services = self.state.read(cx).services.clone();
+        self.search_suggest_task = Some(cx.spawn(async move |this, cx| {
+            let runtime = services.rt.handle().clone();
+            let res = crate::pages::run_on(&runtime, async move {
+                tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+                services.bili.search_suggest(&term).await
+            })
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Ok(items) = res {
+                    this.search_suggestions = items;
+                    this.search_active_idx = None;
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     fn sync_component_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -409,13 +508,40 @@ impl MainShell {
         let mods = &ev.keystroke.modifiers;
         let text_focused = window.focused(cx).is_some_and(|f| f != self.focus);
 
+        if self.search_open && !mods.modified() {
+            let count = self.search_suggestions.len();
+            if key == "down" && count > 0 {
+                self.search_active_idx = Some(match self.search_active_idx {
+                    Some(i) => (i + 1) % count,
+                    None => 0,
+                });
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
+            if key == "up" && count > 0 {
+                self.search_active_idx = Some(match self.search_active_idx {
+                    Some(0) | None => count - 1,
+                    Some(i) => i - 1,
+                });
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
+        }
+
         if key == "escape" {
             let s = self.state.read(cx);
-            let action = escape_action(
-                !matches!(s.modal, ActiveModal::None),
-                s.is_full_screen,
-                self.user_menu_open,
-            );
+            let modal_open = !matches!(s.modal, ActiveModal::None);
+            let action = escape_action(modal_open, s.is_full_screen, self.user_menu_open);
+            if !modal_open && self.search_open {
+                self.search_open = false;
+                self.search_active_idx = None;
+                window.focus(&self.focus, cx);
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
             match action {
                 EscapeAction::CloseModal => self.state.update(cx, |s, cx| s.close_modal(cx)),
                 EscapeAction::CloseUserMenu => {
@@ -845,6 +971,7 @@ impl MainShell {
         };
 
         let search = div()
+            .id("top-search-box")
             .occlude()
             .w(px(290.0))
             .h(px(36.0))
@@ -855,6 +982,26 @@ impl MainShell {
             .px_3p5()
             .rounded_full()
             .bg(p.surface)
+            .border_1()
+            .border_color(if self.search_open {
+                p.accent.opacity(0.65)
+            } else {
+                gpui_kit::transparent_black()
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.user_menu_open = false;
+                    if !this.search_open {
+                        this.search_open = true;
+                        let raw = this.search.read(cx).value().trim().to_string();
+                        if !raw.is_empty() && this.search_suggestions.is_empty() {
+                            this.fetch_search_suggestions(raw, cx);
+                        }
+                        cx.notify();
+                    }
+                }),
+            )
             .child(
                 div()
                     .flex_1()
@@ -862,7 +1009,27 @@ impl MainShell {
                     .text_sm()
                     .child(Input::new(&self.search).appearance(false).cleanable(true)),
             )
-            .child(icon(IconName::Search, 15.0, p.text_dim));
+            .child(
+                div()
+                    .id("top-search-submit")
+                    .size(px(24.0))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.surface_hover))
+                    .child(icon(IconName::Search, 15.0, p.text_dim))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let q = this.search.read(cx).value().trim().to_string();
+                        if q.is_empty() {
+                            this.search_open = true;
+                            cx.notify();
+                        } else {
+                            this.submit_top_search(q, window, cx);
+                        }
+                    })),
+            );
 
         let left = div()
             .occlude()
@@ -998,17 +1165,271 @@ impl MainShell {
             .gap_3()
             .px_6()
             .bg(p.bg)
-            .on_mouse_down(MouseButton::Left, |ev, window, _| {
-                if ev.click_count >= 2 {
-                    window.titlebar_double_click();
-                } else {
-                    window.start_window_move();
-                }
-            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                    if this.search_open {
+                        this.search_open = false;
+                        this.search_active_idx = None;
+                        cx.notify();
+                    }
+                    if ev.click_count >= 2 {
+                        window.titlebar_double_click();
+                    } else {
+                        window.start_window_move();
+                    }
+                }),
+            )
             .child(left)
             .child(self.top_lyrics.clone())
             .child(right)
             .into_any_element()
+    }
+
+    fn render_search_dropdown(
+        &self,
+        p: BiuPalette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.search_open {
+            return None;
+        }
+        let s = self.state.read(cx);
+        let sidebar_w = if s.sidebar_collapsed {
+            SIDEBAR_COLLAPSED
+        } else {
+            SIDEBAR_EXPANDED
+        };
+        let show_history = s.settings.show_search_history;
+        let history: Vec<String> = s.search_history.iter().take(10).cloned().collect();
+        let query = self.search.read(cx).value().trim().to_string();
+        let suggestions = self.search_suggestions.clone();
+        let active_idx = self.search_active_idx;
+        let has_history = show_history && !history.is_empty();
+        let left_offset = sidebar_w + 24.0 + 72.0;
+
+        let mut panel = div()
+            .id("top-search-dropdown")
+            .absolute()
+            .top(px(HEADER_HEIGHT - 4.0))
+            .left(px(left_offset))
+            .w(px(360.0))
+            .max_h(px(460.0))
+            .overflow_y_scroll()
+            .p_3()
+            .rounded(px(14.0))
+            .bg(p.surface_elevated)
+            .border_1()
+            .border_color(p.border_strong)
+            .shadow_xl()
+            .occlude()
+            .flex()
+            .flex_col()
+            .gap_2p5();
+
+        if has_history {
+            panel = panel
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(p.text_dim)
+                                .child("搜索历史"),
+                        )
+                        .child(
+                            div()
+                                .id("top-clear-history")
+                                .text_xs()
+                                .text_color(p.text_dim)
+                                .cursor_pointer()
+                                .hover(move |s| s.text_color(p.text))
+                                .child("清除全部")
+                                .on_click(on_state(&self.state, |s, cx| {
+                                    s.clear_search_history(cx)
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_1p5()
+                        .children(history.into_iter().enumerate().map(|(i, term)| {
+                            let search_term = term.clone();
+                            let del_term = term.clone();
+                            let st_del = self.state.clone();
+                            div()
+                                .id(("top-hist-chip", i))
+                                .h(px(26.0))
+                                .pl_2p5()
+                                .pr_1p5()
+                                .max_w(px(160.0))
+                                .rounded_full()
+                                .bg(p.surface)
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(p.surface_hover))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.submit_top_search(search_term.clone(), window, cx);
+                                }))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .text_color(p.text_muted)
+                                        .truncate()
+                                        .child(term),
+                                )
+                                .child(
+                                    div()
+                                        .id(("top-hist-del", i))
+                                        .size(px(16.0))
+                                        .flex_shrink_0()
+                                        .rounded_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .hover(move |s| s.bg(p.surface_active))
+                                        .on_click(move |_, _, cx| {
+                                            cx.stop_propagation();
+                                            st_del.update(cx, |s, cx| {
+                                                s.remove_search_history(&del_term, cx);
+                                            });
+                                        })
+                                        .child(icon(IconName::X, 10.0, p.text_dim)),
+                                )
+                        })),
+                );
+        }
+
+        if !suggestions.is_empty() {
+            if has_history {
+                panel = panel.child(div().h(px(1.0)).w_full().bg(p.border));
+            }
+            panel = panel
+                .child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(p.text_dim)
+                        .child("搜索建议"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
+                        .children(suggestions.into_iter().enumerate().map(|(i, term)| {
+                            let active = active_idx == Some(i);
+                            let chosen = term.clone();
+                            div()
+                                .id(("top-suggest-item", i))
+                                .h(px(34.0))
+                                .px_2p5()
+                                .rounded(px(8.0))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .cursor_pointer()
+                                .when(active, |d| d.bg(p.accent_soft))
+                                .when(!active, |d| d.hover(move |s| s.bg(p.surface_hover)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.submit_top_search(chosen.clone(), window, cx);
+                                }))
+                                .child(icon(
+                                    IconName::Search,
+                                    13.0,
+                                    if active { p.accent } else { p.text_dim },
+                                ))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_sm()
+                                        .text_color(if active { p.accent } else { p.text })
+                                        .truncate()
+                                        .child(term),
+                                )
+                        })),
+                );
+        } else if !query.is_empty() {
+            if has_history {
+                panel = panel.child(div().h(px(1.0)).w_full().bg(p.border));
+            }
+            let direct = query.clone();
+            panel = panel.child(
+                div()
+                    .id("top-suggest-direct")
+                    .h(px(36.0))
+                    .px_2p5()
+                    .rounded(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.surface_hover))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.submit_top_search(direct.clone(), window, cx);
+                    }))
+                    .child(icon(IconName::Search, 14.0, p.accent))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(p.text)
+                            .truncate()
+                            .child(format!("搜索「{query}」")),
+                    ),
+            );
+        } else if !has_history {
+            panel = panel.child(
+                div()
+                    .py_5()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_xs()
+                    .text_color(p.text_dim)
+                    .child("输入歌名、歌手、BV 号或 UP 主开始搜索"),
+            );
+        }
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    div()
+                        .id("top-search-scrim")
+                        .absolute()
+                        .top(px(HEADER_HEIGHT))
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.search_open = false;
+                                this.search_active_idx = None;
+                                cx.notify();
+                            }),
+                        ),
+                )
+                .child(panel)
+                .into_any_element(),
+        )
     }
 
     fn render_user_menu(&self, p: BiuPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1177,6 +1598,7 @@ impl Render for MainShell {
 
         let sidebar = self.render_sidebar(p, cx);
         let header = self.render_header(p, avatar, cx);
+        let search_dropdown = self.render_search_dropdown(p, cx);
         let user_menu = self.render_user_menu(p, cx);
         let toast = self.render_toast(p, cx);
 
@@ -1217,6 +1639,7 @@ impl Render for MainShell {
                     ),
             )
             .child(self.player_bar.clone())
+            .when_some(search_dropdown, |d, sd| d.child(sd))
             .when_some(user_menu, |d, m| d.child(m))
             .when(full_screen, |d| d.child(self.full_screen.clone()))
             .when(modal_open, |d| {

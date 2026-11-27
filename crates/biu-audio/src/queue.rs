@@ -107,6 +107,28 @@ impl PlayQueue {
         &self.items[idx]
     }
 
+    /// Insert `track` right after the current track (moving it there if already queued).
+    pub fn insert_next(&mut self, track: TrackItem) {
+        if let Some(existing) = self.index_of(&track.id) {
+            if Some(existing) == self.current_index {
+                self.items[existing] = track;
+                return;
+            }
+            self.items.remove(existing);
+            if let Some(cur) = self.current_index
+                && existing < cur
+            {
+                self.current_index = Some(cur - 1);
+            }
+        }
+        let at = self.current_index.map_or(0, |c| c + 1).min(self.items.len());
+        self.items.insert(at, track);
+        if self.current_index.is_none() {
+            self.current_index = Some(0);
+        }
+        self.rebuild_shuffle();
+    }
+
     /// Append tracks not already in the queue. Returns how many were added.
     pub fn append(&mut self, tracks: impl IntoIterator<Item = TrackItem>) -> usize {
         let mut added = 0;
@@ -489,5 +511,33 @@ mod tests {
         assert_eq!(q.toggle_mode(), PlayMode::Single);
         assert_eq!(q.toggle_mode(), PlayMode::Shuffle);
         assert_eq!(q.toggle_mode(), PlayMode::Loop);
+    }
+
+    #[test]
+    fn insert_next_places_after_current_and_moves_existing() {
+        let mut q = q(&["a", "b", "c"], 0, PlayMode::Order);
+        q.insert_next(t("x"));
+        assert_eq!(
+            q.items().iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            ["a", "x", "b", "c"]
+        );
+        assert_eq!(q.current_index(), Some(0));
+
+        // Moving an existing later item to next preserves current_index.
+        q.insert_next(t("c"));
+        assert_eq!(
+            q.items().iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            ["a", "c", "x", "b"]
+        );
+        assert_eq!(q.current_index(), Some(0));
+
+        // Moving an existing earlier item shifts current_index properly.
+        q.jump_to(2); // "x"
+        q.insert_next(t("a"));
+        assert_eq!(
+            q.items().iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            ["c", "x", "a", "b"]
+        );
+        assert_eq!(id(q.current()), Some("x".into()));
     }
 }

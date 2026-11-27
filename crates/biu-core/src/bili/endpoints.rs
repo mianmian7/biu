@@ -185,11 +185,30 @@ impl BiliClient {
         page: u64,
         page_size: u64,
     ) -> Result<SearchResult> {
+        self.search_videos_filtered(keyword, order, page, page_size, None)
+            .await
+    }
+
+    pub async fn search_videos_filtered(
+        &self,
+        keyword: &str,
+        order: &str,
+        page: u64,
+        page_size: u64,
+        tids: Option<u64>,
+    ) -> Result<SearchResult> {
         let data = self
             .get(
                 API,
                 "/x/web-interface/wbi/search/type",
-                json!({ "keyword": keyword, "order": order, "page": page, "page_size": page_size, "search_type": "video" }),
+                json!({
+                    "keyword": keyword,
+                    "order": order,
+                    "page": page,
+                    "page_size": page_size,
+                    "search_type": "video",
+                    "tids": tids,
+                }),
                 true,
             )
             .await?;
@@ -202,11 +221,28 @@ impl BiliClient {
         keyword: &str,
         page: u64,
     ) -> Result<SearchResult<FollowingUser>> {
+        self.search_users_sorted(keyword, page, None, None).await
+    }
+
+    pub async fn search_users_sorted(
+        &self,
+        keyword: &str,
+        page: u64,
+        order: Option<&str>,
+        order_sort: Option<u64>,
+    ) -> Result<SearchResult<FollowingUser>> {
         let data = self
             .get(
                 API,
                 "/x/web-interface/wbi/search/type",
-                json!({ "keyword": keyword, "page": page, "search_type": "bili_user" }),
+                json!({
+                    "keyword": keyword,
+                    "page": page,
+                    "page_size": 24,
+                    "search_type": "bili_user",
+                    "order": order,
+                    "order_sort": order_sort,
+                }),
                 true,
             )
             .await?;
