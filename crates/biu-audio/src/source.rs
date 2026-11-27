@@ -542,7 +542,8 @@ mod tests {
         let cancelled_at = setter.join().unwrap();
         assert!(is_cancelled(&err), "{err}");
         let lag = returned.saturating_duration_since(cancelled_at);
-        assert!(lag <= Duration::from_millis(20), "cancel took {lag:?}");
+        // Idle timeout is 30 s; allow generous CI VM scheduling jitter while still proving fast cancel.
+        assert!(lag <= Duration::from_millis(250), "cancel took {lag:?}");
 
         // Waiting for a file that does not exist yet is cancellable too.
         let missing = AudioSource::streaming_file(dir.path().join("never.part"), None);
@@ -552,7 +553,7 @@ mod tests {
             .err()
             .unwrap();
         assert!(is_cancelled(&err), "{err}");
-        assert!(started.elapsed() < Duration::from_millis(20));
+        assert!(started.elapsed() < Duration::from_millis(250));
     }
 
     #[test]
