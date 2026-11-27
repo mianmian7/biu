@@ -308,7 +308,7 @@ impl MainShell {
                 .filter(|u| !u.face.is_empty())
                 .is_some_and(|u| {
                     s.covers
-                        .get(&CoverKey::thumb(u.face.clone(), ThumbSize::Tiny))
+                        .get(&CoverKey::thumb(u.face.clone(), ThumbSize::Avatar))
                         .is_some()
                 });
             if this.last_ui_ver != s.ui_version || this.last_avatar_loaded != avatar_loaded {
@@ -1151,7 +1151,7 @@ impl Render for MainShell {
                 .as_ref()
                 .filter(|u| !u.face.is_empty())
                 .and_then(|u| {
-                    let key = CoverKey::thumb(u.face.clone(), ThumbSize::Tiny);
+                    let key = CoverKey::thumb(u.face.clone(), ThumbSize::Avatar);
                     let img = s.covers.get(&key);
                     if img.is_none() && s.covers.should_fetch(&key) {
                         missing = Some(u.face.clone());
@@ -1170,7 +1170,7 @@ impl Render for MainShell {
             let st = self.state.clone();
             window.defer(cx, move |_, cx| {
                 st.update(cx, |s, cx| {
-                    s.ensure_cover(&url, ThumbSize::Tiny, false, cx);
+                    s.ensure_cover(&url, ThumbSize::Avatar, false, cx);
                 });
             });
         }

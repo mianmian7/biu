@@ -43,7 +43,7 @@ impl PagesHost {
                     .iter()
                     .take(40)
                     .filter(|u| !u.face.is_empty())
-                    .map(|u| (u.face.clone(), ThumbSize::Tiny))
+                    .map(|u| (u.face.clone(), ThumbSize::Avatar))
                     .collect();
                 this.prefetch_covers(covers, cx);
             },

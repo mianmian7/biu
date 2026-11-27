@@ -31,7 +31,7 @@ impl PagesHost {
             move |s| async move { s.bili.get_user_info(mid).await },
             |this, user, cx| {
                 if !user.face.is_empty() {
-                    this.prefetch_covers(vec![(user.face.clone(), ThumbSize::Tiny)], cx);
+                    this.prefetch_covers(vec![(user.face.clone(), ThumbSize::Avatar)], cx);
                 }
             },
             cx,
@@ -134,7 +134,7 @@ impl PagesHost {
                 .child(thumbnail(
                     &self.state,
                     &user.face,
-                    ThumbSize::Tiny,
+                    ThumbSize::Avatar,
                     (72., 72.),
                     BiuPalette {
                         radius: px(36.0),

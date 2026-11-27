@@ -1310,7 +1310,7 @@ fn user_row(
         .child(thumbnail(
             state,
             &user.face,
-            ThumbSize::Tiny,
+            ThumbSize::Avatar,
             (44., 44.),
             BiuPalette {
                 radius: px(22.0),

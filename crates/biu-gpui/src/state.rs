@@ -301,7 +301,7 @@ impl AppState {
         if let Some(ref u) = self.user
             && !u.face.is_empty()
         {
-            keys.push(CoverKey::thumb(u.face.clone(), ThumbSize::Tiny));
+            keys.push(CoverKey::thumb(u.face.clone(), ThumbSize::Avatar));
         }
         self.covers.set_pinned(keys);
     }
@@ -490,7 +490,7 @@ impl AppState {
                     if let Some(face) = state.user.as_ref().map(|u| u.face.clone())
                         && !face.is_empty()
                     {
-                        state.ensure_cover(&face, ThumbSize::Tiny, false, cx);
+                        state.ensure_cover(&face, ThumbSize::Avatar, false, cx);
                     }
                     state.notify_ui(cx);
                 });

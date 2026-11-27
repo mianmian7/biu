@@ -47,6 +47,7 @@ fn thumb_tag(size: ThumbSize) -> u8 {
         ThumbSize::Card => 1,
         ThumbSize::BlurBg => 2,
         ThumbSize::Cover => 3,
+        ThumbSize::Avatar => 4,
     }
 }
 

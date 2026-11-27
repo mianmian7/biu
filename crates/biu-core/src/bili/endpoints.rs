@@ -36,6 +36,25 @@ impl BiliClient {
             Some(86090) => Ok(QrPollStatus::WaitingForConfirmation),
             Some(86038) => Ok(QrPollStatus::Expired),
             Some(0) => {
+                // Fallback: extract auth cookies from crossDomain `url` query params
+                // if any were omitted or dropped from Set-Cookie headers.
+                if let Some(raw_url) = data["url"].as_str()
+                    && let Ok(parsed) = Url::parse(raw_url)
+                {
+                    let expires = parsed
+                        .query_pairs()
+                        .find_map(|(k, v)| (k == "Expires").then(|| v.parse::<u64>().ok()).flatten());
+                    for (k, v) in parsed.query_pairs() {
+                        if matches!(
+                            k.as_ref(),
+                            "SESSDATA" | "bili_jct" | "DedeUserID" | "DedeUserID__ckMd5" | "sid"
+                        ) && self.get_cookie(k.as_ref()).is_none()
+                            && !v.is_empty()
+                        {
+                            let _ = self.set_cookie(k.as_ref(), v.as_ref(), expires);
+                        }
+                    }
+                }
                 *self.wbi.lock().await = None;
                 self.save_cookies()?;
                 self.refresh_session_cookies().await;

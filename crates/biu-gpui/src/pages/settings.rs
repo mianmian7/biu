@@ -487,7 +487,7 @@ impl PagesHost {
                     .child(thumbnail(
                         entity,
                         &user.face,
-                        ThumbSize::Tiny,
+                        ThumbSize::Avatar,
                         (48., 48.),
                         BiuPalette {
                             radius: px(24.0),

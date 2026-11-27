@@ -23,6 +23,7 @@ const BLUR_HEIGHT: usize = 135;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThumbSize {
     Tiny,
+    Avatar,
     Card,
     BlurBg,
     Cover,
@@ -32,6 +33,7 @@ impl ThumbSize {
     pub fn dimensions(self) -> (u32, u32) {
         match self {
             Self::Tiny => (160, 90),
+            Self::Avatar => (160, 160),
             Self::Card => (320, 180),
             Self::BlurBg => (240, 135),
             Self::Cover => (960, 720),
@@ -368,6 +370,10 @@ mod tests {
         assert_eq!(
             thumbnail_url("https://i1.hdslb.com/a.avif", ThumbSize::Cover)?.path(),
             "/a.webp@960w_720h_1c.webp"
+        );
+        assert_eq!(
+            thumbnail_url("https://i0.biliimg.com/bfs/face/a.jpg", ThumbSize::Avatar)?.as_str(),
+            "https://i0.biliimg.com/bfs/face/a.jpg@160w_160h_1c.webp"
         );
         assert_eq!(
             thumbnail_url("https://i0.biliimg.com/bfs/face/a.jpg", ThumbSize::Card)?.as_str(),

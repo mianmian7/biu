@@ -335,6 +335,8 @@ impl Render for ModalsHost {
                                     .flex_col()
                                     .child(content)
                                     .into_any_element()
+                            } else if matches!(key, ModalKey::Login) {
+                                div().w_full().child(content).into_any_element()
                             } else {
                                 div()
                                     .id("modal-content")
