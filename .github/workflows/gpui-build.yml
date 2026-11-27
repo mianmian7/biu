@@ -149,11 +149,18 @@ jobs:
           mkdir -p "$STAGE_DIR"
           cp -R "$APP_DIR" "$STAGE_DIR/"
           ln -s /Applications "$STAGE_DIR/Applications"
-          hdiutil create \
-            -volname "Biu GPUI" \
-            -srcfolder "$STAGE_DIR" \
-            -ov -format UDZO \
-            "dist-gpui/Biu-GPUI-${{ matrix.name }}.dmg"
+          for attempt in 1 2 3 4 5; do
+            if hdiutil create \
+              -volname "Biu GPUI" \
+              -srcfolder "$STAGE_DIR" \
+              -ov -format UDZO \
+              "dist-gpui/Biu-GPUI-${{ matrix.name }}.dmg"; then
+              break
+            fi
+            echo "hdiutil attempt $attempt failed (Resource busy), retrying in 4s..."
+            sleep 4
+            [ "$attempt" -eq 5 ] && exit 1
+          done
           rm -rf "$STAGE_DIR" "$APP_DIR"
 
       - name: Package Windows ZIP
